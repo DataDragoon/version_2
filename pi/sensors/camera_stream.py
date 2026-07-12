@@ -14,7 +14,7 @@ from picamera2.encoders import MJPEGEncoder
 from picamera2.outputs import FileOutput
 
 STREAM_PORT = 8080
-RESOLUTION = (640, 480)
+RESOLUTION = (1920, 1080)
 FRAMERATE = 30
 
 
