@@ -6,29 +6,24 @@ import os
 import signal
 
 base = os.path.dirname(os.path.abspath(__file__))
-requirements = os.path.join(base, 'requirements.txt')
-
-print("Installing dependencies...")
-subprocess.check_call(['sudo', 'apt-get', 'install', '-y', '-qq', 'python3-pip'],
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q',
-                       '--break-system-packages', '-r', requirements])
-
 procs = []
 
 
-def cleanup(sig, frame):
+def cleanup(sig=None, frame=None):
+    print("\nShutting down...")
     for p in procs:
         p.terminate()
     for p in procs:
-        p.wait()
+        try:
+            p.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            p.kill()
+    print("All services stopped.")
     sys.exit(0)
 
 
 signal.signal(signal.SIGINT, cleanup)
 signal.signal(signal.SIGTERM, cleanup)
-
-base = os.path.dirname(os.path.abspath(__file__))
 
 services = [
     [sys.executable, os.path.join(base, 'sensors', 'stream.py')],
@@ -40,5 +35,8 @@ for cmd in services:
     print(f"  → {os.path.basename(cmd[-1])}")
     procs.append(subprocess.Popen(cmd))
 
-for p in procs:
-    p.wait()
+try:
+    for p in procs:
+        p.wait()
+except KeyboardInterrupt:
+    cleanup()
