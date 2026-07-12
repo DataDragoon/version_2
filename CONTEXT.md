@@ -130,6 +130,14 @@ with a simple framed binary protocol. Requirements:
 
 UART enabled via `raspi-config`, serial console disabled. Device: `/dev/serial0`.
 
+## Camera — Pi NoIR v3
+
+- Connected to **CSI port 1** on the Pi 5
+- Mounted **upside-down** (corrected with 180° CSS rotation on groundstation)
+- Sensor: IMX708, max 12MP
+- Streaming: 1920x1080 @ 30fps MJPEG over HTTP (port 8080)
+- Library: picamera2 with hardware MJPEG encoder
+
 ## Network Ports
 
 | Service | Port | Protocol | Direction |
