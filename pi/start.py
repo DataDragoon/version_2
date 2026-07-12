@@ -5,6 +5,12 @@ import sys
 import os
 import signal
 
+base = os.path.dirname(os.path.abspath(__file__))
+requirements = os.path.join(base, 'requirements.txt')
+
+print("Installing dependencies...")
+subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', '-r', requirements])
+
 procs = []
 
 
