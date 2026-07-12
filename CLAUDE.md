@@ -29,6 +29,14 @@ SFCW radar for through-wall imaging. See CONTEXT.md for full system description.
 - SDR: bladeRF (USB, use libbladeRF / pybladeRF)
 - Antennas: 2x Vivaldi (wideband, one TX one RX)
 
+## Living Documentation Rule
+
+CLAUDE.md and CONTEXT.md are living documents. Whenever you learn key information
+worth persisting — new design decisions, hardware findings, protocol choices,
+calibration values, architectural changes, or anything a future session would
+need to know — update CLAUDE.md and/or CONTEXT.md immediately. Don't wait to be
+asked. These files are how context survives across sessions and collaborators.
+
 ## Current Phase
 
 Hardware not yet connected. Next steps are physical wiring and sensor bring-up.

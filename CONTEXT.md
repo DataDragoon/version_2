@@ -121,5 +121,11 @@ with a simple framed binary protocol. Requirements:
 
 ---
 
-*This file is the single source of truth for project context.
-Update it as the system evolves.*
+## Maintenance Rules
+
+**This file and CLAUDE.md must be kept up to date by Claude (or any AI assistant)
+as the project evolves.** Whenever a session produces key information — design
+decisions, hardware discoveries, protocol specs, calibration data, wiring
+pinouts, architectural changes, or anything a future session would need — update
+these files before the session ends. They are the persistent memory of this
+project across sessions, collaborators, and machines.
