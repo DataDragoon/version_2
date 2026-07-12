@@ -39,4 +39,5 @@ asked. These files are how context survives across sessions and collaborators.
 
 ## Current Phase
 
-Hardware not yet connected. Next steps are physical wiring and sensor bring-up.
+IMU, LiDAR, and Camera integrated. All three stream to groundstation debug panels.
+Next steps: OptiFlow pipeline (optical flow positioning using camera + AI HAT+).

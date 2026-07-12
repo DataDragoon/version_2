@@ -294,3 +294,67 @@ body {
     margin-top: 4px;
     font-variant-numeric: tabular-nums;
 }
+
+/* Camera panel */
+.camera-layout {
+    display: flex;
+    flex: 1;
+    gap: 24px;
+    min-height: 0;
+}
+
+.camera-viewport {
+    flex: 1;
+    background: var(--surface);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.camera-viewport img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+}
+
+.camera-overlay {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+}
+
+.camera-status {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--text-dim);
+}
+
+.camera-status.live {
+    color: var(--green);
+    border: 1px solid var(--green);
+}
+
+.camera-status.connecting {
+    color: var(--accent);
+    border: 1px solid var(--accent);
+}
+
+.camera-status.error {
+    color: var(--red);
+    border: 1px solid var(--red);
+}
+
+.camera-info {
+    width: 200px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}

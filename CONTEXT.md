@@ -130,17 +130,28 @@ with a simple framed binary protocol. Requirements:
 
 UART enabled via `raspi-config`, serial console disabled. Device: `/dev/serial0`.
 
+## Network Ports
+
+| Service | Port | Protocol | Direction |
+|---------|------|----------|-----------|
+| Sensor stream (IMU + LiDAR) | 9001 | WebSocket | Pi → Browser |
+| Camera stream (MJPEG) | 8080 | HTTP | Pi → Browser |
+| Groundstation UI | 5000 | HTTP | PC local |
+
 ## Current Status
 
 - [x] Project scaffolded
 - [x] Context documented
-- [ ] Hardware connections (IMU wiring defined, not yet physical)
+- [x] Hardware connections (IMU + LiDAR wired and tested)
 - [x] IMU driver (MPU-6500 over I2C)
-- [ ] Other sensor drivers
+- [x] LiDAR driver (TF-LC02 over UART)
+- [x] Combined sensor WebSocket stream (port 9001)
+- [x] Camera MJPEG stream (port 8080, picamera2)
+- [x] Groundstation UI — IMU + LiDAR debug panel
+- [x] Groundstation UI — Camera debug panel
 - [ ] BladeRF SFCW implementation
 - [ ] OptiFlow pipeline
-- [ ] Groundstation UI
-- [ ] Network protocol
+- [ ] Network protocol (formal)
 - [ ] Integration testing
 - [ ] SAR image reconstruction
 

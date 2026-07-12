@@ -27,6 +27,7 @@ signal.signal(signal.SIGTERM, cleanup)
 
 services = [
     [sys.executable, os.path.join(base, 'sensors', 'stream.py')],
+    [sys.executable, os.path.join(base, 'sensors', 'camera_stream.py')],
 ]
 
 print(f"Starting {len(services)} service(s)...")

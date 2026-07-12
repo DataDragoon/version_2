@@ -4,10 +4,26 @@
 (function () {
     'use strict';
 
+    // --- Panel navigation ---
+    const navItems = document.querySelectorAll('.nav-item[data-panel]');
+    const panels = document.querySelectorAll('.panel');
+
+    navItems.forEach(item => {
+        if (item.classList.contains('disabled')) return;
+        item.addEventListener('click', () => {
+            navItems.forEach(n => n.classList.remove('active'));
+            panels.forEach(p => p.classList.remove('active'));
+            item.classList.add('active');
+            const panel = document.getElementById('panel-' + item.dataset.panel);
+            if (panel) panel.classList.add('active');
+        });
+    });
+
     // --- Connection management ---
     let ws = null;
     let packetCount = 0;
     let rateInterval = null;
+    let piIp = null;
 
     const ipInput = document.getElementById('pi-ip');
     const connectBtn = document.getElementById('connect-btn');
@@ -26,6 +42,7 @@
         if (!ip) return;
 
         localStorage.setItem('pi_ip', ip);
+        piIp = ip;
 
         if (ws) ws.close();
 
@@ -41,6 +58,8 @@
                 document.getElementById('imu-rate').textContent = packetCount + ' Hz';
                 packetCount = 0;
             }, 1000);
+            // Start camera stream
+            if (window.cameraPanel) window.cameraPanel.start(piIp);
         };
 
         ws.onmessage = (event) => {
@@ -57,6 +76,7 @@
             document.getElementById('link-status').classList.add('disconnected');
             document.getElementById('imu-rate').textContent = '— Hz';
             if (rateInterval) { clearInterval(rateInterval); rateInterval = null; }
+            if (window.cameraPanel) window.cameraPanel.stop();
         };
 
         ws.onerror = () => {

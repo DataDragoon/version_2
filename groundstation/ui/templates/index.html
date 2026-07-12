@@ -33,7 +33,7 @@
                 <h2>Debug</h2>
                 <ul>
                     <li class="nav-item active" data-panel="sensors">IMU + LiDAR</li>
-                    <li class="nav-item disabled" data-panel="camera">Camera</li>
+                    <li class="nav-item" data-panel="camera">Camera</li>
                     <li class="nav-item disabled" data-panel="optiflow">OptiFlow</li>
                     <li class="nav-item disabled" data-panel="radar">Radar</li>
                     <li class="nav-item disabled" data-panel="position">Position 3D</li>
@@ -49,6 +49,10 @@
                     <div class="status-row">
                         <span>IMU</span>
                         <span id="imu-rate">— Hz</span>
+                    </div>
+                    <div class="status-row">
+                        <span>Camera</span>
+                        <span id="cam-rate">— fps</span>
                     </div>
                 </div>
             </div>
@@ -94,10 +98,32 @@
                     </div>
                 </div>
             </div>
+            <div id="panel-camera" class="panel">
+                <div class="panel-header">
+                    <h2>Camera</h2>
+                </div>
+                <div class="camera-layout">
+                    <div class="camera-viewport">
+                        <img id="camera-feed" alt="Camera feed">
+                        <div class="camera-overlay">
+                            <span id="camera-status" class="camera-status">Disconnected</span>
+                        </div>
+                    </div>
+                    <div class="camera-info">
+                        <div class="data-group">
+                            <h3>Stream</h3>
+                            <div class="data-row"><span>Status</span><span id="camera-link">Off</span></div>
+                            <div class="data-row"><span>FPS</span><span id="camera-fps">—</span></div>
+                            <div class="data-row"><span>Resolution</span><span id="camera-res">—</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </main>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="/static/sensors.js"></script>
+    <script src="/static/camera.js"></script>
 </body>
 </html>
