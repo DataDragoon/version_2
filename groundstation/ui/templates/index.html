@@ -32,8 +32,7 @@
             <div class="nav-section">
                 <h2>Debug</h2>
                 <ul>
-                    <li class="nav-item active" data-panel="imu">IMU</li>
-                    <li class="nav-item disabled" data-panel="lidar">LiDAR</li>
+                    <li class="nav-item active" data-panel="sensors">IMU + LiDAR</li>
                     <li class="nav-item disabled" data-panel="camera">Camera</li>
                     <li class="nav-item disabled" data-panel="optiflow">OptiFlow</li>
                     <li class="nav-item disabled" data-panel="radar">Radar</li>
@@ -56,9 +55,9 @@
         </nav>
 
         <main id="viewport">
-            <div id="panel-imu" class="panel active">
+            <div id="panel-sensors" class="panel active">
                 <div class="panel-header">
-                    <h2>IMU — MPU-6500</h2>
+                    <h2>IMU + LiDAR</h2>
                 </div>
                 <div class="imu-layout">
                     <div class="imu-3d">
@@ -84,6 +83,10 @@
                             <div class="data-row"><span>Yaw</span><span id="yaw">—</span></div>
                         </div>
                         <div class="data-group">
+                            <h3>LiDAR (mm)</h3>
+                            <div class="data-row"><span>Dist</span><span id="lidar-dist">—</span></div>
+                        </div>
+                        <div class="data-group">
                             <h3>Temperature</h3>
                             <div class="data-row"><span>°C</span><span id="temp">—</span></div>
                         </div>
@@ -94,6 +97,6 @@
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="/static/imu.js"></script>
+    <script src="/static/sensors.js"></script>
 </body>
 </html>

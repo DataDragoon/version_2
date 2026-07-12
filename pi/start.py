@@ -31,7 +31,7 @@ signal.signal(signal.SIGTERM, cleanup)
 base = os.path.dirname(os.path.abspath(__file__))
 
 services = [
-    [sys.executable, os.path.join(base, 'sensors', 'imu_stream.py')],
+    [sys.executable, os.path.join(base, 'sensors', 'stream.py')],
 ]
 
 print(f"Starting {len(services)} service(s)...")

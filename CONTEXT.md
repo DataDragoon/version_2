@@ -119,6 +119,17 @@ with a simple framed binary protocol. Requirements:
 | NCS | Pin 1 (3.3V) | High = I2C mode |
 | CSB | Pin 1 (3.3V) | High = I2C mode |
 
+## Wiring — TF-LC02 LiDAR (UART)
+
+| TF-LC02 Pin | Raspberry Pi | Notes |
+|---|---|---|
+| VCC | Pin 2 (5V) | Shares 5V rail with IMU |
+| GND | Pin 6 (GND) | Common ground |
+| TX | Pin 10 (GPIO 15 / RXD) | LiDAR TX → Pi RX |
+| RX | Pin 8 (GPIO 14 / TXD) | Pi TX → LiDAR RX |
+
+UART enabled via `raspi-config`, serial console disabled. Device: `/dev/serial0`.
+
 ## Current Status
 
 - [x] Project scaffolded

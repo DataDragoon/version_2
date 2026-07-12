@@ -76,6 +76,13 @@
         document.getElementById('gz').textContent = gz.toFixed(2);
         document.getElementById('temp').textContent = data.temp.toFixed(1);
 
+        const lidarEl = document.getElementById('lidar-dist');
+        if (data.lidar !== null && data.lidar !== undefined) {
+            lidarEl.textContent = data.lidar;
+        } else {
+            lidarEl.textContent = '—';
+        }
+
         document.getElementById('roll').textContent = roll.toFixed(1);
         document.getElementById('pitch').textContent = pitch.toFixed(1);
         document.getElementById('yaw').textContent = yaw.toFixed(1);
