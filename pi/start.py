@@ -9,7 +9,10 @@ base = os.path.dirname(os.path.abspath(__file__))
 requirements = os.path.join(base, 'requirements.txt')
 
 print("Installing dependencies...")
-subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', '-r', requirements])
+subprocess.check_call(['sudo', 'apt-get', 'install', '-y', '-qq', 'python3-pip'],
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q',
+                       '--break-system-packages', '-r', requirements])
 
 procs = []
 
