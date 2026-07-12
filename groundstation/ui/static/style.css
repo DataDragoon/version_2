@@ -72,6 +72,52 @@ body {
     padding: 0 16px 8px;
 }
 
+.connect-block {
+    padding: 0 12px;
+    display: flex;
+    gap: 6px;
+}
+
+.connect-block input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 11px;
+    outline: none;
+}
+
+.connect-block input:focus {
+    border-color: var(--accent);
+}
+
+.connect-block button {
+    background: var(--accent-dim);
+    border: none;
+    border-radius: 4px;
+    padding: 6px 10px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 10px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.connect-block button:hover {
+    background: var(--accent);
+    color: var(--bg);
+}
+
+.connect-block button:disabled {
+    background: var(--green);
+    color: var(--bg);
+    cursor: default;
+    opacity: 0.8;
+}
+
 .nav-section ul {
     list-style: none;
 }

@@ -1,7 +1,85 @@
 // IMU debug panel — 3D orientation + live data
+// Browser connects directly to Pi's WebSocket
 
 (function () {
     'use strict';
+
+    // --- Connection management ---
+    let ws = null;
+    let packetCount = 0;
+    let rateInterval = null;
+
+    const ipInput = document.getElementById('pi-ip');
+    const connectBtn = document.getElementById('connect-btn');
+
+    // Restore last-used IP
+    const savedIp = localStorage.getItem('pi_ip');
+    if (savedIp) ipInput.value = savedIp;
+
+    connectBtn.addEventListener('click', connect);
+    ipInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') connect();
+    });
+
+    function connect() {
+        const ip = ipInput.value.trim();
+        if (!ip) return;
+
+        localStorage.setItem('pi_ip', ip);
+
+        if (ws) ws.close();
+
+        connectBtn.textContent = '...';
+        ws = new WebSocket(`ws://${ip}:9001`);
+
+        ws.onopen = () => {
+            connectBtn.textContent = 'Connected';
+            connectBtn.disabled = true;
+            document.getElementById('link-status').classList.add('connected');
+            document.getElementById('link-status').classList.remove('disconnected');
+            rateInterval = setInterval(() => {
+                document.getElementById('imu-rate').textContent = packetCount + ' Hz';
+                packetCount = 0;
+            }, 1000);
+        };
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            packetCount++;
+            updateDisplay(data);
+            updateOrientation(data);
+        };
+
+        ws.onclose = () => {
+            connectBtn.textContent = 'Connect';
+            connectBtn.disabled = false;
+            document.getElementById('link-status').classList.remove('connected');
+            document.getElementById('link-status').classList.add('disconnected');
+            document.getElementById('imu-rate').textContent = '— Hz';
+            if (rateInterval) { clearInterval(rateInterval); rateInterval = null; }
+        };
+
+        ws.onerror = () => {
+            ws.close();
+        };
+    }
+
+    function updateDisplay(data) {
+        const [ax, ay, az] = data.accel;
+        const [gx, gy, gz] = data.gyro;
+
+        document.getElementById('ax').textContent = ax.toFixed(4);
+        document.getElementById('ay').textContent = ay.toFixed(4);
+        document.getElementById('az').textContent = az.toFixed(4);
+        document.getElementById('gx').textContent = gx.toFixed(2);
+        document.getElementById('gy').textContent = gy.toFixed(2);
+        document.getElementById('gz').textContent = gz.toFixed(2);
+        document.getElementById('temp').textContent = data.temp.toFixed(1);
+
+        document.getElementById('roll').textContent = roll.toFixed(1);
+        document.getElementById('pitch').textContent = pitch.toFixed(1);
+        document.getElementById('yaw').textContent = yaw.toFixed(1);
+    }
 
     // --- Three.js 3D visualization ---
     const canvas = document.getElementById('imu-canvas');
@@ -106,47 +184,6 @@
     }
     animate();
 
-    // --- Socket.IO connection ---
-    const socket = io();
-    let packetCount = 0;
-    let rateInterval = null;
-
-    socket.on('connect', () => {
-        document.getElementById('link-status').classList.add('connected');
-        document.getElementById('link-status').classList.remove('disconnected');
-        rateInterval = setInterval(() => {
-            document.getElementById('imu-rate').textContent = packetCount + ' Hz';
-            packetCount = 0;
-        }, 1000);
-    });
-
-    socket.on('disconnect', () => {
-        document.getElementById('link-status').classList.remove('connected');
-        document.getElementById('link-status').classList.add('disconnected');
-        if (rateInterval) clearInterval(rateInterval);
-        document.getElementById('imu-rate').textContent = '— Hz';
-    });
-
-    socket.on('imu_data', (data) => {
-        packetCount++;
-
-        // Update raw values
-        const [ax, ay, az] = data.accel;
-        const [gx, gy, gz] = data.gyro;
-
-        document.getElementById('ax').textContent = ax.toFixed(4);
-        document.getElementById('ay').textContent = ay.toFixed(4);
-        document.getElementById('az').textContent = az.toFixed(4);
-        document.getElementById('gx').textContent = gx.toFixed(2);
-        document.getElementById('gy').textContent = gy.toFixed(2);
-        document.getElementById('gz').textContent = gz.toFixed(2);
-        document.getElementById('temp').textContent = data.temp.toFixed(1);
-
-        // Update orientation
-        updateOrientation(data);
-
-        document.getElementById('roll').textContent = roll.toFixed(1);
-        document.getElementById('pitch').textContent = pitch.toFixed(1);
-        document.getElementById('yaw').textContent = yaw.toFixed(1);
-    });
+    // Auto-connect if we have a saved IP
+    if (savedIp) connect();
 })();
