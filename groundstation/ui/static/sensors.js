@@ -76,11 +76,14 @@
         document.getElementById('gz').textContent = gz.toFixed(2);
         document.getElementById('temp').textContent = data.temp.toFixed(1);
 
-        const lidarEl = document.getElementById('lidar-dist');
+        const lidarMm = document.getElementById('lidar-dist-mm');
+        const lidarCm = document.getElementById('lidar-dist-cm');
         if (data.lidar !== null && data.lidar !== undefined) {
-            lidarEl.textContent = data.lidar;
+            lidarMm.textContent = data.lidar;
+            lidarCm.textContent = (data.lidar / 10).toFixed(1);
         } else {
-            lidarEl.textContent = '—';
+            lidarMm.textContent = '—';
+            lidarCm.textContent = '—';
         }
 
         document.getElementById('roll').textContent = roll.toFixed(1);
