@@ -1,52 +1,78 @@
-"""TF-LC02 LiDAR driver over UART."""
+"""TF-LC02 LiDAR driver over UART (command-response protocol)."""
 
 import serial
-import struct
+import time
 
-FRAME_HEADER = 0x5A
-FRAME_LENGTH = 6
+FRAME_HEADER = bytes([0x55, 0xAA])
+FRAME_FOOTER = 0xFA
+CMD_GET_DISTANCE = bytes([0x55, 0xAA, 0x81, 0x00, 0xFA])
 
 
 class TFLC02:
-    def __init__(self, port='/dev/serial0', baudrate=115200):
+    def __init__(self, port='/dev/ttyAMA0', baudrate=115200):
         self.ser = serial.Serial(port, baudrate=baudrate, timeout=0.1)
         self.ser.reset_input_buffer()
+        time.sleep(0.2)
 
     def read_distance(self):
-        """Read one distance measurement. Returns distance in mm, or None on error."""
-        # Sync to frame header
-        while True:
-            b = self.ser.read(1)
-            if not b:
-                return None
-            if b[0] == FRAME_HEADER:
-                rest = self.ser.read(FRAME_LENGTH - 1)
-                if len(rest) < FRAME_LENGTH - 1:
-                    return None
-                frame = bytes([FRAME_HEADER]) + rest
-                return self._parse_frame(frame)
+        """Request and read one distance measurement. Returns distance in mm, or None on error."""
+        self.ser.reset_input_buffer()
+        self.ser.write(CMD_GET_DISTANCE)
+        return self._read_response()
 
-    def _parse_frame(self, frame):
-        """Parse TF-LC02 frame: [0x5A, len, dist_lo, dist_hi, strength_lo, strength_hi]"""
-        if len(frame) < FRAME_LENGTH:
+    def _read_response(self):
+        """Parse response: 55 AA 81 03 [dist_hi] [dist_lo] [error_code] FA"""
+        # Read up to 8 bytes with sync
+        data = self.ser.read(8)
+        if len(data) < 8:
             return None
-        dist = frame[2] | (frame[3] << 8)
+
+        # Find frame header
+        idx = data.find(FRAME_HEADER)
+        if idx < 0:
+            return None
+        if idx > 0:
+            # Header not at start, read remaining bytes
+            remaining = self.ser.read(idx)
+            data = data[idx:] + remaining
+            if len(data) < 8:
+                return None
+
+        if data[7] != FRAME_FOOTER:
+            return None
+        if data[2] != 0x81:
+            return None
+
+        dist = data[4] * 256 + data[5]
+        error_code = data[6]
         return dist
 
-    def read_strength(self):
-        """Read distance + signal strength. Returns (distance_mm, strength) or None."""
-        while True:
-            b = self.ser.read(1)
-            if not b:
+    def read_distance_with_error(self):
+        """Request distance. Returns (distance_mm, error_code) or None."""
+        self.ser.reset_input_buffer()
+        self.ser.write(CMD_GET_DISTANCE)
+
+        data = self.ser.read(8)
+        if len(data) < 8:
+            return None
+
+        idx = data.find(FRAME_HEADER)
+        if idx < 0:
+            return None
+        if idx > 0:
+            remaining = self.ser.read(idx)
+            data = data[idx:] + remaining
+            if len(data) < 8:
                 return None
-            if b[0] == FRAME_HEADER:
-                rest = self.ser.read(FRAME_LENGTH - 1)
-                if len(rest) < FRAME_LENGTH - 1:
-                    return None
-                frame = bytes([FRAME_HEADER]) + rest
-                dist = frame[2] | (frame[3] << 8)
-                strength = frame[4] | (frame[5] << 8)
-                return (dist, strength)
+
+        if data[7] != FRAME_FOOTER:
+            return None
+        if data[2] != 0x81:
+            return None
+
+        dist = data[4] * 256 + data[5]
+        error_code = data[6]
+        return (dist, error_code)
 
     def close(self):
         self.ser.close()
