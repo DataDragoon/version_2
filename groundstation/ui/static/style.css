@@ -1,0 +1,213 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    --bg: #0a0a0f;
+    --sidebar-bg: #12121a;
+    --surface: #1a1a25;
+    --border: #2a2a3a;
+    --text: #e0e0e8;
+    --text-dim: #6a6a7a;
+    --accent: #4a9eff;
+    --accent-dim: #2a5a8f;
+    --green: #4aff8a;
+    --red: #ff4a6a;
+}
+
+body {
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    overflow: hidden;
+}
+
+#app {
+    display: flex;
+    height: 100vh;
+}
+
+/* Sidebar */
+#sidebar {
+    width: 220px;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 16px 0;
+    flex-shrink: 0;
+}
+
+.sidebar-header {
+    padding: 0 16px 16px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+}
+
+.sidebar-header h1 {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 1px;
+}
+
+.sidebar-header .subtitle {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+
+.nav-section {
+    padding: 8px 0;
+}
+
+.nav-section h2 {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    padding: 0 16px 8px;
+}
+
+.nav-section ul {
+    list-style: none;
+}
+
+.nav-item {
+    padding: 8px 16px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s;
+    border-left: 2px solid transparent;
+}
+
+.nav-item:hover:not(.disabled) {
+    background: var(--surface);
+}
+
+.nav-item.active {
+    background: var(--surface);
+    border-left-color: var(--accent);
+    color: var(--accent);
+}
+
+.nav-item.disabled {
+    color: var(--text-dim);
+    cursor: default;
+    opacity: 0.5;
+}
+
+.status-block {
+    padding: 12px 16px;
+    margin-top: auto;
+}
+
+.status-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 10px;
+    color: var(--text-dim);
+    padding: 4px 0;
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--red);
+}
+
+.status-dot.connected {
+    background: var(--green);
+}
+
+/* Viewport */
+#viewport {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+}
+
+.panel {
+    display: none;
+    height: 100%;
+    padding: 24px;
+}
+
+.panel.active {
+    display: flex;
+    flex-direction: column;
+}
+
+.panel-header {
+    margin-bottom: 20px;
+}
+
+.panel-header h2 {
+    font-size: 16px;
+    font-weight: 500;
+}
+
+/* IMU Layout */
+.imu-layout {
+    display: flex;
+    flex: 1;
+    gap: 24px;
+    min-height: 0;
+}
+
+.imu-3d {
+    flex: 1;
+    background: var(--surface);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    position: relative;
+    overflow: hidden;
+}
+
+.imu-3d canvas {
+    width: 100% !important;
+    height: 100% !important;
+}
+
+.imu-data {
+    width: 240px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow-y: auto;
+}
+
+.data-group {
+    background: var(--surface);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    padding: 12px;
+}
+
+.data-group h3 {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+}
+
+.data-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 12px;
+}
+
+.data-row span:first-child {
+    color: var(--text-dim);
+}
+
+.data-row span:last-child {
+    font-variant-numeric: tabular-nums;
+}

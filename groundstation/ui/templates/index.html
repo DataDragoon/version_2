@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>version0 — Groundstation</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div id="app">
+        <nav id="sidebar">
+            <div class="sidebar-header">
+                <h1>version0</h1>
+                <span class="subtitle">Groundstation</span>
+            </div>
+
+            <div class="nav-section">
+                <h2>Control</h2>
+                <ul>
+                    <li class="nav-item disabled">Control Panel</li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h2>Debug</h2>
+                <ul>
+                    <li class="nav-item active" data-panel="imu">IMU</li>
+                    <li class="nav-item disabled" data-panel="lidar">LiDAR</li>
+                    <li class="nav-item disabled" data-panel="camera">Camera</li>
+                    <li class="nav-item disabled" data-panel="optiflow">OptiFlow</li>
+                    <li class="nav-item disabled" data-panel="radar">Radar</li>
+                    <li class="nav-item disabled" data-panel="position">Position 3D</li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <div class="status-block">
+                    <div class="status-row">
+                        <span>Link</span>
+                        <span id="link-status" class="status-dot disconnected"></span>
+                    </div>
+                    <div class="status-row">
+                        <span>IMU</span>
+                        <span id="imu-rate">— Hz</span>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <main id="viewport">
+            <div id="panel-imu" class="panel active">
+                <div class="panel-header">
+                    <h2>IMU — MPU-6500</h2>
+                </div>
+                <div class="imu-layout">
+                    <div class="imu-3d">
+                        <canvas id="imu-canvas"></canvas>
+                    </div>
+                    <div class="imu-data">
+                        <div class="data-group">
+                            <h3>Accelerometer (g)</h3>
+                            <div class="data-row"><span>X</span><span id="ax">—</span></div>
+                            <div class="data-row"><span>Y</span><span id="ay">—</span></div>
+                            <div class="data-row"><span>Z</span><span id="az">—</span></div>
+                        </div>
+                        <div class="data-group">
+                            <h3>Gyroscope (°/s)</h3>
+                            <div class="data-row"><span>X</span><span id="gx">—</span></div>
+                            <div class="data-row"><span>Y</span><span id="gy">—</span></div>
+                            <div class="data-row"><span>Z</span><span id="gz">—</span></div>
+                        </div>
+                        <div class="data-group">
+                            <h3>Orientation (°)</h3>
+                            <div class="data-row"><span>Roll</span><span id="roll">—</span></div>
+                            <div class="data-row"><span>Pitch</span><span id="pitch">—</span></div>
+                            <div class="data-row"><span>Yaw</span><span id="yaw">—</span></div>
+                        </div>
+                        <div class="data-group">
+                            <h3>Temperature</h3>
+                            <div class="data-row"><span>°C</span><span id="temp">—</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="/static/imu.js"></script>
+</body>
+</html>

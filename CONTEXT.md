@@ -106,12 +106,26 @@ with a simple framed binary protocol. Requirements:
 - TX power: TBD
 - Antenna polarization: co-pol initially
 
+## Wiring — MPU-6500 (I2C mode)
+
+| MPU-6500 Pin | Raspberry Pi | Notes |
+|---|---|---|
+| VIN | Pin 2 (5V) | Powers onboard regulator |
+| 3V3 | NC | Regulator output, leave unconnected |
+| GND | Pin 6 (GND) | Common ground |
+| SCL | Pin 5 (GPIO 3) | I2C1 clock |
+| SDA | Pin 3 (GPIO 2) | I2C1 data |
+| SDD/SAO | GND | I2C address = 0x68 |
+| NCS | Pin 1 (3.3V) | High = I2C mode |
+| CSB | Pin 1 (3.3V) | High = I2C mode |
+
 ## Current Status
 
 - [x] Project scaffolded
 - [x] Context documented
-- [ ] Hardware connections (next step)
-- [ ] Sensor drivers
+- [ ] Hardware connections (IMU wiring defined, not yet physical)
+- [x] IMU driver (MPU-6500 over I2C)
+- [ ] Other sensor drivers
 - [ ] BladeRF SFCW implementation
 - [ ] OptiFlow pipeline
 - [ ] Groundstation UI
