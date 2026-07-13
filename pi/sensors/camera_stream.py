@@ -109,16 +109,14 @@ class OptiFlow:
         self._last_time = time.time()
         self._frame_times = []
 
-    def process(self, frame):
+    def process(self, gray):
         now = time.time()
         self._frame_times.append(now)
-        # Keep last 30 frame times for FPS calculation
         self._frame_times = self._frame_times[-30:]
         if len(self._frame_times) > 1:
             elapsed = self._frame_times[-1] - self._frame_times[0]
             self.fps = (len(self._frame_times) - 1) / elapsed if elapsed > 0 else 0
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         self.frame_count += 1
 
         if self.prev_gray is None:
@@ -175,10 +173,8 @@ class OptiFlow:
         self.prev_gray = gray
         self.prev_pts = good_new.reshape(-1, 1, 2) if self.keypoint_count > 0 else None
 
-        if self.prev_pts is not None and len(self.prev_pts) < REDETECT_THRESHOLD:
-            new_pts = cv2.goodFeaturesToTrack(gray, **FEATURE_PARAMS)
-            if new_pts is not None:
-                self.prev_pts = new_pts
+    def reset_position(self):
+        self.position = np.array([0.0, 0.0])
 
     def get_state(self):
         return {
@@ -201,12 +197,18 @@ ws_clients = set()
 async def ws_handler(websocket):
     try:
         async for msg in websocket:
-            pass
+            try:
+                cmd = json.loads(msg)
+                if cmd.get("cmd") == "reset_origin":
+                    optiflow.reset_position()
+            except (json.JSONDecodeError, AttributeError):
+                pass
     except websockets.exceptions.ConnectionClosed:
         pass
 
 
 async def register(websocket):
+    global ws_clients
     ws_clients.add(websocket)
     try:
         await ws_handler(websocket)
@@ -215,6 +217,7 @@ async def register(websocket):
 
 
 async def broadcast_loop():
+    global ws_clients
     while True:
         await asyncio.sleep(1 / FRAMERATE)
         with state_lock:
@@ -241,9 +244,11 @@ def run_ws_server():
 
 
 def main():
+    global latest_state
+
     picam2 = Picamera2()
     config = picam2.create_video_configuration(
-        main={"size": RESOLUTION, "format": "RGB888"},
+        main={"size": RESOLUTION, "format": "YUV420p"},
         controls={"FrameRate": FRAMERATE},
     )
     picam2.configure(config)
@@ -267,9 +272,10 @@ def main():
     try:
         while True:
             frame = picam2.capture_array()
-            optiflow.process(frame)
+            gray = frame[:RESOLUTION[1], :RESOLUTION[0]]
+            optiflow.process(gray)
 
-            _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            _, jpeg = cv2.imencode('.jpg', gray, [cv2.IMWRITE_JPEG_QUALITY, 80])
             mjpeg_output.write(jpeg.tobytes())
 
             with state_lock:

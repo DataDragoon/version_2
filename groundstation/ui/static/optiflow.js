@@ -13,6 +13,12 @@
     let packetCount = 0;
     let rateInterval = null;
 
+    document.getElementById('of-reset-origin').addEventListener('click', () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ cmd: 'reset_origin' }));
+        }
+    });
+
     window.optiflowPanel = {
         start: function (ip) {
             if (streaming) return;

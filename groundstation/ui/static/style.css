@@ -370,3 +370,20 @@ body {
     gap: 16px;
     overflow-y: auto;
 }
+
+.btn-reset {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 12px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.btn-reset:hover {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+}
