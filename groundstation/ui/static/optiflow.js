@@ -64,6 +64,22 @@
         }
     };
 
+    // focal length in pixels: f_px = (diag_px / 2) / tan(dfov / 2)
+    // diag_px = sqrt(1920^2 + 1080^2) = 2203, dfov = 75deg
+    const F_PX = 1436;
+
+    function getLidarMm() {
+        const el = document.getElementById('lidar-dist-mm');
+        const val = parseFloat(el.textContent);
+        return isNaN(val) ? null : val;
+    }
+
+    function formatReal(mm) {
+        if (Math.abs(mm) >= 1000) return (mm / 1000).toFixed(3) + ' m';
+        if (Math.abs(mm) >= 10) return (mm / 10).toFixed(2) + ' cm';
+        return mm.toFixed(1) + ' mm';
+    }
+
     function updateStats(data) {
         document.getElementById('of-fps').textContent = data.fps;
         document.getElementById('of-keypoints').textContent = data.keypoints;
@@ -72,23 +88,44 @@
         document.getElementById('of-pos-x').textContent = data.position[0].toFixed(1);
         document.getElementById('of-pos-y').textContent = data.position[1].toFixed(1);
         document.getElementById('of-frame').textContent = data.frame;
+
+        const distMm = getLidarMm();
+        if (distMm !== null) {
+            const mmPerPx = distMm / F_PX;
+            const realX = data.position[0] * mmPerPx;
+            const realY = data.position[1] * mmPerPx;
+            document.getElementById('of-real-x').textContent = formatReal(realX);
+            document.getElementById('of-real-y').textContent = formatReal(realY);
+            document.getElementById('of-height').textContent = formatReal(distMm);
+        } else {
+            document.getElementById('of-real-x').textContent = 'no LiDAR';
+            document.getElementById('of-real-y').textContent = 'no LiDAR';
+            document.getElementById('of-height').textContent = '—';
+        }
     }
 
     function resetStats() {
-        ['of-fps', 'of-keypoints', 'of-dx', 'of-dy', 'of-pos-x', 'of-pos-y', 'of-frame']
+        ['of-fps', 'of-keypoints', 'of-dx', 'of-dy', 'of-pos-x', 'of-pos-y', 'of-frame',
+         'of-real-x', 'of-real-y', 'of-height']
             .forEach(id => { document.getElementById(id).textContent = '—'; });
     }
 
     function resizeOverlay() {
-        const rect = feed.getBoundingClientRect();
-        overlay.width = rect.width;
-        overlay.height = rect.height;
+        const containerRect = feed.parentElement.getBoundingClientRect();
+        const natW = feed.naturalWidth || 1920;
+        const natH = feed.naturalHeight || 1080;
+        const scale = Math.min(containerRect.width / natW, containerRect.height / natH);
+        const w = natW * scale;
+        const h = natH * scale;
+        overlay.width = w;
+        overlay.height = h;
+        overlay.style.width = w + 'px';
+        overlay.style.height = h + 'px';
+        overlay.style.left = ((containerRect.width - w) / 2) + 'px';
+        overlay.style.top = ((containerRect.height - h) / 2) + 'px';
     }
 
-    feed.addEventListener('load', function onFirst() {
-        resizeOverlay();
-        feed.removeEventListener('load', onFirst);
-    });
+    feed.addEventListener('load', resizeOverlay);
     window.addEventListener('resize', resizeOverlay);
 
     function drawOverlay(data) {
@@ -100,8 +137,10 @@
 
         ctx.clearRect(0, 0, overlay.width, overlay.height);
 
-        const scaleX = overlay.width / 1920;
-        const scaleY = overlay.height / 1080;
+        const natW = feed.naturalWidth || 1920;
+        const natH = feed.naturalHeight || 1080;
+        const scaleX = overlay.width / natW;
+        const scaleY = overlay.height / natH;
         const vectorScale = 5;
 
         ctx.strokeStyle = '#4aff8a';

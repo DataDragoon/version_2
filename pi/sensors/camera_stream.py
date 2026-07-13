@@ -248,7 +248,7 @@ def main():
 
     picam2 = Picamera2()
     config = picam2.create_video_configuration(
-        main={"size": RESOLUTION, "format": "YUV420p"},
+        main={"size": RESOLUTION, "format": "YUV420"},
         controls={"FrameRate": FRAMERATE},
     )
     picam2.configure(config)
