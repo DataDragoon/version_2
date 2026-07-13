@@ -96,17 +96,15 @@
             const realY = data.position[1] * mmPerPx;
             document.getElementById('of-real-x').textContent = formatReal(realX);
             document.getElementById('of-real-y').textContent = formatReal(realY);
-            document.getElementById('of-height').textContent = formatReal(distMm);
         } else {
             document.getElementById('of-real-x').textContent = 'no LiDAR';
             document.getElementById('of-real-y').textContent = 'no LiDAR';
-            document.getElementById('of-height').textContent = '—';
         }
     }
 
     function resetStats() {
         ['of-fps', 'of-keypoints', 'of-dx', 'of-dy', 'of-pos-x', 'of-pos-y', 'of-frame',
-         'of-real-x', 'of-real-y', 'of-height']
+         'of-real-x', 'of-real-y']
             .forEach(id => { document.getElementById(id).textContent = '—'; });
     }
 

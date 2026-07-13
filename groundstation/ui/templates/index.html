@@ -32,7 +32,7 @@
             <div class="nav-section">
                 <h2>Debug</h2>
                 <ul>
-                    <li class="nav-item active" data-panel="sensors">IMU + LiDAR</li>
+                    <li class="nav-item active" data-panel="sensors">IMU</li>
                     <li class="nav-item" data-panel="optiflow">OptiFlow</li>
                     <li class="nav-item disabled" data-panel="radar">Radar</li>
                     <li class="nav-item disabled" data-panel="position">Position 3D</li>
@@ -60,7 +60,7 @@
         <main id="viewport">
             <div id="panel-sensors" class="panel active">
                 <div class="panel-header">
-                    <h2>IMU + LiDAR</h2>
+                    <h2>IMU</h2>
                 </div>
                 <div class="imu-layout">
                     <div class="imu-3d">
@@ -88,11 +88,6 @@
                         <div class="data-group">
                             <h3>Temperature</h3>
                             <div class="data-row"><span>°C</span><span id="temp">—</span></div>
-                        </div>
-                        <div class="data-group lidar-group">
-                            <h3>LiDAR</h3>
-                            <div class="lidar-value"><span id="lidar-dist-cm">—</span><span class="lidar-unit">cm</span></div>
-                            <div class="lidar-sub"><span id="lidar-dist-mm">—</span> mm</div>
                         </div>
                     </div>
                 </div>
@@ -131,7 +126,11 @@
                             <h3>Position (real)</h3>
                             <div class="data-row"><span>X</span><span id="of-real-x">—</span></div>
                             <div class="data-row"><span>Y</span><span id="of-real-y">—</span></div>
-                            <div class="data-row"><span>Height</span><span id="of-height">—</span></div>
+                        </div>
+                        <div class="data-group lidar-group">
+                            <h3>LiDAR</h3>
+                            <div class="lidar-value"><span id="lidar-dist-cm">—</span><span class="lidar-unit">cm</span></div>
+                            <div class="lidar-sub"><span id="lidar-dist-mm">—</span> mm</div>
                         </div>
                         <div class="data-group">
                             <button id="of-reset-origin" class="btn-reset">Reset Origin</button>
