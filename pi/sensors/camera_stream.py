@@ -238,7 +238,7 @@ async def broadcast_loop():
                 await client.send(msg)
             except websockets.exceptions.ConnectionClosed:
                 dead.add(client)
-        ws_clients -= dead
+        ws_clients.difference_update(dead)
 
 
 async def ws_main():
