@@ -33,8 +33,7 @@
                 <h2>Debug</h2>
                 <ul>
                     <li class="nav-item active" data-panel="sensors">IMU + LiDAR</li>
-                    <li class="nav-item" data-panel="camera">Camera</li>
-                    <li class="nav-item disabled" data-panel="optiflow">OptiFlow</li>
+                    <li class="nav-item" data-panel="optiflow">OptiFlow</li>
                     <li class="nav-item disabled" data-panel="radar">Radar</li>
                     <li class="nav-item disabled" data-panel="position">Position 3D</li>
                 </ul>
@@ -51,8 +50,8 @@
                         <span id="imu-rate">— Hz</span>
                     </div>
                     <div class="status-row">
-                        <span>Camera</span>
-                        <span id="cam-rate">— fps</span>
+                        <span>OptiFlow</span>
+                        <span id="flow-rate">— Hz</span>
                     </div>
                 </div>
             </div>
@@ -98,23 +97,42 @@
                     </div>
                 </div>
             </div>
-            <div id="panel-camera" class="panel">
+
+            <div id="panel-optiflow" class="panel">
                 <div class="panel-header">
-                    <h2>Camera</h2>
+                    <h2>OptiFlow</h2>
                 </div>
-                <div class="camera-layout">
-                    <div class="camera-viewport">
-                        <img id="camera-feed" alt="Camera feed">
-                        <div class="camera-overlay">
-                            <span id="camera-status" class="camera-status">Disconnected</span>
+                <div class="optiflow-layout">
+                    <div class="optiflow-viewport">
+                        <img id="optiflow-feed" alt="Camera feed">
+                        <canvas id="optiflow-overlay"></canvas>
+                        <div class="optiflow-hud">
+                            <span id="optiflow-status" class="camera-status">Disconnected</span>
                         </div>
                     </div>
-                    <div class="camera-info">
+                    <div class="optiflow-sidebar">
+                        <div class="data-group">
+                            <h3>FOV Mode</h3>
+                            <div class="fov-toggle">
+                                <button id="fov-standard" class="fov-btn active">Standard</button>
+                                <button id="fov-wide" class="fov-btn">Wide</button>
+                            </div>
+                        </div>
+                        <div class="data-group">
+                            <h3>Flow</h3>
+                            <div class="data-row"><span>Keypoints</span><span id="of-keypoints">—</span></div>
+                            <div class="data-row"><span>dX (px)</span><span id="of-dx">—</span></div>
+                            <div class="data-row"><span>dY (px)</span><span id="of-dy">—</span></div>
+                        </div>
+                        <div class="data-group">
+                            <h3>Position (px)</h3>
+                            <div class="data-row"><span>X</span><span id="of-pos-x">—</span></div>
+                            <div class="data-row"><span>Y</span><span id="of-pos-y">—</span></div>
+                        </div>
                         <div class="data-group">
                             <h3>Stream</h3>
-                            <div class="data-row"><span>Status</span><span id="camera-link">Off</span></div>
-                            <div class="data-row"><span>FPS</span><span id="camera-fps">—</span></div>
-                            <div class="data-row"><span>Resolution</span><span id="camera-res">—</span></div>
+                            <div class="data-row"><span>Frame</span><span id="of-frame">—</span></div>
+                            <div class="data-row"><span>FOV</span><span id="of-fov">—</span></div>
                         </div>
                     </div>
                 </div>
@@ -124,6 +142,6 @@
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="/static/sensors.js"></script>
-    <script src="/static/camera.js"></script>
+    <script src="/static/optiflow.js"></script>
 </body>
 </html>

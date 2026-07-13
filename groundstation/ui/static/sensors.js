@@ -58,8 +58,7 @@
                 document.getElementById('imu-rate').textContent = packetCount + ' Hz';
                 packetCount = 0;
             }, 1000);
-            // Start camera stream
-            if (window.cameraPanel) window.cameraPanel.start(piIp);
+            if (window.optiflowPanel) window.optiflowPanel.start(piIp);
         };
 
         ws.onmessage = (event) => {
@@ -76,7 +75,7 @@
             document.getElementById('link-status').classList.add('disconnected');
             document.getElementById('imu-rate').textContent = '— Hz';
             if (rateInterval) { clearInterval(rateInterval); rateInterval = null; }
-            if (window.cameraPanel) window.cameraPanel.stop();
+            if (window.optiflowPanel) window.optiflowPanel.stop();
         };
 
         ws.onerror = () => {

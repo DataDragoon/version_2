@@ -143,7 +143,8 @@ UART enabled via `raspi-config`, serial console disabled. Device: `/dev/serial0`
 | Service | Port | Protocol | Direction |
 |---------|------|----------|-----------|
 | Sensor stream (IMU + LiDAR) | 9001 | WebSocket | Pi → Browser |
-| Camera stream (MJPEG) | 8080 | HTTP | Pi → Browser |
+| OptiFlow MJPEG (camera feed) | 8080 | HTTP | Pi → Browser |
+| OptiFlow data (vectors, position) | 9002 | WebSocket | Pi → Browser |
 | Groundstation UI | 5000 | HTTP | PC local |
 
 ## Current Status
@@ -154,9 +155,9 @@ UART enabled via `raspi-config`, serial console disabled. Device: `/dev/serial0`
 - [x] IMU driver (MPU-6500 over I2C)
 - [x] LiDAR driver (TF-LC02 over UART)
 - [x] Combined sensor WebSocket stream (port 9001)
-- [x] Camera MJPEG stream (port 8080, picamera2)
+- [x] OptiFlow: camera + sparse LK optical flow (port 8080 MJPEG + port 9002 WS)
 - [x] Groundstation UI — IMU + LiDAR debug panel
-- [x] Groundstation UI — Camera debug panel
+- [x] Groundstation UI — OptiFlow debug panel (live feed + vector overlay + FOV toggle)
 - [ ] BladeRF SFCW implementation
 - [ ] OptiFlow pipeline
 - [ ] Network protocol (formal)
