@@ -22,20 +22,20 @@ import websockets
 
 MJPEG_PORT = 8080
 WS_PORT = 9002
-RESOLUTION = (1920, 1080)
-FRAMERATE = 30
+RESOLUTION = (1536, 864)
+FRAMERATE = 60
 FOCAL_MM = 4.74
 
 LK_PARAMS = dict(
-    winSize=(21, 21),
-    maxLevel=3,
-    criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+    winSize=(15, 15),
+    maxLevel=2,
+    criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.01),
 )
 
 FEATURE_PARAMS = dict(
-    maxCorners=200,
-    qualityLevel=0.05,
-    minDistance=20,
+    maxCorners=150,
+    qualityLevel=0.1,
+    minDistance=15,
     blockSize=7,
 )
 
@@ -151,27 +151,42 @@ class OptiFlow:
 
         if self.keypoint_count > 0:
             flow = good_new - good_old
-            self.mean_flow = (float(np.median(flow[:, 0])), float(np.median(flow[:, 1])))
 
-            step = max(1, len(good_old) // 50)
-            self.flow_vectors = [
-                {
-                    "x": float(good_old[i][0]),
-                    "y": float(good_old[i][1]),
-                    "dx": float(flow[i][0]),
-                    "dy": float(flow[i][1]),
-                }
-                for i in range(0, len(good_old), step)
-            ]
+            # Outlier rejection: discard vectors > 2x median magnitude
+            mag = np.sqrt(flow[:, 0] ** 2 + flow[:, 1] ** 2)
+            med_mag = np.median(mag)
+            inlier_mask = mag < max(med_mag * 2.5, 1.0)
 
-            self.position[0] += self.mean_flow[0]
-            self.position[1] += self.mean_flow[1]
+            good_old = good_old[inlier_mask]
+            good_new = good_new[inlier_mask]
+            flow = flow[inlier_mask]
+            self.keypoint_count = len(good_new)
+
+            if self.keypoint_count > 0:
+                self.mean_flow = (float(np.median(flow[:, 0])), float(np.median(flow[:, 1])))
+
+                step = max(1, len(good_old) // 50)
+                self.flow_vectors = [
+                    {
+                        "x": float(good_old[i][0]),
+                        "y": float(good_old[i][1]),
+                        "dx": float(flow[i][0]),
+                        "dy": float(flow[i][1]),
+                    }
+                    for i in range(0, len(good_old), step)
+                ]
+
+                self.position[0] += self.mean_flow[0]
+                self.position[1] += self.mean_flow[1]
+            else:
+                self.mean_flow = (0.0, 0.0)
+                self.flow_vectors = []
         else:
             self.mean_flow = (0.0, 0.0)
             self.flow_vectors = []
 
         self.prev_gray = gray
-        self.prev_pts = good_new.reshape(-1, 1, 2) if self.keypoint_count > 0 else None
+        self.prev_pts = good_new.reshape(-1, 1, 2) if len(good_new) > 0 else None
 
     def reset_position(self):
         self.position = np.array([0.0, 0.0])

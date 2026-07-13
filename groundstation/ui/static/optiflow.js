@@ -65,8 +65,8 @@
     };
 
     // focal length in pixels: f_px = (diag_px / 2) / tan(dfov / 2)
-    // diag_px = sqrt(1920^2 + 1080^2) = 2203, dfov = 75deg
-    const F_PX = 1436;
+    // diag_px = sqrt(1536^2 + 864^2) = 1762.5, dfov = 75deg
+    const F_PX = 1148;
 
     function getLidarMm() {
         const el = document.getElementById('lidar-dist-mm');
