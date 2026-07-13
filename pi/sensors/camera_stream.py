@@ -3,9 +3,9 @@
 Serves:
   - MJPEG stream on HTTP port 8080 (/stream, /snapshot)
   - Flow vector data on WebSocket port 9002 (JSON)
-  - FOV control via WebSocket command {"cmd": "set_fov", "fov": "standard"|"wide"}
 
-Camera: Pi NoIR v3 (IMX708), mounted upside down (rotation handled on groundstation).
+Camera: Pi NoIR v3 (IMX708), standard lens (4.74mm f/1.8).
+Mounted upside down (rotation handled on groundstation).
 """
 
 import io
@@ -20,15 +20,11 @@ import numpy as np
 from picamera2 import Picamera2
 import websockets
 
-# --- Configuration ---
 MJPEG_PORT = 8080
 WS_PORT = 9002
+RESOLUTION = (1920, 1080)
 FRAMERATE = 30
-
-FOV_MODES = {
-    "standard": {"size": (1920, 1080), "focal_mm": 4.74},
-    "wide": {"size": (1920, 1080), "focal_mm": 2.75},
-}
+FOCAL_MM = 4.74
 
 LK_PARAMS = dict(
     winSize=(21, 21),
@@ -46,7 +42,6 @@ FEATURE_PARAMS = dict(
 REDETECT_THRESHOLD = 50
 
 
-# --- MJPEG streaming ---
 class StreamingOutput(io.BufferedIOBase):
     def __init__(self):
         self.frame = None
@@ -101,7 +96,6 @@ class MJPEGHandler(BaseHTTPRequestHandler):
         pass
 
 
-# --- OptiFlow engine ---
 class OptiFlow:
     def __init__(self):
         self.prev_gray = None
@@ -111,10 +105,19 @@ class OptiFlow:
         self.keypoint_count = 0
         self.flow_vectors = []
         self.mean_flow = (0.0, 0.0)
-        self.fov_mode = "standard"
-        self.focal_mm = FOV_MODES["standard"]["focal_mm"]
+        self.fps = 0.0
+        self._last_time = time.time()
+        self._frame_times = []
 
     def process(self, frame):
+        now = time.time()
+        self._frame_times.append(now)
+        # Keep last 30 frame times for FPS calculation
+        self._frame_times = self._frame_times[-30:]
+        if len(self._frame_times) > 1:
+            elapsed = self._frame_times[-1] - self._frame_times[0]
+            self.fps = (len(self._frame_times) - 1) / elapsed if elapsed > 0 else 0
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         self.frame_count += 1
 
@@ -184,36 +187,23 @@ class OptiFlow:
             "position": [float(self.position[0]), float(self.position[1])],
             "vectors": self.flow_vectors,
             "frame": self.frame_count,
-            "fov": self.fov_mode,
+            "fps": round(self.fps, 1),
             "timestamp": time.time(),
         }
 
 
-# --- Globals ---
 optiflow = OptiFlow()
 latest_state = None
 state_lock = threading.Lock()
-fov_change_requested = None
-fov_lock = threading.Lock()
+ws_clients = set()
 
 
-# --- WebSocket server (runs in its own thread with its own event loop) ---
 async def ws_handler(websocket):
-    global fov_change_requested
     try:
         async for msg in websocket:
-            try:
-                cmd = json.loads(msg)
-                if cmd.get("cmd") == "set_fov":
-                    with fov_lock:
-                        fov_change_requested = cmd.get("fov", "standard")
-            except json.JSONDecodeError:
-                pass
+            pass
     except websockets.exceptions.ConnectionClosed:
         pass
-
-
-ws_clients = set()
 
 
 async def register(websocket):
@@ -238,7 +228,7 @@ async def broadcast_loop():
                 await client.send(msg)
             except websockets.exceptions.ConnectionClosed:
                 dead.add(client)
-        ws_clients.difference_update(dead)
+        ws_clients -= dead
 
 
 async def ws_main():
@@ -250,16 +240,10 @@ def run_ws_server():
     asyncio.run(ws_main())
 
 
-# --- Main capture + processing loop ---
 def main():
-    global latest_state, fov_change_requested
-
-    current_fov = "standard"
-    mode = FOV_MODES[current_fov]
-
     picam2 = Picamera2()
     config = picam2.create_video_configuration(
-        main={"size": mode["size"], "format": "RGB888"},
+        main={"size": RESOLUTION, "format": "RGB888"},
         controls={"FrameRate": FRAMERATE},
     )
     picam2.configure(config)
@@ -278,30 +262,10 @@ def main():
     print(f"OptiFlow running:")
     print(f"  MJPEG:  http://0.0.0.0:{MJPEG_PORT}/stream")
     print(f"  WS:     ws://0.0.0.0:{WS_PORT}")
-    print(f"  FOV:    {current_fov} ({mode['size'][0]}x{mode['size'][1]} @ {FRAMERATE}fps)")
+    print(f"  {RESOLUTION[0]}x{RESOLUTION[1]} @ {FRAMERATE}fps, focal {FOCAL_MM}mm")
 
     try:
         while True:
-            with fov_lock:
-                requested = fov_change_requested
-                fov_change_requested = None
-
-            if requested and requested != current_fov and requested in FOV_MODES:
-                print(f"  Switching FOV: {current_fov} -> {requested}")
-                picam2.stop()
-                current_fov = requested
-                mode = FOV_MODES[current_fov]
-                config = picam2.create_video_configuration(
-                    main={"size": mode["size"], "format": "RGB888"},
-                    controls={"FrameRate": FRAMERATE},
-                )
-                picam2.configure(config)
-                picam2.start()
-                optiflow.fov_mode = current_fov
-                optiflow.focal_mm = mode["focal_mm"]
-                optiflow.prev_gray = None
-                optiflow.prev_pts = None
-
             frame = picam2.capture_array()
             optiflow.process(frame)
 

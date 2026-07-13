@@ -370,32 +370,3 @@ body {
     gap: 16px;
     overflow-y: auto;
 }
-
-.fov-toggle {
-    display: flex;
-    gap: 4px;
-}
-
-.fov-btn {
-    flex: 1;
-    padding: 6px 8px;
-    font-family: inherit;
-    font-size: 10px;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--bg);
-    color: var(--text-dim);
-    cursor: pointer;
-    transition: all 0.15s;
-}
-
-.fov-btn:hover {
-    border-color: var(--accent);
-    color: var(--text);
-}
-
-.fov-btn.active {
-    background: var(--accent-dim);
-    border-color: var(--accent);
-    color: var(--text);
-}
