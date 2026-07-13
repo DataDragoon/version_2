@@ -143,8 +143,8 @@ class OptiFlow:
             return
 
         good_mask = status.flatten() == 1
-        good_old = self.prev_pts[good_mask]
-        good_new = next_pts[good_mask]
+        good_old = self.prev_pts[good_mask].reshape(-1, 2)
+        good_new = next_pts[good_mask].reshape(-1, 2)
 
         self.keypoint_count = len(good_new)
 
@@ -198,7 +198,7 @@ fov_lock = threading.Lock()
 
 
 # --- WebSocket server (runs in its own thread with its own event loop) ---
-async def ws_handler(websocket, path=None):
+async def ws_handler(websocket):
     global fov_change_requested
     try:
         async for msg in websocket:
@@ -216,10 +216,10 @@ async def ws_handler(websocket, path=None):
 ws_clients = set()
 
 
-async def register(websocket, path=None):
+async def register(websocket):
     ws_clients.add(websocket)
     try:
-        await ws_handler(websocket, path)
+        await ws_handler(websocket)
     finally:
         ws_clients.discard(websocket)
 
@@ -241,13 +241,13 @@ async def broadcast_loop():
         ws_clients -= dead
 
 
+async def ws_main():
+    async with websockets.serve(register, "0.0.0.0", WS_PORT):
+        await broadcast_loop()
+
+
 def run_ws_server():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    start_server = websockets.serve(register, "0.0.0.0", WS_PORT)
-    loop.run_until_complete(start_server)
-    loop.create_task(broadcast_loop())
-    loop.run_forever()
+    asyncio.run(ws_main())
 
 
 # --- Main capture + processing loop ---
