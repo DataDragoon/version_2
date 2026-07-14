@@ -33,6 +33,7 @@
                 <h2>Debug</h2>
                 <ul>
                     <li class="nav-item active" data-panel="sensors">IMU</li>
+                    <li class="nav-item" data-panel="imu-cal">IMU Calibration</li>
                     <li class="nav-item" data-panel="optiflow">OptiFlow</li>
                     <li class="nav-item disabled" data-panel="radar">Radar</li>
                     <li class="nav-item disabled" data-panel="position">Position 3D</li>
@@ -93,6 +94,48 @@
                 </div>
             </div>
 
+            <div id="panel-imu-cal" class="panel">
+                <div class="panel-header">
+                    <h2>IMU Calibration</h2>
+                </div>
+                <div class="cal-layout">
+                    <div class="cal-main">
+                        <div class="cal-step-card">
+                            <h3 id="cal-step-title">Step 1/4: Hold Still — Level</h3>
+                            <p id="cal-step-instruction">Place the unit in its normal operating position...</p>
+                            <div class="cal-controls">
+                                <button id="cal-start-btn" class="btn-cal">Start Capture</button>
+                                <button id="cal-reset-btn" class="btn-cal btn-secondary">Reset</button>
+                            </div>
+                            <div class="cal-progress-bar">
+                                <div id="cal-progress" class="cal-progress-fill"></div>
+                            </div>
+                            <div id="cal-status" class="cal-status">Ready</div>
+                        </div>
+
+                        <div id="cal-output" class="cal-output" style="display:none">
+                            <pre id="cal-output-text"></pre>
+                            <button id="cal-copy-btn" class="btn-cal">Copy to Clipboard</button>
+                        </div>
+                    </div>
+
+                    <div class="cal-bars">
+                        <div class="data-group">
+                            <h3>Accelerometer (live)</h3>
+                            <div class="bar-row"><span class="bar-label">X</span><div class="bar-track"><div id="cal-abar-x" class="bar-fill"></div></div><span id="cal-aval-x" class="bar-value">—</span></div>
+                            <div class="bar-row"><span class="bar-label">Y</span><div class="bar-track"><div id="cal-abar-y" class="bar-fill"></div></div><span id="cal-aval-y" class="bar-value">—</span></div>
+                            <div class="bar-row"><span class="bar-label">Z</span><div class="bar-track"><div id="cal-abar-z" class="bar-fill"></div></div><span id="cal-aval-z" class="bar-value">—</span></div>
+                        </div>
+                        <div class="data-group">
+                            <h3>Gyroscope (live)</h3>
+                            <div class="bar-row"><span class="bar-label">X</span><div class="bar-track"><div id="cal-gbar-x" class="bar-fill"></div></div><span id="cal-gval-x" class="bar-value">—</span></div>
+                            <div class="bar-row"><span class="bar-label">Y</span><div class="bar-track"><div id="cal-gbar-y" class="bar-fill"></div></div><span id="cal-gval-y" class="bar-value">—</span></div>
+                            <div class="bar-row"><span class="bar-label">Z</span><div class="bar-track"><div id="cal-gbar-z" class="bar-fill"></div></div><span id="cal-gval-z" class="bar-value">—</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div id="panel-optiflow" class="panel">
                 <div class="panel-header">
                     <h2>OptiFlow</h2>
@@ -142,6 +185,7 @@
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="/static/imu_cal.js"></script>
     <script src="/static/sensors.js"></script>
     <script src="/static/optiflow.js"></script>
 </body>

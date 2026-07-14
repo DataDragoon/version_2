@@ -66,6 +66,7 @@
             packetCount++;
             updateDisplay(data);
             updateOrientation(data);
+            if (window.imuCalUpdate) window.imuCalUpdate(data);
         };
 
         ws.onclose = () => {
