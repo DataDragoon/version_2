@@ -1,4 +1,4 @@
-"""OptiFlow — camera + sparse Lucas-Kanade optical flow.
+"""OptiFlow — camera + sparse Lucas-Kanade optical flow with gyro compensation.
 
 Serves:
   - MJPEG stream on HTTP port 8080 (/stream, /snapshot)
@@ -9,6 +9,7 @@ Mounted upside down (rotation handled on groundstation).
 """
 
 import io
+import os
 import json
 import time
 import asyncio
@@ -20,11 +21,18 @@ import numpy as np
 from picamera2 import Picamera2
 import websockets
 
+from mpu6500 import MPU6500
+from imu_calibration import CalibratedIMU
+
 MJPEG_PORT = 8080
 WS_PORT = 9002
 RESOLUTION = (1536, 864)
 FRAMERATE = 60
 FOCAL_MM = 4.74
+
+# Focal length in pixels (for gyro → pixel conversion)
+# f_px = (diag_px / 2) / tan(dfov / 2), dfov=75deg
+F_PX = 1148.0
 
 LK_PARAMS = dict(
     winSize=(15, 15),
@@ -40,6 +48,59 @@ FEATURE_PARAMS = dict(
 )
 
 REDETECT_THRESHOLD = 50
+
+
+class GyroAccumulator:
+    """Reads IMU at high rate in a thread, accumulates rotation between consume() calls."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._accumulated = np.array([0.0, 0.0, 0.0])  # [roll, pitch, yaw] in degrees
+        self._running = False
+        self._thread = None
+        self._imu = None
+
+    def start(self):
+        from imu_calibration import CONFIG_PATH
+        # Wait for stream.py to finish calibration and write the config
+        print("GyroAccumulator: waiting for IMU calibration file...")
+        for _ in range(50):  # up to 5 seconds
+            if os.path.exists(CONFIG_PATH):
+                break
+            time.sleep(0.1)
+        raw_imu = MPU6500()
+        self._imu = CalibratedIMU(raw_imu, auto_calibrate=False)
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        print("GyroAccumulator: running")
+
+    def _loop(self):
+        last_t = time.monotonic()
+        while self._running:
+            data = self._imu.read_body()
+            now = time.monotonic()
+            dt = now - last_t
+            last_t = now
+            if 0 < dt < 0.1:
+                gyro = data['gyro']  # [roll, pitch, yaw] deg/s
+                with self._lock:
+                    self._accumulated += gyro * dt
+            time.sleep(0.002)  # ~500Hz sampling
+
+    def consume(self):
+        """Return accumulated rotation since last consume() and reset."""
+        with self._lock:
+            val = self._accumulated.copy()
+            self._accumulated[:] = 0.0
+        return val  # [roll_deg, pitch_deg, yaw_deg]
+
+    def stop(self):
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=1)
+        if self._imu:
+            self._imu.close()
 
 
 class StreamingOutput(io.BufferedIOBase):
@@ -105,11 +166,14 @@ class OptiFlow:
         self.keypoint_count = 0
         self.flow_vectors = []
         self.mean_flow = (0.0, 0.0)
+        self.gyro_comp_px = (0.0, 0.0)
+        self.gyro_comp_enabled = True
         self.fps = 0.0
         self._last_time = time.time()
         self._frame_times = []
 
-    def process(self, gray):
+    def process(self, gray, gyro_rotation_deg=None):
+        """Process a frame. gyro_rotation_deg is [roll, pitch, yaw] accumulated since last frame."""
         now = time.time()
         self._frame_times.append(now)
         self._frame_times = self._frame_times[-30:]
@@ -118,6 +182,26 @@ class OptiFlow:
             self.fps = (len(self._frame_times) - 1) / elapsed if elapsed > 0 else 0
 
         self.frame_count += 1
+
+        # Convert gyro rotation to expected pixel shift
+        # Camera looks along body X (forward). Image plane is Y (left) and Z (up).
+        # Yaw (around up/Z) rotates image horizontally: positive yaw right → scene shifts left in image
+        # Pitch (around left/Y) rotates image vertically: positive pitch up → scene shifts down in image
+        # Roll (around forward/X) rotates image around center (ignored for translation compensation)
+        #
+        # pixel_shift_x = yaw_deg * f_px * (pi/180)   (positive yaw right → positive pixel shift right)
+        # pixel_shift_y = -pitch_deg * f_px * (pi/180) (positive pitch up → negative pixel shift in Y)
+        #
+        # Camera is mounted upside down, so image coords are flipped:
+        #   pixel_shift_x = -yaw_deg * f_px * DEG2RAD
+        #   pixel_shift_y = pitch_deg * f_px * DEG2RAD
+        gyro_px = np.array([0.0, 0.0])
+        if gyro_rotation_deg is not None and self.gyro_comp_enabled:
+            roll_deg, pitch_deg, yaw_deg = gyro_rotation_deg
+            deg2rad = np.pi / 180.0
+            gyro_px[0] = -yaw_deg * F_PX * deg2rad
+            gyro_px[1] = pitch_deg * F_PX * deg2rad
+        self.gyro_comp_px = (float(gyro_px[0]), float(gyro_px[1]))
 
         if self.prev_gray is None:
             self.prev_gray = gray
@@ -152,26 +236,33 @@ class OptiFlow:
         if self.keypoint_count > 0:
             flow = good_new - good_old
 
-            # Outlier rejection: discard vectors > 2x median magnitude
-            mag = np.sqrt(flow[:, 0] ** 2 + flow[:, 1] ** 2)
+            # Subtract gyro-predicted rotation from flow → residual is translation
+            flow_compensated = flow - gyro_px
+
+            # Outlier rejection on compensated flow
+            mag = np.sqrt(flow_compensated[:, 0] ** 2 + flow_compensated[:, 1] ** 2)
             med_mag = np.median(mag)
             inlier_mask = mag < max(med_mag * 2.5, 1.0)
 
             good_old = good_old[inlier_mask]
             good_new = good_new[inlier_mask]
             flow = flow[inlier_mask]
+            flow_compensated = flow_compensated[inlier_mask]
             self.keypoint_count = len(good_new)
 
             if self.keypoint_count > 0:
-                self.mean_flow = (float(np.median(flow[:, 0])), float(np.median(flow[:, 1])))
+                self.mean_flow = (
+                    float(np.median(flow_compensated[:, 0])),
+                    float(np.median(flow_compensated[:, 1])),
+                )
 
                 step = max(1, len(good_old) // 50)
                 self.flow_vectors = [
                     {
                         "x": float(good_old[i][0]),
                         "y": float(good_old[i][1]),
-                        "dx": float(flow[i][0]),
-                        "dy": float(flow[i][1]),
+                        "dx": float(flow_compensated[i][0]),
+                        "dy": float(flow_compensated[i][1]),
                     }
                     for i in range(0, len(good_old), step)
                 ]
@@ -199,6 +290,8 @@ class OptiFlow:
             "vectors": self.flow_vectors,
             "frame": self.frame_count,
             "fps": round(self.fps, 1),
+            "gyro_comp": self.gyro_comp_enabled,
+            "gyro_px": self.gyro_comp_px,
             "timestamp": time.time(),
         }
 
@@ -216,6 +309,8 @@ async def ws_handler(websocket):
                 cmd = json.loads(msg)
                 if cmd.get("cmd") == "reset_origin":
                     optiflow.reset_position()
+                elif cmd.get("cmd") == "gyro_comp":
+                    optiflow.gyro_comp_enabled = bool(cmd.get("enabled", True))
             except (json.JSONDecodeError, AttributeError):
                 pass
     except websockets.exceptions.ConnectionClosed:
@@ -261,6 +356,9 @@ def run_ws_server():
 def main():
     global latest_state
 
+    gyro = GyroAccumulator()
+    gyro.start()
+
     picam2 = Picamera2()
     config = picam2.create_video_configuration(
         main={"size": RESOLUTION, "format": "YUV420"},
@@ -283,12 +381,15 @@ def main():
     print(f"  MJPEG:  http://0.0.0.0:{MJPEG_PORT}/stream")
     print(f"  WS:     ws://0.0.0.0:{WS_PORT}")
     print(f"  {RESOLUTION[0]}x{RESOLUTION[1]} @ {FRAMERATE}fps, focal {FOCAL_MM}mm")
+    print(f"  Gyro compensation: enabled")
 
     try:
         while True:
             frame = picam2.capture_array()
             gray = frame[:RESOLUTION[1], :RESOLUTION[0]]
-            optiflow.process(gray)
+
+            rotation = gyro.consume()
+            optiflow.process(gray, gyro_rotation_deg=rotation)
 
             _, jpeg = cv2.imencode('.jpg', gray, [cv2.IMWRITE_JPEG_QUALITY, 80])
             mjpeg_output.write(jpeg.tobytes())
@@ -299,6 +400,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        gyro.stop()
         picam2.stop()
         picam2.close()
         http_server.shutdown()

@@ -19,6 +19,16 @@
         }
     });
 
+    const gyroToggle = document.getElementById('of-gyro-toggle');
+    const gyroLabel = document.getElementById('of-gyro-label');
+    gyroToggle.addEventListener('change', () => {
+        const enabled = gyroToggle.checked;
+        gyroLabel.textContent = enabled ? 'ON' : 'OFF';
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ cmd: 'gyro_comp', enabled }));
+        }
+    });
+
     window.optiflowPanel = {
         start: function (ip) {
             if (streaming) return;
@@ -88,6 +98,17 @@
         document.getElementById('of-pos-x').textContent = data.position[0].toFixed(1);
         document.getElementById('of-pos-y').textContent = data.position[1].toFixed(1);
         document.getElementById('of-frame').textContent = data.frame;
+
+        if (data.gyro_px) {
+            const gx = data.gyro_px[0], gy = data.gyro_px[1];
+            document.getElementById('of-gyro-px').textContent =
+                gx.toFixed(2) + ', ' + gy.toFixed(2) + ' px';
+        }
+
+        if (data.gyro_comp !== undefined) {
+            gyroToggle.checked = data.gyro_comp;
+            gyroLabel.textContent = data.gyro_comp ? 'ON' : 'OFF';
+        }
 
         const distMm = getLidarMm();
         if (distMm !== null) {
