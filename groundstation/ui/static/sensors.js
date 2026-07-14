@@ -169,19 +169,20 @@
     resize();
 
     // --- Orientation estimation (complementary filter) ---
+    // Data is now in body frame: accel=[forward, left, up], gyro=[roll, pitch, yaw]
     let roll = 0, pitch = 0, yaw = 0;
     let lastTime = null;
     const ALPHA = 0.98;
     const DEG = Math.PI / 180;
 
     function updateOrientation(data) {
-        const [ax, ay, az] = data.accel;
-        const [gx, gy, gz] = data.gyro;
+        const [aFwd, aLeft, aUp] = data.accel;
+        const [gRoll, gPitch, gYaw] = data.gyro;
         const now = data.timestamp;
 
-        // Accel-based angles
-        const accelRoll = Math.atan2(ay, az) / DEG;
-        const accelPitch = Math.atan2(-ax, Math.sqrt(ay * ay + az * az)) / DEG;
+        // Accel-based angles (body frame: up = +Z, forward = +X)
+        const accelRoll = Math.atan2(-aLeft, aUp) / DEG;
+        const accelPitch = Math.atan2(aFwd, Math.sqrt(aLeft * aLeft + aUp * aUp)) / DEG;
 
         if (lastTime === null) {
             roll = accelRoll;
@@ -196,15 +197,16 @@
 
         if (dt <= 0 || dt > 1) return;
 
-        // Complementary filter
-        roll = ALPHA * (roll + gx * dt) + (1 - ALPHA) * accelRoll;
-        pitch = ALPHA * (pitch + gy * dt) + (1 - ALPHA) * accelPitch;
-        yaw += gz * dt;
+        // Complementary filter (gyro in deg/s, body frame)
+        roll = ALPHA * (roll + gRoll * dt) + (1 - ALPHA) * accelRoll;
+        pitch = ALPHA * (pitch + gPitch * dt) + (1 - ALPHA) * accelPitch;
+        yaw += gYaw * dt;
 
-        // Update 3D model
-        group.rotation.x = pitch * DEG;
-        group.rotation.z = roll * DEG;
-        group.rotation.y = yaw * DEG;
+        // Update 3D model — map body frame to Three.js
+        // Three.js: X=right, Y=up, Z=toward camera
+        group.rotation.z = -roll * DEG;
+        group.rotation.x = -pitch * DEG;
+        group.rotation.y = -yaw * DEG;
     }
 
     // --- Render loop ---
