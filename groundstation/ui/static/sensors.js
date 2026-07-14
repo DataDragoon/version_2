@@ -265,7 +265,12 @@
         [roll, pitch, yaw] = quaternionToEuler(q[0], q[1], q[2], q[3]);
 
         // Update 3D model using quaternion directly
-        group.quaternion.set(q[1], q[3], -q[2], q[0]); // map body→Three.js (X=right, Y=up, Z=back)
+        // Body frame: X=forward, Y=left, Z=up
+        // Three.js:   X=right,   Y=up,   Z=toward viewer (out of screen)
+        // Axis mapping: three_x = -body_y, three_y = body_z, three_z = -body_x
+        // For quaternion q=[w,bx,by,bz], remap imaginary part same way:
+        //   three_qx = -body_qy, three_qy = body_qz, three_qz = -body_qx
+        group.quaternion.set(-q[2], q[3], -q[1], q[0]);
     }
 
     // --- Render loop ---

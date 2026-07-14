@@ -1,31 +1,19 @@
 """IMU calibration: bias estimation and axis remapping.
 
-Axis mapping (from calibration discovery):
-  IMU X → Body DOWN   (gravity reads +1g on IMU X when level)
-  IMU Y → Body LEFT   (pitch down = gyro -Y, so +Y = pitch up = left-hand rule around left axis)
-  IMU Z → Body FORWARD (roll right = gyro +Z = forward axis)
+Calibration discovery results:
+  Gravity when level: accel +X = +1g  -> IMU +X = physical UP
+  Roll right:  gyro +Z (+70.6 deg)    -> IMU Z = roll/forward axis
+  Pitch down:  gyro -Y (-40.1 deg)    -> IMU Y = pitch/left axis
+  Yaw right:   gyro -X (-84.7 deg)    -> IMU X = yaw/up axis
 
-Body frame convention (right-hand, camera-centric):
-  Body X = FORWARD (camera optical axis)
-  Body Y = LEFT
-  Body Z = UP
+Body frame (right-hand, camera-centric):
+  Body X = FORWARD, Body Y = LEFT, Body Z = UP
 
-Rotation matrix R maps IMU vector → Body vector:
-  body = R @ imu
+Accel mapping:  body = R_ACCEL @ imu
+  forward = -imu_z, left = imu_y, up = imu_x
 
-  body_x (forward)  =  imu_z
-  body_y (left)     =  imu_y
-  body_z (up)       = -imu_x
-
-Gyro sign convention (right-hand rule around body axes):
-  body_gyro_x (roll right = positive)  = +gyro_z
-  body_gyro_y (pitch up = positive)    = +gyro_y
-  body_gyro_z (yaw left = positive)    = -gyro_x
-
-  But the calibration showed:
-    pitch down = -gyro_Y → pitch up = +gyro_Y ✓ (positive pitch-up around body Y/left)
-    roll right = +gyro_Z → positive roll-right around body X/forward ✓
-    yaw right  = -gyro_X → yaw left = +gyro_X → around body Z/up ✓ (RHR)
+Gyro mapping:  body = R_GYRO @ imu
+  roll_rate(+right) = +gyro_z, pitch_rate(+up) = +gyro_y, yaw_rate(+right) = -gyro_x
 """
 
 import json
@@ -35,12 +23,27 @@ import numpy as np
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'imu_cal.json')
 
-# IMU → Body rotation matrix
-# body = R @ imu_vec  (for both accel and gyro)
-R_IMU_TO_BODY = np.array([
-    [0,  0,  1],   # body_x (forward) = imu_z
-    [0,  1,  0],   # body_y (left)    = imu_y
-    [-1, 0,  0],   # body_z (up)      = -imu_x
+# IMU → Body accel mapping
+# Calibration facts: IMU +X = up (+1g), IMU Z = forward/back axis
+# Roll right = +gyro_z → RHR: +Z rotation is CCW from +Z view = roll LEFT
+# So forward = -Z (looking down -Z, +Z rotation is CW = roll right) ✓
+# Pitch down = -gyro_y → RHR: -Y rotation is CW from +Y view = nose down
+# So left = +Y (looking down +Y, -Y rotation tilts nose down) ✓
+R_ACCEL = np.array([
+    [0,  0, -1],   # body_x (forward) = -imu_z
+    [0,  1,  0],   # body_y (left)    =  imu_y
+    [1,  0,  0],   # body_z (up)      =  imu_x  (+1g when level)
+], dtype=np.float64)
+
+# IMU → Body gyro mapping
+# Directly from calibration data:
+#   roll right  → gyro +Z  → body_roll_right  = +gyro_z
+#   pitch up    → gyro +Y  → body_pitch_up    = +gyro_y (pitch down was -Y)
+#   yaw right   → gyro -X  → body_yaw_right   = -gyro_x
+R_GYRO = np.array([
+    [0,  0,  1],   # body roll_rate  = +gyro_z  (roll right = positive)
+    [0,  1,  0],   # body pitch_rate = +gyro_y  (pitch up = positive)
+    [-1, 0,  0],   # body yaw_rate   = -gyro_x  (yaw right = positive)
 ], dtype=np.float64)
 
 
@@ -171,12 +174,12 @@ class CalibratedIMU:
         Body frame:
             accel: [forward, left, up] in g
             gyro: [roll_rate, pitch_rate, yaw_rate] in deg/s
-                  roll right = +, pitch up = +, yaw left = +
+                  roll right = +, pitch up = +, yaw right = +
         """
         raw = self.read_raw()
 
-        accel_body = R_IMU_TO_BODY @ raw['accel']
-        gyro_body = R_IMU_TO_BODY @ raw['gyro']
+        accel_body = R_ACCEL @ raw['accel']
+        gyro_body = R_GYRO @ raw['gyro']
 
         return {
             'accel': accel_body,
