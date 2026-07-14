@@ -183,24 +183,16 @@ class OptiFlow:
 
         self.frame_count += 1
 
-        # Convert gyro rotation to expected pixel shift
-        # Camera looks along body X (forward). Image plane is Y (left) and Z (up).
-        # Yaw (around up/Z) rotates image horizontally: positive yaw right → scene shifts left in image
-        # Pitch (around left/Y) rotates image vertically: positive pitch up → scene shifts down in image
-        # Roll (around forward/X) rotates image around center (ignored for translation compensation)
-        #
-        # pixel_shift_x = yaw_deg * f_px * (pi/180)   (positive yaw right → positive pixel shift right)
-        # pixel_shift_y = -pitch_deg * f_px * (pi/180) (positive pitch up → negative pixel shift in Y)
-        #
-        # Camera is mounted upside down, so image coords are flipped:
-        #   pixel_shift_x = -yaw_deg * f_px * DEG2RAD
-        #   pixel_shift_y = pitch_deg * f_px * DEG2RAD
+        # Convert gyro rotation to expected pixel shift in the raw (upside-down) image.
+        # Upside-down: image X = real-world left, image Y = real-world up.
+        # Yaw right → scene shifts right in raw image → positive flow X
+        # Pitch up → scene shifts up in raw image → negative flow Y
         gyro_px = np.array([0.0, 0.0])
         if gyro_rotation_deg is not None and self.gyro_comp_enabled:
             roll_deg, pitch_deg, yaw_deg = gyro_rotation_deg
             deg2rad = np.pi / 180.0
-            gyro_px[0] = -yaw_deg * F_PX * deg2rad
-            gyro_px[1] = pitch_deg * F_PX * deg2rad
+            gyro_px[0] = yaw_deg * F_PX * deg2rad
+            gyro_px[1] = -pitch_deg * F_PX * deg2rad
         self.gyro_comp_px = (float(gyro_px[0]), float(gyro_px[1]))
 
         if self.prev_gray is None:
