@@ -168,26 +168,86 @@
     window.addEventListener('resize', resize);
     resize();
 
-    // --- Orientation estimation (complementary filter) ---
-    // Data is now in body frame: accel=[forward, left, up], gyro=[roll, pitch, yaw]
-    let roll = 0, pitch = 0, yaw = 0;
+    // --- Madgwick AHRS filter ---
+    // Quaternion-based orientation from gyro + accel fusion
+    // Beta controls how aggressively accel corrects gyro drift
+    // Higher = more accel trust (less drift, more noise), lower = smoother but drifts
+    let q = [1, 0, 0, 0]; // w, x, y, z
     let lastTime = null;
-    const ALPHA = 0.98;
+    const BETA = 0.04; // Madgwick gain — 0.04 is a good balance
     const DEG = Math.PI / 180;
+    let roll = 0, pitch = 0, yaw = 0;
+
+    function madgwickUpdate(gx, gy, gz, ax, ay, az, dt) {
+        let [qw, qx, qy, qz] = q;
+
+        // Normalise accelerometer
+        let norm = Math.sqrt(ax * ax + ay * ay + az * az);
+        if (norm < 0.01) return; // free-fall, skip accel correction
+        const recipNorm = 1.0 / norm;
+        ax *= recipNorm;
+        ay *= recipNorm;
+        az *= recipNorm;
+
+        // Gradient descent corrective step
+        const _2qw = 2 * qw, _2qx = 2 * qx, _2qy = 2 * qy, _2qz = 2 * qz;
+        const _4qw = 4 * qw, _4qx = 4 * qx, _4qy = 4 * qy;
+        const _8qx = 8 * qx, _8qy = 8 * qy;
+        const qwqw = qw * qw, qxqx = qx * qx, qyqy = qy * qy, qzqz = qz * qz;
+
+        let s0 = _4qw * qyqy + _2qy * ax + _4qw * qxqx - _2qx * ay;
+        let s1 = _4qx * qzqz - _2qz * ax + 4 * qwqw * qx - _2qw * ay - _4qx + _8qx * qxqx + _8qx * qyqy + _4qx * az;
+        let s2 = 4 * qwqw * qy + _2qw * ax + _4qy * qzqz - _2qz * ay - _4qy + _8qy * qxqx + _8qy * qyqy + _4qy * az;
+        let s3 = 4 * qxqx * qz - _2qx * ax + 4 * qyqy * qz - _2qy * ay;
+
+        norm = Math.sqrt(s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3);
+        if (norm > 0) {
+            const rn = 1.0 / norm;
+            s0 *= rn; s1 *= rn; s2 *= rn; s3 *= rn;
+        }
+
+        // Convert gyro to rad/s
+        const gxr = gx * DEG, gyr = gy * DEG, gzr = gz * DEG;
+
+        // Quaternion rate from gyro
+        const qDot0 = 0.5 * (-qx * gxr - qy * gyr - qz * gzr);
+        const qDot1 = 0.5 * (qw * gxr + qy * gzr - qz * gyr);
+        const qDot2 = 0.5 * (qw * gyr - qx * gzr + qz * gxr);
+        const qDot3 = 0.5 * (qw * gzr + qx * gyr - qy * gxr);
+
+        // Integrate
+        qw += (qDot0 - BETA * s0) * dt;
+        qx += (qDot1 - BETA * s1) * dt;
+        qy += (qDot2 - BETA * s2) * dt;
+        qz += (qDot3 - BETA * s3) * dt;
+
+        // Normalise quaternion
+        norm = Math.sqrt(qw * qw + qx * qx + qy * qy + qz * qz);
+        q = [qw / norm, qx / norm, qy / norm, qz / norm];
+    }
+
+    function quaternionToEuler(qw, qx, qy, qz) {
+        // Body frame → roll/pitch/yaw (ZYX convention)
+        const sinr = 2 * (qw * qx + qy * qz);
+        const cosr = 1 - 2 * (qx * qx + qy * qy);
+        const r = Math.atan2(sinr, cosr);
+
+        const sinp = 2 * (qw * qy - qz * qx);
+        const p = Math.abs(sinp) >= 1 ? Math.sign(sinp) * Math.PI / 2 : Math.asin(sinp);
+
+        const siny = 2 * (qw * qz + qx * qy);
+        const cosy = 1 - 2 * (qy * qy + qz * qz);
+        const y = Math.atan2(siny, cosy);
+
+        return [r / DEG, p / DEG, y / DEG];
+    }
 
     function updateOrientation(data) {
         const [aFwd, aLeft, aUp] = data.accel;
         const [gRoll, gPitch, gYaw] = data.gyro;
         const now = data.timestamp;
 
-        // Accel-based angles (body frame: up = +Z, forward = +X)
-        const accelRoll = Math.atan2(-aLeft, aUp) / DEG;
-        const accelPitch = Math.atan2(aFwd, Math.sqrt(aLeft * aLeft + aUp * aUp)) / DEG;
-
         if (lastTime === null) {
-            roll = accelRoll;
-            pitch = accelPitch;
-            yaw = 0;
             lastTime = now;
             return;
         }
@@ -197,16 +257,15 @@
 
         if (dt <= 0 || dt > 1) return;
 
-        // Complementary filter (gyro in deg/s, body frame)
-        roll = ALPHA * (roll + gRoll * dt) + (1 - ALPHA) * accelRoll;
-        pitch = ALPHA * (pitch + gPitch * dt) + (1 - ALPHA) * accelPitch;
-        yaw += gYaw * dt;
+        // Madgwick expects body-frame gyro (rad/s done inside) and accel (normalized inside)
+        // Body frame: X=forward, Y=left, Z=up
+        // Gravity in body frame when level: [0, 0, 1]
+        madgwickUpdate(gRoll, gPitch, gYaw, aFwd, aLeft, aUp, dt);
 
-        // Update 3D model — map body frame to Three.js
-        // Three.js: X=right, Y=up, Z=toward camera
-        group.rotation.z = -roll * DEG;
-        group.rotation.x = -pitch * DEG;
-        group.rotation.y = -yaw * DEG;
+        [roll, pitch, yaw] = quaternionToEuler(q[0], q[1], q[2], q[3]);
+
+        // Update 3D model using quaternion directly
+        group.quaternion.set(q[1], q[3], -q[2], q[0]); // map body→Three.js (X=right, Y=up, Z=back)
     }
 
     // --- Render loop ---
