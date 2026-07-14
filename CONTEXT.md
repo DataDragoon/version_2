@@ -138,6 +138,26 @@ UART enabled via `raspi-config`, serial console disabled. Device: `/dev/serial0`
 - Streaming: 1920x1080 @ 30fps MJPEG over HTTP (port 8080)
 - Library: picamera2 with hardware MJPEG encoder
 
+## IMU Calibration & Orientation
+
+MPU-6500 mounting orientation (determined via calibration tool):
+- IMU +X = physical UP (gravity reads +1g on X when level)
+- IMU Y = pitch axis (pitch down = gyro -Y)
+- IMU Z = roll/forward axis (roll right = gyro +Z)
+
+Body frame convention (right-hand, camera-centric):
+- Body X = FORWARD (camera optical axis)
+- Body Y = LEFT
+- Body Z = UP
+
+Data sent over WebSocket (port 9001) is in body frame:
+- `accel`: [forward, left, up] in g
+- `gyro`: [roll_rate, pitch_rate, yaw_rate] in deg/s
+- Positive: roll right, pitch up, yaw right
+
+Startup calibration: 2s stationary capture → gyro/accel bias saved to `pi/sensors/imu_cal.json`.
+Use `--skip-cal` flag on `stream.py` to reuse previous calibration.
+
 ## Network Ports
 
 | Service | Port | Protocol | Direction |
@@ -158,8 +178,12 @@ UART enabled via `raspi-config`, serial console disabled. Device: `/dev/serial0`
 - [x] OptiFlow: camera + sparse LK optical flow (port 8080 MJPEG + port 9002 WS)
 - [x] Groundstation UI — IMU + LiDAR debug panel
 - [x] Groundstation UI — OptiFlow debug panel (live feed + vector overlay + FOV toggle)
+- [x] IMU calibration (gyro bias + accel bias at startup, persisted to imu_cal.json)
+- [x] IMU axis remapping (IMU frame → body frame: forward/left/up)
+- [x] Madgwick AHRS orientation filter (quaternion-based, groundstation 3D view)
+- [x] IMU calibration discovery tool (groundstation panel)
+- [ ] OptiFlow gyro compensation (subtract rotation from optical flow)
 - [ ] BladeRF SFCW implementation
-- [ ] OptiFlow pipeline
 - [ ] Network protocol (formal)
 - [ ] Integration testing
 - [ ] SAR image reconstruction

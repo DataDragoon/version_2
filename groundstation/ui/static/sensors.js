@@ -169,12 +169,9 @@
     resize();
 
     // --- Madgwick AHRS filter ---
-    // Quaternion-based orientation from gyro + accel fusion
-    // Beta controls how aggressively accel corrects gyro drift
-    // Higher = more accel trust (less drift, more noise), lower = smoother but drifts
-    let q = [1, 0, 0, 0]; // w, x, y, z
+    let q = [1, 0, 0, 0];
     let lastTime = null;
-    const BETA = 0.04; // Madgwick gain — 0.04 is a good balance
+    const BETA = 0.04;
     const DEG = Math.PI / 180;
     let roll = 0, pitch = 0, yaw = 0;
 
@@ -257,19 +254,10 @@
 
         if (dt <= 0 || dt > 1) return;
 
-        // Madgwick expects body-frame gyro (rad/s done inside) and accel (normalized inside)
-        // Body frame: X=forward, Y=left, Z=up
-        // Gravity in body frame when level: [0, 0, 1]
         madgwickUpdate(gRoll, gPitch, gYaw, aFwd, aLeft, aUp, dt);
 
         [roll, pitch, yaw] = quaternionToEuler(q[0], q[1], q[2], q[3]);
 
-        // Update 3D model using quaternion directly
-        // Body frame: X=forward, Y=left, Z=up
-        // Three.js:   X=right,   Y=up,   Z=toward viewer (out of screen)
-        // Axis mapping: three_x = -body_y, three_y = body_z, three_z = -body_x
-        // For quaternion q=[w,bx,by,bz], remap imaginary part same way:
-        //   three_qx = -body_qy, three_qy = body_qz, three_qz = -body_qx
         group.quaternion.set(-q[2], q[3], -q[1], q[0]);
     }
 

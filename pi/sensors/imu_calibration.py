@@ -23,27 +23,16 @@ import numpy as np
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'imu_cal.json')
 
-# IMU → Body accel mapping
-# Calibration facts: IMU +X = up (+1g), IMU Z = forward/back axis
-# Roll right = +gyro_z → RHR: +Z rotation is CCW from +Z view = roll LEFT
-# So forward = -Z (looking down -Z, +Z rotation is CW = roll right) ✓
-# Pitch down = -gyro_y → RHR: -Y rotation is CW from +Y view = nose down
-# So left = +Y (looking down +Y, -Y rotation tilts nose down) ✓
 R_ACCEL = np.array([
-    [0,  0, -1],   # body_x (forward) = -imu_z
-    [0,  1,  0],   # body_y (left)    =  imu_y
-    [1,  0,  0],   # body_z (up)      =  imu_x  (+1g when level)
+    [0,  0, -1],   # forward = -imu_z
+    [0,  1,  0],   # left    =  imu_y
+    [1,  0,  0],   # up      =  imu_x
 ], dtype=np.float64)
 
-# IMU → Body gyro mapping
-# Directly from calibration data:
-#   roll right  → gyro +Z  → body_roll_right  = +gyro_z
-#   pitch up    → gyro +Y  → body_pitch_up    = +gyro_y (pitch down was -Y)
-#   yaw right   → gyro -X  → body_yaw_right   = -gyro_x
 R_GYRO = np.array([
-    [0,  0,  1],   # body roll_rate  = +gyro_z  (roll right = positive)
-    [0,  1,  0],   # body pitch_rate = +gyro_y  (pitch up = positive)
-    [-1, 0,  0],   # body yaw_rate   = -gyro_x  (yaw right = positive)
+    [0,  0,  1],   # roll  = +gyro_z  (positive = right)
+    [0,  1,  0],   # pitch = +gyro_y  (positive = up)
+    [-1, 0,  0],   # yaw   = -gyro_x  (positive = right)
 ], dtype=np.float64)
 
 
