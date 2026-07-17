@@ -39,5 +39,6 @@ asked. These files are how context survives across sessions and collaborators.
 
 ## Current Phase
 
-IMU, LiDAR, and Camera integrated. All three stream to groundstation debug panels.
-Next steps: OptiFlow pipeline (optical flow positioning using camera + AI HAT+).
+IMU, LiDAR, Camera, and bladeRF SDR integrated. All stream to groundstation debug panels.
+AquaSense panel provides signal generator + oscilloscope for bladeRF calibration (TX1/RX1).
+Next steps: SFCW stepped-frequency scanning, OptiFlow pipeline.

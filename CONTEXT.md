@@ -165,6 +165,7 @@ Use `--skip-cal` flag on `stream.py` to reuse previous calibration.
 | Sensor stream (IMU + LiDAR) | 9001 | WebSocket | Pi → Browser |
 | OptiFlow MJPEG (camera feed) | 8080 | HTTP | Pi → Browser |
 | OptiFlow data (vectors, position) | 9002 | WebSocket | Pi → Browser |
+| SDR control + IQ stream | 9003 | WebSocket | Pi ↔ Browser |
 | Groundstation UI | 5000 | HTTP | PC local |
 
 ## Current Status
@@ -183,6 +184,7 @@ Use `--skip-cal` flag on `stream.py` to reuse previous calibration.
 - [x] Madgwick AHRS orientation filter (quaternion-based, groundstation 3D view)
 - [x] IMU calibration discovery tool (groundstation panel)
 - [ ] OptiFlow gyro compensation (subtract rotation from optical flow)
+- [x] BladeRF driver + AquaSense calibration panel (signal generator + oscilloscope)
 - [ ] BladeRF SFCW implementation
 - [ ] Network protocol (formal)
 - [ ] Integration testing

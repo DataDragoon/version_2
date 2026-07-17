@@ -59,6 +59,7 @@
                 packetCount = 0;
             }, 1000);
             if (window.optiflowPanel) window.optiflowPanel.start(piIp);
+            if (window.aquasensePanel) window.aquasensePanel.start(piIp);
         };
 
         ws.onmessage = (event) => {
@@ -77,6 +78,7 @@
             document.getElementById('imu-rate').textContent = '— Hz';
             if (rateInterval) { clearInterval(rateInterval); rateInterval = null; }
             if (window.optiflowPanel) window.optiflowPanel.stop();
+            if (window.aquasensePanel) window.aquasensePanel.stop();
         };
 
         ws.onerror = () => {
