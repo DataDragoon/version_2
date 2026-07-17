@@ -1,4 +1,4 @@
-// AquaSense — bladeRF signal generator + oscilloscope debug panel
+// AquaSense — bladeRF calibration panel (signal generator + oscilloscope)
 
 (function () {
     'use strict';
@@ -6,18 +6,18 @@
     let ws = null;
     let connected = false;
     let state = { tx_active: false, rx_active: false };
-    let txShape = null;
-    let rxData = null;
-    let fftData = null;
+    let rxSamples = null;
+    let fftMags = null;
+    let fftFreqSpan = 2000000;
     let showFFT = true;
     let animFrame = null;
+    let txPhase = 0;
 
-    // Canvas refs
     const txCanvas = document.getElementById('sdr-tx-canvas');
     const rxCanvas = document.getElementById('sdr-rx-canvas');
     const fftCanvas = document.getElementById('sdr-fft-canvas');
+    const fftCard = fftCanvas ? fftCanvas.closest('.viz-card') : null;
 
-    // Control refs
     const freqInput = document.getElementById('sdr-freq');
     const setFreqBtn = document.getElementById('sdr-set-freq');
     const sampleRateSelect = document.getElementById('sdr-sample-rate');
@@ -33,7 +33,7 @@
     const rxGainVal = document.getElementById('sdr-rx-gain-val');
     const txToggle = document.getElementById('sdr-tx-toggle');
     const rxToggle = document.getElementById('sdr-rx-toggle');
-    const fftToggle = document.getElementById('sdr-fft-toggle');
+    const fftToggleEl = document.getElementById('sdr-fft-toggle');
     const deviceStatus = document.getElementById('sdr-device-status');
     const serialEl = document.getElementById('sdr-serial');
     const sdrStatusEl = document.getElementById('sdr-status');
@@ -41,7 +41,6 @@
     const chirpBwRow = document.getElementById('sdr-chirp-bw-row');
     const chirpDurRow = document.getElementById('sdr-chirp-dur-row');
 
-    // --- Public API ---
     window.aquasensePanel = { start, stop };
 
     function start(ip) {
@@ -49,11 +48,17 @@
         ws = new WebSocket(`ws://${ip}:9003`);
         ws.onopen = () => {
             connected = true;
-            sdrStatusEl.textContent = 'Connected';
-            startRenderLoop();
+            sdrStatusEl.textContent = 'OK';
+            startRender();
         };
-        ws.onmessage = (e) => dispatch(JSON.parse(e.data));
-        ws.onclose = () => { cleanup(); };
+        ws.onmessage = (e) => {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'status') updateStatus(msg);
+            else if (msg.type === 'rx_data') rxSamples = msg.i;
+            else if (msg.type === 'rx_fft') { fftMags = msg.magnitudes; fftFreqSpan = msg.freq_span || 2000000; }
+            else if (msg.type === 'error') console.warn('[sdr]', msg.message);
+        };
+        ws.onclose = () => cleanup();
         ws.onerror = () => { if (ws) ws.close(); };
     }
 
@@ -66,9 +71,8 @@
         connected = false;
         ws = null;
         state = { tx_active: false, rx_active: false };
-        txShape = null;
-        rxData = null;
-        fftData = null;
+        rxSamples = null;
+        fftMags = null;
         deviceStatus.textContent = 'Disconnected';
         serialEl.textContent = '—';
         sdrStatusEl.textContent = '—';
@@ -80,26 +84,12 @@
     }
 
     function send(obj) {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify(obj));
-        }
-    }
-
-    // --- Message dispatch ---
-    function dispatch(msg) {
-        switch (msg.type) {
-            case 'status': updateStatus(msg); break;
-            case 'tx_shape': txShape = msg; break;
-            case 'rx_data': rxData = msg; break;
-            case 'rx_fft': fftData = msg; break;
-            case 'error': console.warn('[sdr]', msg.message); break;
-        }
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
     }
 
     function updateStatus(s) {
         state = s;
-        const mode = s.simulated ? 'Simulated' : 'Connected';
-        deviceStatus.textContent = mode;
+        deviceStatus.textContent = s.connected ? 'Connected' : 'Disconnected';
         serialEl.textContent = s.serial || '—';
         txToggle.textContent = s.tx_active ? 'Stop TX' : 'Start TX';
         txToggle.classList.toggle('active', s.tx_active);
@@ -108,323 +98,276 @@
     }
 
     // --- Controls ---
-    setFreqBtn.addEventListener('click', () => {
-        send({ cmd: 'set_freq', value: parseFloat(freqInput.value) });
-    });
-
-    sampleRateSelect.addEventListener('change', () => {
-        send({ cmd: 'set_sample_rate', value: parseFloat(sampleRateSelect.value) });
-    });
+    setFreqBtn.addEventListener('click', () => send({ cmd: 'set_freq', value: parseFloat(freqInput.value) }));
+    sampleRateSelect.addEventListener('change', () => send({ cmd: 'set_sample_rate', value: parseFloat(sampleRateSelect.value) }));
 
     waveformSelect.addEventListener('change', () => {
-        const type = waveformSelect.value;
-        offsetRow.style.display = type === 'cw' ? '' : 'none';
-        chirpBwRow.style.display = type === 'chirp' ? '' : 'none';
-        chirpDurRow.style.display = type === 'chirp' ? '' : 'none';
+        const t = waveformSelect.value;
+        offsetRow.style.display = t === 'cw' ? '' : 'none';
+        chirpBwRow.style.display = t === 'chirp' ? '' : 'none';
+        chirpDurRow.style.display = t === 'chirp' ? '' : 'none';
         sendWaveform();
     });
-
     cwOffsetInput.addEventListener('change', sendWaveform);
     chirpBwInput.addEventListener('change', sendWaveform);
     chirpDurInput.addEventListener('change', sendWaveform);
-
-    txAmpSlider.addEventListener('input', () => {
-        txAmpVal.textContent = txAmpSlider.value + '%';
-    });
+    txAmpSlider.addEventListener('input', () => { txAmpVal.textContent = txAmpSlider.value + '%'; });
     txAmpSlider.addEventListener('change', sendWaveform);
 
     function sendWaveform() {
-        const cmd = {
-            cmd: 'set_waveform',
-            type: waveformSelect.value,
+        send({
+            cmd: 'set_waveform', type: waveformSelect.value,
             offset_khz: parseFloat(cwOffsetInput.value),
             amplitude: parseInt(txAmpSlider.value) / 100,
             chirp_bw_khz: parseFloat(chirpBwInput.value),
             chirp_duration_ms: parseFloat(chirpDurInput.value),
-        };
-        send(cmd);
+        });
     }
 
-    txGainSlider.addEventListener('input', () => {
-        txGainVal.textContent = txGainSlider.value + ' dB';
-    });
-    txGainSlider.addEventListener('change', () => {
-        send({ cmd: 'set_tx_gain', value: parseInt(txGainSlider.value) });
+    txGainSlider.addEventListener('input', () => { txGainVal.textContent = txGainSlider.value + ' dB'; });
+    txGainSlider.addEventListener('change', () => send({ cmd: 'set_tx_gain', value: parseInt(txGainSlider.value) }));
+    rxGainSlider.addEventListener('input', () => { rxGainVal.textContent = rxGainSlider.value + ' dB'; });
+    rxGainSlider.addEventListener('change', () => send({ cmd: 'set_rx_gain', value: parseInt(rxGainSlider.value) }));
+
+    txToggle.addEventListener('click', () => send({ cmd: state.tx_active ? 'stop_tx' : 'start_tx' }));
+    rxToggle.addEventListener('click', () => send({ cmd: state.rx_active ? 'stop_rx' : 'start_rx' }));
+
+    fftToggleEl.addEventListener('change', () => {
+        showFFT = fftToggleEl.checked;
+        if (fftCard) fftCard.style.display = showFFT ? '' : 'none';
     });
 
-    rxGainSlider.addEventListener('input', () => {
-        rxGainVal.textContent = rxGainSlider.value + ' dB';
-    });
-    rxGainSlider.addEventListener('change', () => {
-        send({ cmd: 'set_rx_gain', value: parseInt(rxGainSlider.value) });
-    });
-
-    txToggle.addEventListener('click', () => {
-        send({ cmd: state.tx_active ? 'stop_tx' : 'start_tx' });
-    });
-
-    rxToggle.addEventListener('click', () => {
-        send({ cmd: state.rx_active ? 'stop_rx' : 'start_rx' });
-    });
-
-    fftToggle.addEventListener('change', () => {
-        showFFT = fftToggle.checked;
-    });
-
-    // --- Canvas rendering ---
-    const COLORS = {
-        bg: '#1a1a25',
-        grid: '#2a2a3a',
-        i: '#4aff8a',
-        q: '#4a9eff',
-        fftFill: 'rgba(74, 158, 255, 0.3)',
-        fftLine: '#4a9eff',
-        text: '#6a6a7a',
-        peak: '#ff4a6a',
-    };
-
-    function startRenderLoop() {
+    // --- Rendering ---
+    function startRender() {
         if (animFrame) return;
-        function frame() {
+        (function loop() {
             render();
-            animFrame = requestAnimationFrame(frame);
-        }
-        animFrame = requestAnimationFrame(frame);
+            animFrame = requestAnimationFrame(loop);
+        })();
     }
 
     function render() {
-        drawScope(txCanvas, txShape, 'TX');
-        drawScope(rxCanvas, rxData, 'RX');
-        if (showFFT) {
-            drawFFT(fftCanvas, fftData);
-        } else {
-            clearCanvas(fftCanvas);
-        }
+        drawTx(txCanvas);
+        drawRx(rxCanvas);
+        if (showFFT) drawFFT(fftCanvas);
     }
 
-    function clearCanvas(canvas) {
-        const ctx = getCtx(canvas);
-        if (!ctx) return;
-        ctx.fillStyle = COLORS.bg;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-    }
-
-    function getCtx(canvas) {
+    function fitCanvas(canvas) {
         if (!canvas) return null;
-        const rect = canvas.getBoundingClientRect();
-        const w = Math.floor(rect.width * devicePixelRatio);
-        const h = Math.floor(rect.height * devicePixelRatio);
+        const r = canvas.getBoundingClientRect();
+        const dpr = devicePixelRatio;
+        const w = Math.floor(r.width * dpr);
+        const h = Math.floor(r.height * dpr);
         if (w < 1 || h < 1) return null;
-        if (canvas.width !== w || canvas.height !== h) {
-            canvas.width = w;
-            canvas.height = h;
-        }
+        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
         const ctx = canvas.getContext('2d');
-        ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         return ctx;
     }
 
-    function drawScope(canvas, data, label) {
-        const ctx = getCtx(canvas);
-        if (!ctx) return;
-        const w = canvas.width / devicePixelRatio;
-        const h = canvas.height / devicePixelRatio;
-
-        ctx.fillStyle = COLORS.bg;
-        ctx.fillRect(0, 0, w, h);
-
-        // Grid
-        ctx.strokeStyle = COLORS.grid;
+    function grid(ctx, w, h) {
+        ctx.strokeStyle = '#1e1e2a';
         ctx.lineWidth = 0.5;
-        const hLines = 4;
-        const vLines = 8;
         ctx.beginPath();
-        for (let i = 1; i < hLines; i++) {
-            const y = (h / hLines) * i;
-            ctx.moveTo(0, y);
-            ctx.lineTo(w, y);
-        }
-        for (let i = 1; i < vLines; i++) {
-            const x = (w / vLines) * i;
-            ctx.moveTo(x, 0);
-            ctx.lineTo(x, h);
-        }
+        for (let i = 1; i < 6; i++) { const y = h / 6 * i; ctx.moveTo(0, y); ctx.lineTo(w, y); }
+        for (let i = 1; i < 12; i++) { const x = w / 12 * i; ctx.moveTo(x, 0); ctx.lineTo(x, h); }
         ctx.stroke();
-
-        // Center line
-        ctx.strokeStyle = COLORS.grid;
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 4]);
-        ctx.beginPath();
-        ctx.moveTo(0, h / 2);
-        ctx.lineTo(w, h / 2);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        if (!data || !data.i || data.i.length === 0) {
-            ctx.fillStyle = COLORS.text;
-            ctx.font = '11px monospace';
-            ctx.textAlign = 'center';
-            ctx.fillText(label + ' idle', w / 2, h / 2 + 4);
-            return;
-        }
-
-        const samples = data.i;
-        const qSamples = data.q;
-        const len = samples.length;
-        const xStep = w / (len - 1);
-        const yMid = h / 2;
-        const yScale = (h / 2) * 0.85;
-
-        // I channel
-        ctx.strokeStyle = COLORS.i;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        for (let i = 0; i < len; i++) {
-            const x = i * xStep;
-            const y = yMid - samples[i] * yScale;
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-
-        // Q channel
-        if (qSamples && qSamples.length > 0) {
-            ctx.strokeStyle = COLORS.q;
-            ctx.lineWidth = 1;
-            ctx.globalAlpha = 0.7;
-            ctx.beginPath();
-            for (let i = 0; i < len; i++) {
-                const x = i * xStep;
-                const y = yMid - qSamples[i] * yScale;
-                if (i === 0) ctx.moveTo(x, y);
-                else ctx.lineTo(x, y);
-            }
-            ctx.stroke();
-            ctx.globalAlpha = 1;
-        }
-
-        // Y-axis labels
-        ctx.fillStyle = COLORS.text;
-        ctx.font = '9px monospace';
-        ctx.textAlign = 'left';
-        ctx.fillText('+1', 4, 12);
-        ctx.fillText(' 0', 4, yMid + 3);
-        ctx.fillText('-1', 4, h - 4);
-
-        // Legend
-        ctx.textAlign = 'right';
-        ctx.fillStyle = COLORS.i;
-        ctx.fillText('I', w - 20, 12);
-        ctx.fillStyle = COLORS.q;
-        ctx.fillText('Q', w - 4, 12);
     }
 
-    function drawFFT(canvas, data) {
-        const ctx = getCtx(canvas);
+    function trace(ctx, pts, color) {
+        if (pts.length < 2) return;
+        // Glow
+        ctx.save();
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 14;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        ctx.stroke();
+        ctx.restore();
+        // Main
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        ctx.stroke();
+        // Highlight
+        ctx.strokeStyle = lighten(color, 0.45);
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+    }
+
+    function lighten(hex, a) {
+        const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+        return '#' + [r,g,b].map(c => Math.min(255, Math.floor(c + (255-c)*a)).toString(16).padStart(2,'0')).join('');
+    }
+
+    // --- TX: animated waveform (like aquasense WaveformDisplay) ---
+    function drawTx(canvas) {
+        const ctx = fitCanvas(canvas);
         if (!ctx) return;
         const w = canvas.width / devicePixelRatio;
         const h = canvas.height / devicePixelRatio;
-
-        ctx.fillStyle = COLORS.bg;
+        ctx.fillStyle = '#0d0d14';
         ctx.fillRect(0, 0, w, h);
+        grid(ctx, w, h);
 
-        // Grid
-        ctx.strokeStyle = COLORS.grid;
-        ctx.lineWidth = 0.5;
-        ctx.beginPath();
-        for (let i = 1; i < 4; i++) {
-            const y = (h / 4) * i;
-            ctx.moveTo(0, y);
-            ctx.lineTo(w, y);
-        }
-        for (let i = 1; i < 8; i++) {
-            const x = (w / 8) * i;
-            ctx.moveTo(x, 0);
-            ctx.lineTo(x, h);
-        }
-        ctx.stroke();
-
-        if (!data || !data.magnitudes || data.magnitudes.length === 0) {
-            ctx.fillStyle = COLORS.text;
-            ctx.font = '11px monospace';
-            ctx.textAlign = 'center';
-            ctx.fillText('FFT idle', w / 2, h / 2 + 4);
+        if (!state.tx_active) {
+            // Dashed center line when idle
+            ctx.strokeStyle = '#2a2a3a';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([6, 6]);
+            ctx.beginPath();
+            ctx.moveTo(0, h/2); ctx.lineTo(w, h/2);
+            ctx.stroke();
+            ctx.setLineDash([]);
             return;
         }
 
-        const mags = data.magnitudes;
-        const len = mags.length;
-        const xStep = w / (len - 1);
+        // Animate: scrolling sine (4 visible cycles)
+        txPhase += 0.04;
+        const cycles = 4;
+        const n = 200;
+        const yMid = h / 2;
+        const amp = h * 0.38;
+        const pts = [];
+        for (let i = 0; i < n; i++) {
+            const t = i / (n - 1);
+            const x = t * w;
+            const y = yMid - Math.sin(t * cycles * Math.PI * 2 + txPhase) * amp;
+            pts.push([x, y]);
+        }
+        trace(ctx, pts, '#D1855C');
+    }
 
-        // Scale: -80 dB to 0 dB
-        const dbMin = -80;
-        const dbMax = 0;
-        const dbRange = dbMax - dbMin;
+    // --- RX: live time-domain oscilloscope ---
+    function drawRx(canvas) {
+        const ctx = fitCanvas(canvas);
+        if (!ctx) return;
+        const w = canvas.width / devicePixelRatio;
+        const h = canvas.height / devicePixelRatio;
+        ctx.fillStyle = '#0d0d14';
+        ctx.fillRect(0, 0, w, h);
+        grid(ctx, w, h);
 
-        function dbToY(db) {
-            const clamped = Math.max(dbMin, Math.min(dbMax, db));
-            return h - ((clamped - dbMin) / dbRange) * h;
+        if (!rxSamples || rxSamples.length === 0) {
+            ctx.strokeStyle = '#2a2a3a';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([6, 6]);
+            ctx.beginPath();
+            ctx.moveTo(0, h/2); ctx.lineTo(w, h/2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            return;
         }
 
-        // Fill
-        ctx.fillStyle = COLORS.fftFill;
+        const samples = rxSamples;
+        const len = samples.length;
+        const yMid = h / 2;
+        const yScale = h * 0.42;
+        const pts = [];
+        for (let i = 0; i < len; i++) {
+            pts.push([i / (len - 1) * w, yMid - samples[i] * yScale]);
+        }
+        trace(ctx, pts, '#22d3ee');
+
+        // Y labels
+        ctx.fillStyle = '#4a4a5a';
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText('+1.0', 4, 12);
+        ctx.fillText('-1.0', 4, h - 4);
+    }
+
+    // --- FFT spectrum ---
+    function drawFFT(canvas) {
+        const ctx = fitCanvas(canvas);
+        if (!ctx) return;
+        const w = canvas.width / devicePixelRatio;
+        const h = canvas.height / devicePixelRatio;
+        ctx.fillStyle = '#0d0d14';
+        ctx.fillRect(0, 0, w, h);
+        grid(ctx, w, h);
+
+        if (!fftMags || fftMags.length === 0) {
+            ctx.strokeStyle = '#2a2a3a';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([6, 6]);
+            ctx.beginPath();
+            ctx.moveTo(0, h/2); ctx.lineTo(w, h/2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            return;
+        }
+
+        const mags = fftMags;
+        const len = mags.length;
+        const dbMin = -80, dbMax = 0;
+        const margin = h * 0.05;
+        const plotH = h - margin * 2;
+
+        function toY(db) {
+            const clamped = Math.max(dbMin, Math.min(dbMax, db));
+            return margin + plotH * (1 - (clamped - dbMin) / (dbMax - dbMin));
+        }
+
+        // Fill gradient
+        const grad = ctx.createLinearGradient(0, 0, 0, h);
+        grad.addColorStop(0, 'rgba(139,92,246,0.3)');
+        grad.addColorStop(1, 'rgba(139,92,246,0.0)');
+        ctx.fillStyle = grad;
         ctx.beginPath();
         ctx.moveTo(0, h);
-        for (let i = 0; i < len; i++) {
-            ctx.lineTo(i * xStep, dbToY(mags[i]));
-        }
+        for (let i = 0; i < len; i++) ctx.lineTo(i / (len-1) * w, toY(mags[i]));
         ctx.lineTo(w, h);
         ctx.closePath();
         ctx.fill();
 
-        // Line
-        ctx.strokeStyle = COLORS.fftLine;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        for (let i = 0; i < len; i++) {
-            const x = i * xStep;
-            const y = dbToY(mags[i]);
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
+        // Trace
+        const pts = [];
+        for (let i = 0; i < len; i++) pts.push([i / (len-1) * w, toY(mags[i])]);
+        trace(ctx, pts, '#8b5cf6');
 
-        // Find and mark peak
-        let peakIdx = 0;
-        let peakVal = mags[0];
-        for (let i = 1; i < len; i++) {
-            if (mags[i] > peakVal) { peakVal = mags[i]; peakIdx = i; }
-        }
-        const peakX = peakIdx * xStep;
-        const peakY = dbToY(peakVal);
-        ctx.fillStyle = COLORS.peak;
-        ctx.beginPath();
-        ctx.arc(peakX, peakY, 4, 0, Math.PI * 2);
-        ctx.fill();
+        // Peak
+        let pk = 0;
+        for (let i = 1; i < len; i++) if (mags[i] > mags[pk]) pk = i;
+        const px = pk / (len-1) * w;
+        const py = toY(mags[pk]);
+        ctx.save();
+        ctx.shadowColor = '#ff4a6a'; ctx.shadowBlur = 10;
+        ctx.fillStyle = '#ff4a6a';
+        ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI*2); ctx.fill();
+        ctx.restore();
 
-        // Peak label
-        ctx.fillStyle = COLORS.text;
+        const freq = ((pk / len) - 0.5) * fftFreqSpan / 1000;
+        ctx.fillStyle = '#ccc';
+        ctx.font = '10px monospace';
+        ctx.textAlign = pk > len*0.7 ? 'right' : 'left';
+        const lx = pk > len*0.7 ? px-8 : px+8;
+        ctx.fillText(mags[pk].toFixed(1)+' dB', lx, py-12);
+        ctx.fillStyle = '#8b5cf6';
+        ctx.fillText(freq.toFixed(0)+' kHz', lx, py-1);
+
+        // Axis
+        ctx.fillStyle = '#4a4a5a';
         ctx.font = '9px monospace';
-        ctx.textAlign = peakIdx > len / 2 ? 'right' : 'left';
-        const freqSpan = data.freq_span || 2000000;
-        const peakFreq = ((peakIdx / len) - 0.5) * freqSpan;
-        const peakFreqKHz = (peakFreq / 1000).toFixed(0);
-        ctx.fillText(peakVal.toFixed(1) + ' dB @ ' + peakFreqKHz + ' kHz', peakX + (peakIdx > len / 2 ? -8 : 8), peakY - 8);
-
-        // Y-axis dB labels
         ctx.textAlign = 'left';
-        ctx.fillStyle = COLORS.text;
-        ctx.fillText('0 dB', 4, 12);
-        ctx.fillText('-40', 4, h / 2 + 3);
-        ctx.fillText('-80', 4, h - 4);
-
-        // X-axis frequency labels
+        ctx.fillText('0 dB', 4, margin + 4);
+        ctx.fillText('-80', 4, h - margin);
         ctx.textAlign = 'center';
-        const halfSpanKHz = (freqSpan / 2000).toFixed(0);
-        ctx.fillText('-' + halfSpanKHz + 'k', 30, h - 4);
-        ctx.fillText('0', w / 2, h - 4);
-        ctx.fillText('+' + halfSpanKHz + 'k', w - 30, h - 4);
+        const hs = (fftFreqSpan/2000).toFixed(0);
+        ctx.fillText('-'+hs+'k', w*0.05, h-2);
+        ctx.fillText('0', w/2, h-2);
+        ctx.fillText('+'+hs+'k', w*0.95, h-2);
     }
 
 })();

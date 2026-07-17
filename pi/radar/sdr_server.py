@@ -8,7 +8,7 @@ import websockets
 
 from bladerf_driver import BladeRFDriver
 
-SCALE_SC16Q11 = 2047
+SCALE = 2047
 PORT = 9003
 VIS_FPS = 25
 FFT_SIZE = 4096
@@ -23,9 +23,14 @@ class SDRServer:
         self._broadcast_task = None
 
     async def start(self):
-        self.driver.open()
-        mode = "SIMULATED" if self.driver.simulated else self.driver.serial
-        print(f"[sdr] Device: {mode}")
+        try:
+            self.driver.open()
+        except Exception as e:
+            print(f"[sdr] ERROR: Could not open bladeRF device: {e}")
+            print("[sdr] Check that the bladeRF is connected and drivers are installed.")
+            sys.exit(1)
+
+        print(f"[sdr] Device: {self.driver.serial}")
         print(f"[sdr] Starting WebSocket server on port {PORT}")
         self._broadcast_task = asyncio.create_task(self._broadcast_loop())
         async with websockets.serve(self._handler, "0.0.0.0", PORT):
@@ -48,7 +53,6 @@ class SDRServer:
             if action == 'start_tx':
                 self.driver.start_tx()
                 await self._broadcast_status()
-                await self._send_tx_shape()
             elif action == 'stop_tx':
                 self.driver.stop_tx()
                 await self._broadcast_status()
@@ -82,7 +86,6 @@ class SDRServer:
                     params['chirp_duration'] = float(cmd['chirp_duration_ms']) / 1000
                 self.driver.set_waveform(cmd.get('type', 'cw'), **params)
                 await self._broadcast_status()
-                await self._send_tx_shape()
             elif action == 'get_status':
                 await ws.send(json.dumps({'type': 'status', **self.driver.get_status()}))
         except Exception as e:
@@ -118,14 +121,14 @@ class SDRServer:
             q_raw = iq[1::2].astype(np.float64)
             num = len(i_raw)
 
-            # Decimated time-domain for oscilloscope
+            # Decimated time-domain
             if num > VIS_SAMPLES:
                 step = num // VIS_SAMPLES
-                i_vis = i_raw[::step][:VIS_SAMPLES] / SCALE_SC16Q11
-                q_vis = q_raw[::step][:VIS_SAMPLES] / SCALE_SC16Q11
+                i_vis = i_raw[::step][:VIS_SAMPLES] / SCALE
+                q_vis = q_raw[::step][:VIS_SAMPLES] / SCALE
             else:
-                i_vis = i_raw / SCALE_SC16Q11
-                q_vis = q_raw / SCALE_SC16Q11
+                i_vis = i_raw / SCALE
+                q_vis = q_raw / SCALE
 
             rx_msg = json.dumps({
                 'type': 'rx_data',
@@ -135,11 +138,10 @@ class SDRServer:
 
             # FFT
             fft_len = min(num, FFT_SIZE)
-            complex_iq = (i_raw[:fft_len] + 1j * q_raw[:fft_len]) / SCALE_SC16Q11
+            complex_iq = (i_raw[:fft_len] + 1j * q_raw[:fft_len]) / SCALE
             window = np.hanning(fft_len)
             spectrum = np.fft.fftshift(np.fft.fft(complex_iq * window))
             magnitudes = 20 * np.log10(np.abs(spectrum) / fft_len + 1e-12)
-            # Downsample FFT to 256 bins for transport
             if len(magnitudes) > 256:
                 step = len(magnitudes) // 256
                 magnitudes = magnitudes[::step][:256]
@@ -171,22 +173,7 @@ class SDRServer:
                 dead.add(client)
         self.clients -= dead
 
-    async def _send_tx_shape(self):
-        i, q = self.driver.get_tx_shape(512)
-        msg = json.dumps({'type': 'tx_shape', 'i': i, 'q': q})
-        dead = set()
-        for client in self.clients:
-            try:
-                await client.send(msg)
-            except websockets.ConnectionClosed:
-                dead.add(client)
-        self.clients -= dead
-
 
 if __name__ == '__main__':
-    if '--simulate' in sys.argv:
-        import bladerf_driver
-        bladerf_driver.HAS_HARDWARE = False
-
     server = SDRServer()
     asyncio.run(server.start())
