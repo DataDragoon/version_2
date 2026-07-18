@@ -180,6 +180,14 @@ class SFCWEngine:
                     'freq_mhz': freqs[i] / 1e6,
                 })
 
+        # Phase coherence diagnostics (unwrapped phase slope)
+        phase_raw = np.angle(h_freq)
+        phase_unwrapped = np.unwrap(phase_raw)
+        # Linear fit: slope should be -2π·τ (constant delay)
+        coeffs = np.polyfit(np.arange(num_steps), phase_unwrapped, 1)
+        residuals = phase_unwrapped - np.polyval(coeffs, np.arange(num_steps))
+        phase_std = float(np.std(residuals))
+
         window = np.hanning(num_steps)
         h_windowed = h_freq * window
         range_profile = np.fft.ifft(h_windowed)
@@ -200,4 +208,10 @@ class SFCWEngine:
             'max_range': max_range / 2,
             'num_steps': num_steps,
             'timestamp': time.time(),
+            'phase_coherence': {
+                'phase_std_rad': phase_std,
+                'phase_std_deg': float(np.degrees(phase_std)),
+                'coherent': phase_std < 0.3,
+                'slope_rad_per_step': float(coeffs[0]),
+            },
         }

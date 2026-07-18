@@ -170,6 +170,19 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
       ctx.textAlign = 'right';
       ctx.fillText(`Δr=${(result.range_resolution * 100).toFixed(1)}cm`, w - pad.right, 14);
     }
+
+    // Phase coherence indicator
+    if (result.phase_coherence) {
+      const pc = result.phase_coherence;
+      const color = pc.coherent ? '#4ade80' : '#ef4444';
+      ctx.fillStyle = color;
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(
+        `φ σ=${pc.phase_std_deg.toFixed(1)}° ${pc.coherent ? '● COHERENT' : '● INCOHERENT'}`,
+        w - pad.right, 26
+      );
+    }
   }, [crosshair]);
 
   const drawWaterfall = useCallback(() => {
