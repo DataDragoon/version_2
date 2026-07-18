@@ -145,7 +145,7 @@ class SFCWEngine:
             self.driver.set_frequency(int(freq))
             time.sleep(settle)
 
-            accumulator = np.zeros(1, dtype=np.complex128)
+            accumulator = 0j
             count = 0
             deadline = time.time() + dwell
 
