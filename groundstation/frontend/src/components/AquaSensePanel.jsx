@@ -1,0 +1,228 @@
+import { useState } from 'react';
+import { cn } from '@/lib/utils';
+import { Section, InfoTile, ToggleButton } from './Sidebar';
+
+export default function AquaSensePanel({ isConnected, sdrConnected, txActive, rxActive, showFFT, onToggleFFT, graphPaused, onTogglePause, sendAquasense }) {
+  const [freq, setFreq] = useState(915);
+  const [txGain, setTxGain] = useState(47);
+  const [txAmp, setTxAmp] = useState(80);
+  const [rxGain, setRxGain] = useState(30);
+  const [waveform, setWaveform] = useState('cw');
+  const [cwOffset, setCwOffset] = useState(100);
+  const [sampleRate, setSampleRate] = useState(2);
+
+  const canActivate = isConnected && sdrConnected;
+
+  return (
+    <>
+      {/* Frequency */}
+      <Section label="Center Frequency">
+                <FreqField
+          value={freq}
+          onChange={(v) => { setFreq(v); sendAquasense({ cmd: 'set_freq', value: v }); }}
+        />
+      </Section>
+
+      {/* Sample Rate */}
+      <Section label="Sample Rate">
+        <SampleRateField
+          value={sampleRate}
+          onChange={(v) => { setSampleRate(v); sendAquasense({ cmd: 'set_sample_rate', value: v }); }}
+        />
+      </Section>
+
+      {/* Transmission */}
+      <Section label="Transmission">
+        <ToggleButton
+          active={txActive}
+          canActivate={canActivate}
+          onToggle={() => sendAquasense({ cmd: txActive ? 'stop_tx' : 'start_tx' })}
+          activeLabel="Stop Transmission"
+          idleLabel="Start Transmission"
+          activeSubLabel="CW tone on TX1 antenna"
+          idleSubLabel={!sdrConnected ? 'SDR not connected' : 'Ready to transmit'}
+          color="orange"
+        />
+
+        <div className="grid grid-cols-2 gap-2 mt-1">
+          <InfoTile label="Waveform" value={waveform.toUpperCase()} />
+        </div>
+
+        {/* Offset */}
+        <OffsetField
+          value={cwOffset}
+          onChange={(v) => { setCwOffset(v); sendAquasense({ cmd: 'set_waveform', type: waveform, offset_khz: v, amplitude: txAmp / 100 }); }}
+        />
+
+        {/* TX Gain */}
+        <div className="flex flex-col gap-2.5 p-3 rounded-xl bg-[#0a0a0a]/50 border border-white/5 mt-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">TX Gain</span>
+            <span className="text-sm font-semibold font-mono text-[#D1855C]">{txGain} dB</span>
+          </div>
+          <input
+            type="range" min={-23} max={66} step={1} value={txGain}
+            onChange={e => setTxGain(Number(e.target.value))}
+            onPointerUp={e => sendAquasense({ cmd: 'set_tx_gain', value: Number(e.target.value) })}
+            className="imu-slider"
+            style={{ '--pct': `${((txGain + 23) / 89) * 100}%` }}
+          />
+          <div className="flex justify-between">
+            <span className="text-[9px] text-[#333333]">-23</span>
+            <span className="text-[9px] text-[#333333]">66 dB</span>
+          </div>
+        </div>
+
+        {/* Amplitude */}
+        <div className="flex flex-col gap-2.5 p-3 rounded-xl bg-[#0a0a0a]/50 border border-white/5">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">Amplitude</span>
+            <span className="text-sm font-semibold font-mono text-[#D1855C]">{txAmp}%</span>
+          </div>
+          <input
+            type="range" min={0} max={100} step={1} value={txAmp}
+            onChange={e => setTxAmp(Number(e.target.value))}
+            onPointerUp={() => sendAquasense({ cmd: 'set_waveform', type: waveform, offset_khz: cwOffset, amplitude: txAmp / 100 })}
+            className="imu-slider"
+            style={{ '--pct': `${txAmp}%` }}
+          />
+        </div>
+      </Section>
+
+      {/* Reception */}
+      <Section label="Reception">
+        <ToggleButton
+          active={rxActive}
+          canActivate={canActivate}
+          onToggle={() => sendAquasense({ cmd: rxActive ? 'stop_rx' : 'start_rx' })}
+          activeLabel="Stop Reception"
+          idleLabel="Start Reception"
+          activeSubLabel="Streaming IQ from RX1"
+          idleSubLabel={!sdrConnected ? 'SDR not connected' : 'Ready to receive'}
+          color="cyan"
+        />
+
+        {/* RX Gain */}
+        <div className="flex flex-col gap-2.5 p-3 rounded-xl bg-[#0a0a0a]/50 border border-white/5 mt-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">RX Gain</span>
+            <span className="text-sm font-semibold font-mono text-[#22d3ee]">{rxGain} dB</span>
+          </div>
+          <input
+            type="range" min={0} max={60} step={1} value={rxGain}
+            onChange={e => setRxGain(Number(e.target.value))}
+            onPointerUp={e => sendAquasense({ cmd: 'set_rx_gain', value: Number(e.target.value) })}
+            className="rx-slider"
+            style={{ '--pct': `${(rxGain / 60) * 100}%` }}
+          />
+          <div className="flex justify-between">
+            <span className="text-[9px] text-[#333333]">0</span>
+            <span className="text-[9px] text-[#333333]">60 dB</span>
+          </div>
+        </div>
+
+        {/* FFT + Pause toggles */}
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => onToggleFFT(!showFFT)}
+            className={cn(
+              'py-3 rounded-2xl text-xs font-semibold uppercase tracking-widest',
+              'border transition-all duration-200 cursor-pointer',
+              showFFT
+                ? 'bg-[#22d3ee]/12 text-[#22d3ee] border-[#22d3ee]/30'
+                : 'bg-[#0a0a0a]/50 text-[#666666] border-white/5 hover:bg-white/8',
+            )}
+          >
+            FFT
+          </button>
+          <button
+            onClick={() => onTogglePause(!graphPaused)}
+            className={cn(
+              'py-3 rounded-2xl text-xs font-semibold uppercase tracking-widest',
+              'border transition-all duration-200 cursor-pointer',
+              graphPaused
+                ? 'bg-[#D1855C]/12 text-[#D1855C] border-[#D1855C]/30'
+                : 'bg-[#0a0a0a]/50 text-[#666666] border-white/5 hover:bg-white/8',
+            )}
+          >
+            {graphPaused ? 'Play' : 'Pause'}
+          </button>
+        </div>
+      </Section>
+    </>
+  );
+}
+
+function EditableField({ label, value, unit, onChange, min, max }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const startEdit = () => {
+    setDraft(String(value));
+    setEditing(true);
+  };
+
+  const commit = () => {
+    const num = parseFloat(draft);
+    if (!isNaN(num) && num >= min && num <= max) {
+      onChange(num);
+    }
+    setEditing(false);
+  };
+
+  return (
+    <div
+      onClick={!editing ? startEdit : undefined}
+      className={cn(
+        'relative flex items-center justify-between p-4 rounded-2xl border',
+        'transition-all duration-300',
+        editing
+          ? 'border-[#D1855C]/40 bg-[#D1855C]/5 cursor-text'
+          : 'border-white/8 bg-[#0a0a0a]/60 cursor-pointer hover:border-white/20 hover:bg-white/[0.02]',
+      )}
+    >
+      <div className="flex flex-col gap-0.5">
+        <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">{label}</span>
+        {editing ? (
+          <div className="flex items-baseline gap-1.5">
+            <input
+              autoFocus
+              type="text"
+              value={draft}
+              onChange={e => setDraft(e.target.value)}
+              onBlur={commit}
+              onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }}
+              className="bg-transparent text-xl font-bold font-mono text-white outline-none w-20"
+            />
+            <span className="text-sm font-semibold text-[#888888]">{unit}</span>
+          </div>
+        ) : (
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-xl font-bold font-mono text-white">{value}</span>
+            <span className="text-sm font-semibold text-[#888888]">{unit}</span>
+          </div>
+        )}
+      </div>
+      {!editing && (
+        <span className="text-[9px] font-medium uppercase tracking-widest text-[#333333] self-end pb-0.5">
+          tap to edit
+        </span>
+      )}
+      {editing && (
+        <div className="absolute bottom-0 left-4 right-4 h-px bg-gradient-to-r from-[#D1855C] to-[#E5A986] rounded-full" />
+      )}
+    </div>
+  );
+}
+
+function FreqField({ value, onChange }) {
+  return <EditableField label="Frequency" value={value} unit="MHz" onChange={onChange} min={47} max={6000} />;
+}
+
+function OffsetField({ value, onChange }) {
+  return <EditableField label="Offset" value={value} unit="kHz" onChange={onChange} min={0} max={5000} />;
+}
+
+function SampleRateField({ value, onChange }) {
+  return <EditableField label="Sample Rate" value={value} unit="MSPS" onChange={onChange} min={0.5} max={40} />;
+}

@@ -12,7 +12,7 @@ SCALE = 2047
 PORT = 9003
 VIS_FPS = 25
 FFT_SIZE = 4096
-VIS_SAMPLES = 512
+VIS_SAMPLES = 128
 
 
 class SDRServer:
@@ -121,14 +121,10 @@ class SDRServer:
             q_raw = iq[1::2].astype(np.float64)
             num = len(i_raw)
 
-            # Decimated time-domain
-            if num > VIS_SAMPLES:
-                step = num // VIS_SAMPLES
-                i_vis = i_raw[::step][:VIS_SAMPLES] / SCALE
-                q_vis = q_raw[::step][:VIS_SAMPLES] / SCALE
-            else:
-                i_vis = i_raw / SCALE
-                q_vis = q_raw / SCALE
+            # Contiguous time-domain slice (preserves waveform shape)
+            vis_len = min(VIS_SAMPLES, num)
+            i_vis = i_raw[:vis_len] / SCALE
+            q_vis = q_raw[:vis_len] / SCALE
 
             rx_msg = json.dumps({
                 'type': 'rx_data',

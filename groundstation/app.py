@@ -1,13 +1,25 @@
-"""Groundstation web application. Serves UI only — browser connects directly to Pi."""
+"""Groundstation web application. Serves the Vite-built frontend.
 
-from flask import Flask, render_template
+For development: run `npm run dev` in groundstation/frontend/ (port 5173).
+For production: run `npm run build` then `python app.py` (port 5000).
+"""
 
-app = Flask(__name__, template_folder='ui/templates', static_folder='ui/static')
+from flask import Flask, send_from_directory
+import os
+
+DIST_DIR = os.path.join(os.path.dirname(__file__), 'frontend', 'dist')
+
+app = Flask(__name__, static_folder=DIST_DIR)
 
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return send_from_directory(DIST_DIR, 'index.html')
+
+
+@app.route('/<path:path>')
+def static_files(path):
+    return send_from_directory(DIST_DIR, path)
 
 
 if __name__ == '__main__':

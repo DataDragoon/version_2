@@ -97,6 +97,7 @@ class BladeRFDriver:
             ch_tx.bandwidth = self.bandwidth
             ch_rx.sample_rate = self.sample_rate
             ch_rx.bandwidth = self.bandwidth
+            self._tx_buffer = self._generate(int(self.sample_rate * 0.01))
 
     def set_waveform(self, waveform_type, **params):
         with self._lock:
