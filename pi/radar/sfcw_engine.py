@@ -135,14 +135,14 @@ class SFCWEngine:
             dwell = self.dwell_time
 
         num_steps = int((stop - start) / step) + 1
-        freqs = np.linspace(start, stop, num_steps)
+        freqs = np.linspace(start, stop, num_steps).astype(np.int64)
         h_freq = np.zeros(num_steps, dtype=np.complex128)
 
         for i, freq in enumerate(freqs):
             if self._stop_event.is_set():
                 return None
 
-            self.driver.set_frequency(freq)
+            self.driver.set_frequency(int(freq))
             time.sleep(settle)
 
             accumulator = np.zeros(1, dtype=np.complex128)
