@@ -106,9 +106,27 @@ class SDRServer:
                     params['step_size'] = float(cmd['step_size_mhz']) * 1e6
                 if 'settle_time_ms' in cmd:
                     params['settle_time'] = float(cmd['settle_time_ms']) / 1000
-                if 'dwell_time_ms' in cmd:
-                    params['dwell_time'] = float(cmd['dwell_time_ms']) / 1000
+                if 'num_buffers' in cmd:
+                    params['num_buffers'] = int(cmd['num_buffers'])
                 self.sfcw.set_params(**params)
+                await self._broadcast_sfcw_status()
+
+            elif action == 'sfcw_initialize':
+                if self.driver.tx_running:
+                    self.driver.stop_tx()
+                if self.driver.rx_running:
+                    self.driver.stop_rx()
+                await self._broadcast_status()
+
+                def init_progress(step, total):
+                    self._sfcw_callback({
+                        'type': 'progress',
+                        'step': step,
+                        'total': total,
+                        'freq_mhz': 0,
+                    })
+
+                self.sfcw.initialize_tune_table(progress_callback=init_progress)
                 await self._broadcast_sfcw_status()
 
             elif action == 'sfcw_start':

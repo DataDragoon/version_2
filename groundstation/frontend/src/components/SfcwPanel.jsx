@@ -2,14 +2,19 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile, ToggleButton } from './Sidebar';
 
+const BUFFER_SAMPLES = 1024;
+const SAMPLE_RATE = 2_000_000;
+const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
+
 export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr }) {
   const [startFreq, setStartFreq] = useState(1000);
   const [stopFreq, setStopFreq] = useState(5000);
   const [stepSize, setStepSize] = useState(10);
   const [settleTime, setSettleTime] = useState(1);
-  const [dwellTime, setDwellTime] = useState(4);
+  const [numBuffers, setNumBuffers] = useState(1);
 
   const canActivate = isConnected && sdrConnected;
+  const tuneValid = sfcwStatus?.tune_valid ?? false;
 
   const sendParams = (overrides = {}) => {
     sendSdr({
@@ -18,7 +23,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
       stop_freq_mhz: overrides.stopFreq ?? stopFreq,
       step_size_mhz: overrides.stepSize ?? stepSize,
       settle_time_ms: overrides.settleTime ?? settleTime,
-      dwell_time_ms: overrides.dwellTime ?? dwellTime,
+      num_buffers: overrides.numBuffers ?? numBuffers,
     });
   };
 
@@ -26,7 +31,8 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
   const bandwidth = (stopFreq - startFreq) * 1e6;
   const rangeRes = bandwidth > 0 ? (299792458 / (2 * bandwidth)) : Infinity;
   const maxRange = stepSize > 0 ? (299792458 / (2 * stepSize * 1e6)) : Infinity;
-  const sweepTime = numSteps * (settleTime + dwellTime) / 1000;
+  const captureTimeMs = numBuffers * BUFFER_TIME_MS;
+  const sweepTime = numSteps * (settleTime + captureTimeMs) / 1000;
 
   return (
     <>
@@ -72,15 +78,19 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             max={50}
           />
         </div>
-        <EditableField
-          label="Dwell"
-          value={dwellTime}
-          unit="ms"
-          onChange={(v) => { setDwellTime(v); sendParams({ dwellTime: v }); }}
-          min={0.5}
-          max={200}
-          hint="min 0.5 ms (1024 samples at 2 MSPS)"
-        />
+        <div className="flex flex-col gap-1">
+          <EditableField
+            label="Buffers"
+            value={numBuffers}
+            unit="×1024 smp"
+            onChange={(v) => { setNumBuffers(v); sendParams({ numBuffers: v }); }}
+            min={1}
+            max={64}
+          />
+          <span className="text-[9px] text-[#333333] leading-tight px-1">
+            {captureTimeMs.toFixed(2)} ms capture per step ({(numBuffers * BUFFER_SAMPLES).toLocaleString()} samples)
+          </span>
+        </div>
       </Section>
 
       {/* Sweep Info */}
@@ -93,25 +103,47 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
         </div>
       </Section>
 
+      {/* Initialize */}
+      <Section label="Tune Table">
+        <button
+          onClick={() => sendSdr({ cmd: 'sfcw_initialize' })}
+          disabled={!canActivate}
+          className={cn(
+            'w-full py-3 rounded-2xl text-xs font-semibold uppercase tracking-widest',
+            'border transition-all duration-200 cursor-pointer',
+            'disabled:cursor-not-allowed disabled:opacity-40',
+            tuneValid
+              ? 'bg-emerald-500/8 text-emerald-400 border-emerald-500/30'
+              : 'bg-[#D1855C]/12 text-[#D1855C] border-[#D1855C]/30 hover:bg-[#D1855C]/20',
+          )}
+        >
+          {tuneValid ? 'Initialized ✓' : 'Initialize'}
+        </button>
+        {!tuneValid && canActivate && (
+          <span className="text-[9px] text-[#D1855C]/70 leading-tight">
+            Sweep params changed — re-initialize to apply
+          </span>
+        )}
+      </Section>
+
       {/* Sweep Control */}
       <Section label="Sweep">
         <ToggleButton
           active={sfcwRunning}
-          canActivate={canActivate}
+          canActivate={canActivate && tuneValid}
           onToggle={() => sendSdr({ cmd: sfcwRunning ? 'sfcw_stop' : 'sfcw_start' })}
           activeLabel="Stop Sweep"
           idleLabel="Start Sweep"
           activeSubLabel={`Sweeping ${startFreq}–${stopFreq} MHz`}
-          idleSubLabel={!sdrConnected ? 'SDR not connected' : `${numSteps} steps ready`}
+          idleSubLabel={!sdrConnected ? 'SDR not connected' : !tuneValid ? 'Initialize first' : `${numSteps} steps ready`}
           color="orange"
         />
       </Section>
-
     </>
   );
 }
 
-function EditableField({ label, value, unit, onChange, min, max, hint }) {
+function EditableField({ label, value, unit, onChange, min, max }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
 
@@ -158,9 +190,6 @@ function EditableField({ label, value, unit, onChange, min, max, hint }) {
           <span className="text-base font-bold font-mono text-white">{value}</span>
           <span className="text-xs font-semibold text-[#888888]">{unit}</span>
         </div>
-      )}
-      {hint && !editing && (
-        <span className="text-[9px] text-[#333333] leading-tight">{hint}</span>
       )}
       {editing && (
         <div className="absolute bottom-0 left-3 right-3 h-px bg-gradient-to-r from-[#D1855C] to-[#E5A986] rounded-full" />
