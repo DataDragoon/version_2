@@ -3,6 +3,7 @@
 import threading
 import numpy as np
 import bladerf
+from bladerf._bladerf import ChannelLayout, Format
 
 SCALE = 2047
 
@@ -53,23 +54,6 @@ class BladeRFDriver:
         ch_rx.sample_rate = int(self.sample_rate)
         ch_rx.bandwidth = int(self.bandwidth)
         ch_rx.gain = int(self.rx_gain)
-        # Configure sync interfaces upfront so TX and RX can run simultaneously
-        self.device.sync_config(
-            layout=bladerf.ChannelLayout.TX_X1,
-            fmt=bladerf.Format.SC16_Q11,
-            num_buffers=16,
-            buffer_size=4096,
-            num_transfers=8,
-            stream_timeout=3500
-        )
-        self.device.sync_config(
-            layout=bladerf.ChannelLayout.RX_X1,
-            fmt=bladerf.Format.SC16_Q11,
-            num_buffers=16,
-            buffer_size=4096,
-            num_transfers=8,
-            stream_timeout=3500
-        )
 
     def set_frequency(self, freq_hz):
         with self._lock:
@@ -149,6 +133,14 @@ class BladeRFDriver:
         self._tx_stop.clear()
         self.tx_running = True
         self.device.enable_module(bladerf.CHANNEL_TX(0), True)
+        self.device.sync_config(
+            layout=ChannelLayout.TX_X1,
+            fmt=Format.SC16_Q11,
+            num_buffers=16,
+            buffer_size=4096,
+            num_transfers=8,
+            stream_timeout=3500
+        )
         self._tx_thread = threading.Thread(target=self._tx_loop, daemon=True)
         self._tx_thread.start()
 
@@ -182,6 +174,14 @@ class BladeRFDriver:
         self._rx_stop.clear()
         self.rx_running = True
         self.device.enable_module(bladerf.CHANNEL_RX(0), True)
+        self.device.sync_config(
+            layout=ChannelLayout.RX_X1,
+            fmt=Format.SC16_Q11,
+            num_buffers=16,
+            buffer_size=4096,
+            num_transfers=8,
+            stream_timeout=3500
+        )
         self._rx_thread = threading.Thread(target=self._rx_loop, args=(callback,), daemon=True)
         self._rx_thread.start()
 
