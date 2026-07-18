@@ -113,6 +113,7 @@ class SFCWEngine:
 
     def _configure_hardware(self):
         self.driver.set_waveform('cw', offset=0, amplitude=0.9)
+        self.driver.enable_single_synth()
 
     def _start_tx_rx(self):
         self._rx_buffer = None
@@ -123,6 +124,7 @@ class SFCWEngine:
     def _stop_tx_rx(self):
         self.driver.stop_rx()
         self.driver.stop_tx()
+        self.driver.disable_single_synth()
 
     def _rx_capture(self, iq_buffer):
         self._rx_buffer = iq_buffer
@@ -142,15 +144,14 @@ class SFCWEngine:
 
         dev_ptr = self.driver.device.dev[0]
         tx_ch = bladerf.CHANNEL_TX(0)
-        rx_ch = bladerf.CHANNEL_RX(0)
 
         for i in range(num_steps):
             if self._stop_event.is_set():
                 return None
 
             f = int(freqs[i])
+            # Single-synth: TX PLL drives RX LO, only retune TX
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
-            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
             time.sleep(settle)
 
             accumulator = 0j

@@ -98,13 +98,17 @@ with a simple framed binary protocol. Requirements:
 - High-throughput data streaming (Pi -> groundstation)
 - Multiplexed channels (IQ data, sensor data, camera, status)
 
-## Radar Parameters (TBD)
+## Radar Parameters
 
-- Frequency range: depends on bladeRF model (likely 300 MHz - 3.8 GHz)
-- Step size: TBD based on range resolution needs
-- Dwell time per step: TBD
-- TX power: TBD
+- Hardware: bladeRF xA9 (AD9361 RFIC)
+- Frequency range: 1–3 GHz (configurable, max ~3.8 GHz)
+- Step size: 10 MHz default
+- Dwell time per step: 1 ms (PLL settle)
+- TX power: 0.9 amplitude, gain 47 dB
 - Antenna polarization: co-pol initially
+- Phase coherence: Single-synth mode — TX PLL drives RX LO via AD9361
+  register 0x015 (ENSM_CONFIG_2). Eliminates inter-channel phase
+  discontinuity that would otherwise corrupt IFFT range profiles.
 
 ## Wiring — MPU-6500 (I2C mode)
 

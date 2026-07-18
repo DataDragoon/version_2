@@ -3,9 +3,12 @@
 import threading
 import numpy as np
 import bladerf
-from bladerf._bladerf import ChannelLayout, Format
+from bladerf._bladerf import ChannelLayout, Format, ffi, libbladeRF
 
 SCALE = 2047
+
+# AD9361 register addresses
+_REG_ENSM_CONFIG_2 = 0x015
 
 
 class BladeRFDriver:
@@ -30,6 +33,7 @@ class BladeRFDriver:
         self._rx_stop = threading.Event()
         self._lock = threading.Lock()
         self._tx_buffer = None
+        self._single_synth = False
 
     def open(self):
         self.device = bladerf.BladeRF()
@@ -55,11 +59,51 @@ class BladeRFDriver:
         ch_rx.bandwidth = int(self.bandwidth)
         ch_rx.gain = int(self.rx_gain)
 
+    # -- RFIC register access (AD9361 via NIOS SPI) --
+
+    def _read_rfic(self, addr):
+        val = ffi.new("uint8_t *")
+        ret = libbladeRF.bladerf_get_rfic_register(self.device.dev[0], addr, val)
+        if ret != 0:
+            raise RuntimeError(f"RFIC read 0x{addr:03X} failed: {ret}")
+        return val[0]
+
+    def _write_rfic(self, addr, val):
+        ret = libbladeRF.bladerf_set_rfic_register(self.device.dev[0], addr, val)
+        if ret != 0:
+            raise RuntimeError(f"RFIC write 0x{addr:03X}=0x{val:02X} failed: {ret}")
+
+    def enable_single_synth(self):
+        """Route the TX synthesizer to also serve as the RX LO.
+
+        Eliminates PLL phase discontinuity between TX and RX, which is
+        required for coherent SFCW operation. Both channels must be at
+        the same frequency (standard for SFCW).
+        """
+        reg = self._read_rfic(_REG_ENSM_CONFIG_2)
+        # Clear DUAL_SYNTH_MODE (bit 2) — forces single-synth (TX PLL drives both)
+        # Set POWER_DOWN_RX_SYNTH (bit 6) — shuts off the unused RX PLL
+        # Keep TXNRX_SPI_CTRL (bit 4) for SPI-controlled state transitions
+        reg = (reg & ~0x04) | 0x50  # clear bit2, set bits 6 and 4
+        self._write_rfic(_REG_ENSM_CONFIG_2, reg)
+        self._single_synth = True
+        print("[bladerf] Single-synth mode enabled (TX PLL drives RX)")
+
+    def disable_single_synth(self):
+        """Restore independent TX/RX synthesizers (FDD dual-synth)."""
+        reg = self._read_rfic(_REG_ENSM_CONFIG_2)
+        # Set DUAL_SYNTH_MODE (bit 2), clear POWER_DOWN_RX_SYNTH (bit 6)
+        reg = (reg | 0x04) & ~0x40
+        self._write_rfic(_REG_ENSM_CONFIG_2, reg)
+        self._single_synth = False
+        print("[bladerf] Dual-synth mode restored")
+
     def set_frequency(self, freq_hz):
         with self._lock:
             self.center_freq = int(freq_hz)
             self.device.Channel(bladerf.CHANNEL_TX(0)).frequency = self.center_freq
-            self.device.Channel(bladerf.CHANNEL_RX(0)).frequency = self.center_freq
+            if not self._single_synth:
+                self.device.Channel(bladerf.CHANNEL_RX(0)).frequency = self.center_freq
 
     def set_tx_gain(self, gain_db):
         with self._lock:
