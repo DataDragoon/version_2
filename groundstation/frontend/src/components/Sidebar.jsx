@@ -1,13 +1,15 @@
-import { Activity, Eye, Radio, ChevronLeft, Wifi, WifiOff } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ChevronLeft, Wifi, WifiOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ImuPanel from './ImuPanel';
 import OptiFlowPanel from './OptiFlowPanel';
-import AquaSensePanel from './AquaSensePanel';
+import RfCalibPanel from './RfCalibPanel';
+import SfcwPanel from './SfcwPanel';
 
 const PANELS = [
   { id: 'imu',       label: 'IMU',       icon: Activity },
   { id: 'optiflow',  label: 'OptiFlow',  icon: Eye },
-  { id: 'aquasense', label: 'RF Calibrate', icon: Radio },
+  { id: 'rfcalib',   label: 'RF Calibrate', icon: Radio },
+  { id: 'sfcw',      label: 'SFCW',      icon: Radar },
 ];
 
 export default function Sidebar({
@@ -30,10 +32,12 @@ export default function Sidebar({
   onToggleFFT,
   graphPaused,
   onTogglePause,
-  sendAquasense,
+  sendSdr,
   gyroComp,
   onGyroCompChange,
   sendOptiflow,
+  sfcwRunning,
+  sfcwStatus,
 }) {
   return (
     <div className="flex h-screen shrink-0">
@@ -154,8 +158,8 @@ export default function Sidebar({
                   sendOptiflow={sendOptiflow}
                 />
               )}
-              {activePanel === 'aquasense' && (
-                <AquaSensePanel
+              {activePanel === 'rfcalib' && (
+                <RfCalibPanel
                   isConnected={isConnected}
                   sdrConnected={sdrConnected}
                   txActive={txActive}
@@ -164,7 +168,16 @@ export default function Sidebar({
                   onToggleFFT={onToggleFFT}
                   graphPaused={graphPaused}
                   onTogglePause={onTogglePause}
-                  sendAquasense={sendAquasense}
+                  sendSdr={sendSdr}
+                />
+              )}
+              {activePanel === 'sfcw' && (
+                <SfcwPanel
+                  isConnected={isConnected}
+                  sdrConnected={sdrConnected}
+                  sfcwRunning={sfcwRunning}
+                  sfcwStatus={sfcwStatus}
+                  sendSdr={sendSdr}
                 />
               )}
             </div>

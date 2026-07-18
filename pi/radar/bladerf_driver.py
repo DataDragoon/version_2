@@ -168,7 +168,7 @@ class BladeRFDriver:
             self._tx_thread = None
         self.tx_running = False
 
-    def start_rx(self, callback):
+    def start_rx(self, callback, num_samples=16384):
         if self.rx_running:
             return
         self._rx_stop.clear()
@@ -182,11 +182,10 @@ class BladeRFDriver:
             num_transfers=8,
             stream_timeout=3500
         )
-        self._rx_thread = threading.Thread(target=self._rx_loop, args=(callback,), daemon=True)
+        self._rx_thread = threading.Thread(target=self._rx_loop, args=(callback, num_samples), daemon=True)
         self._rx_thread.start()
 
-    def _rx_loop(self, callback):
-        num_samples = 16384
+    def _rx_loop(self, callback, num_samples):
         buf = bytearray(num_samples * 2 * 2)
         try:
             while not self._rx_stop.is_set():

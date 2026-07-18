@@ -19,7 +19,7 @@ export default function App() {
   const optiflowCountRef = useRef(0);
   const [gyroComp, setGyroComp] = useState(false);
 
-  // AquaSense state
+  // SDR / RF Calib state
   const [sdrStatus, setSdrStatus] = useState(null);
   const [rxSamples, setRxSamples] = useState([]);
   const [fftData, setFftData] = useState(null);
@@ -27,6 +27,12 @@ export default function App() {
   const [rxActive, setRxActive] = useState(false);
   const [showFFT, setShowFFT] = useState(true);
   const [graphPaused, setGraphPaused] = useState(false);
+
+  // SFCW state
+  const [sfcwRunning, setSfcwRunning] = useState(false);
+  const [sfcwStatus, setSfcwStatus] = useState(null);
+  const [sfcwResult, setSfcwResult] = useState(null);
+  const [sfcwProgress, setSfcwProgress] = useState(null);
 
   // IMU WebSocket
   const handleImuMessage = useCallback((msg) => {
@@ -49,8 +55,8 @@ export default function App() {
   const optiflowUrl = piIp ? `ws://${piIp}:9002` : null;
   const { status: optiflowStatus, send: sendOptiflow, connect: connectOptiflow, disconnect: disconnectOptiflow } = useWebSocket(optiflowUrl, handleOptiflowMessage);
 
-  // AquaSense WebSocket
-  const handleAquasenseMessage = useCallback((msg) => {
+  // SDR WebSocket (RF Calib + SFCW share this connection)
+  const handleSdrMessage = useCallback((msg) => {
     if (msg.type === 'status') {
       setSdrStatus(msg);
       setTxActive(msg.tx_active);
@@ -63,11 +69,22 @@ export default function App() {
       setRxSamples(msg.i);
     } else if (msg.type === 'rx_fft') {
       setFftData({ magnitudes: msg.magnitudes, freq_span: msg.freq_span || 2000000 });
+    } else if (msg.type === 'sfcw_status') {
+      setSfcwRunning(msg.running);
+      setSfcwStatus(msg);
+    } else if (msg.type === 'sfcw_result') {
+      setSfcwResult(msg);
+      setSfcwProgress(null);
+    } else if (msg.type === 'sfcw_progress') {
+      setSfcwProgress(msg);
+    } else if (msg.type === 'sfcw_error') {
+      setSfcwRunning(false);
+      setSfcwProgress(null);
     }
   }, []);
 
-  const aquasenseUrl = piIp ? `ws://${piIp}:9003` : null;
-  const { status: aquasenseStatus, send: sendAquasense, connect: connectAquasense, disconnect: disconnectAquasense } = useWebSocket(aquasenseUrl, handleAquasenseMessage);
+  const sdrUrl = piIp ? `ws://${piIp}:9003` : null;
+  const { status: sdrConnectionStatus, send: sendSdr, connect: connectSdr, disconnect: disconnectSdr } = useWebSocket(sdrUrl, handleSdrMessage);
 
   // Rate counter interval
   const rateIntervalRef = useRef(null);
@@ -77,7 +94,7 @@ export default function App() {
     localStorage.setItem('pi_ip', piIp);
     connectImu();
     connectOptiflow();
-    connectAquasense();
+    connectSdr();
 
     if (rateIntervalRef.current) clearInterval(rateIntervalRef.current);
     rateIntervalRef.current = setInterval(() => {
@@ -86,16 +103,16 @@ export default function App() {
       setOptiflowRate(optiflowCountRef.current);
       optiflowCountRef.current = 0;
     }, 1000);
-  }, [piIp, connectImu, connectOptiflow, connectAquasense]);
+  }, [piIp, connectImu, connectOptiflow, connectSdr]);
 
   const handleDisconnect = useCallback(() => {
     disconnectImu();
     disconnectOptiflow();
-    disconnectAquasense();
+    disconnectSdr();
     if (rateIntervalRef.current) { clearInterval(rateIntervalRef.current); rateIntervalRef.current = null; }
     setImuRate(0);
     setOptiflowRate(0);
-  }, [disconnectImu, disconnectOptiflow, disconnectAquasense]);
+  }, [disconnectImu, disconnectOptiflow, disconnectSdr]);
 
   const isConnected = imuStatus === 'connected';
 
@@ -123,20 +140,22 @@ export default function App() {
         lidarMm={lidarMm}
         optiflowRate={optiflowRate}
         optiflowData={optiflowData}
-        sdrConnected={aquasenseStatus === 'connected'}
+        sdrConnected={sdrConnectionStatus === 'connected'}
         txActive={txActive}
         rxActive={rxActive}
         showFFT={showFFT}
         onToggleFFT={setShowFFT}
         graphPaused={graphPaused}
         onTogglePause={setGraphPaused}
-        sendAquasense={sendAquasense}
+        sendSdr={sendSdr}
         gyroComp={gyroComp}
         onGyroCompChange={(v) => {
           setGyroComp(v);
           sendOptiflow({ cmd: 'gyro_comp', enabled: v });
         }}
         sendOptiflow={sendOptiflow}
+        sfcwRunning={sfcwRunning}
+        sfcwStatus={sfcwStatus}
       />
       <Viewport
         activePanel={activePanel}
@@ -150,6 +169,9 @@ export default function App() {
         fftData={fftData}
         showFFT={showFFT}
         graphPaused={graphPaused}
+        sfcwResult={sfcwResult}
+        sfcwProgress={sfcwProgress}
+        sfcwRunning={sfcwRunning}
       />
     </div>
   );

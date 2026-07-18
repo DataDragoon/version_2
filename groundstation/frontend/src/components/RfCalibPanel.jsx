@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile, ToggleButton } from './Sidebar';
 
-export default function AquaSensePanel({ isConnected, sdrConnected, txActive, rxActive, showFFT, onToggleFFT, graphPaused, onTogglePause, sendAquasense }) {
+export default function RfCalibPanel({ isConnected, sdrConnected, txActive, rxActive, showFFT, onToggleFFT, graphPaused, onTogglePause, sendSdr }) {
   const [freq, setFreq] = useState(915);
   const [txGain, setTxGain] = useState(47);
   const [txAmp, setTxAmp] = useState(80);
@@ -21,7 +21,7 @@ export default function AquaSensePanel({ isConnected, sdrConnected, txActive, rx
       <Section label="Center Frequency">
                 <FreqField
           value={freq}
-          onChange={(v) => { setFreq(v); sendAquasense({ cmd: 'set_freq', value: v }); }}
+          onChange={(v) => { setFreq(v); sendSdr({ cmd: 'set_freq', value: v }); }}
         />
       </Section>
 
@@ -29,7 +29,7 @@ export default function AquaSensePanel({ isConnected, sdrConnected, txActive, rx
       <Section label="Sample Rate">
         <SampleRateField
           value={sampleRate}
-          onChange={(v) => { setSampleRate(v); sendAquasense({ cmd: 'set_sample_rate', value: v }); }}
+          onChange={(v) => { setSampleRate(v); sendSdr({ cmd: 'set_sample_rate', value: v }); }}
         />
       </Section>
 
@@ -38,7 +38,7 @@ export default function AquaSensePanel({ isConnected, sdrConnected, txActive, rx
         <ToggleButton
           active={txActive}
           canActivate={canActivate}
-          onToggle={() => sendAquasense({ cmd: txActive ? 'stop_tx' : 'start_tx' })}
+          onToggle={() => sendSdr({ cmd: txActive ? 'stop_tx' : 'start_tx' })}
           activeLabel="Stop Transmission"
           idleLabel="Start Transmission"
           activeSubLabel={waveform === 'cw' ? 'CW tone on TX1 antenna' : 'Chirp on TX1 antenna'}
@@ -56,7 +56,7 @@ export default function AquaSensePanel({ isConnected, sdrConnected, txActive, rx
             onChange={e => {
               const v = e.target.value;
               setWaveform(v);
-              sendAquasense({ cmd: 'set_waveform', type: v, offset_khz: cwOffset, amplitude: txAmp / 100, chirp_bw_khz: chirpBw, chirp_duration_ms: chirpDur });
+              sendSdr({ cmd: 'set_waveform', type: v, offset_khz: cwOffset, amplitude: txAmp / 100, chirp_bw_khz: chirpBw, chirp_duration_ms: chirpDur });
             }}
             className="bg-[#111] border border-white/10 rounded-lg px-3 py-2 text-sm font-mono text-white outline-none cursor-pointer appearance-none"
           >
@@ -69,7 +69,7 @@ export default function AquaSensePanel({ isConnected, sdrConnected, txActive, rx
         {waveform === 'cw' && (
           <OffsetField
             value={cwOffset}
-            onChange={(v) => { setCwOffset(v); sendAquasense({ cmd: 'set_waveform', type: waveform, offset_khz: v, amplitude: txAmp / 100 }); }}
+            onChange={(v) => { setCwOffset(v); sendSdr({ cmd: 'set_waveform', type: waveform, offset_khz: v, amplitude: txAmp / 100 }); }}
           />
         )}
 
@@ -78,11 +78,11 @@ export default function AquaSensePanel({ isConnected, sdrConnected, txActive, rx
           <>
             <ChirpBwField
               value={chirpBw}
-              onChange={(v) => { setChirpBw(v); sendAquasense({ cmd: 'set_waveform', type: waveform, chirp_bw_khz: v, chirp_duration_ms: chirpDur, amplitude: txAmp / 100 }); }}
+              onChange={(v) => { setChirpBw(v); sendSdr({ cmd: 'set_waveform', type: waveform, chirp_bw_khz: v, chirp_duration_ms: chirpDur, amplitude: txAmp / 100 }); }}
             />
             <ChirpDurField
               value={chirpDur}
-              onChange={(v) => { setChirpDur(v); sendAquasense({ cmd: 'set_waveform', type: waveform, chirp_bw_khz: chirpBw, chirp_duration_ms: v, amplitude: txAmp / 100 }); }}
+              onChange={(v) => { setChirpDur(v); sendSdr({ cmd: 'set_waveform', type: waveform, chirp_bw_khz: chirpBw, chirp_duration_ms: v, amplitude: txAmp / 100 }); }}
             />
           </>
         )}
@@ -96,7 +96,7 @@ export default function AquaSensePanel({ isConnected, sdrConnected, txActive, rx
           <input
             type="range" min={-23} max={66} step={1} value={txGain}
             onChange={e => setTxGain(Number(e.target.value))}
-            onPointerUp={e => sendAquasense({ cmd: 'set_tx_gain', value: Number(e.target.value) })}
+            onPointerUp={e => sendSdr({ cmd: 'set_tx_gain', value: Number(e.target.value) })}
             className="imu-slider"
             style={{ '--pct': `${((txGain + 23) / 89) * 100}%` }}
           />
@@ -115,7 +115,7 @@ export default function AquaSensePanel({ isConnected, sdrConnected, txActive, rx
           <input
             type="range" min={0} max={100} step={1} value={txAmp}
             onChange={e => setTxAmp(Number(e.target.value))}
-            onPointerUp={() => sendAquasense({ cmd: 'set_waveform', type: waveform, offset_khz: cwOffset, amplitude: txAmp / 100 })}
+            onPointerUp={() => sendSdr({ cmd: 'set_waveform', type: waveform, offset_khz: cwOffset, amplitude: txAmp / 100 })}
             className="imu-slider"
             style={{ '--pct': `${txAmp}%` }}
           />
@@ -127,7 +127,7 @@ export default function AquaSensePanel({ isConnected, sdrConnected, txActive, rx
         <ToggleButton
           active={rxActive}
           canActivate={canActivate}
-          onToggle={() => sendAquasense({ cmd: rxActive ? 'stop_rx' : 'start_rx' })}
+          onToggle={() => sendSdr({ cmd: rxActive ? 'stop_rx' : 'start_rx' })}
           activeLabel="Stop Reception"
           idleLabel="Start Reception"
           activeSubLabel="Streaming IQ from RX1"
@@ -144,7 +144,7 @@ export default function AquaSensePanel({ isConnected, sdrConnected, txActive, rx
           <input
             type="range" min={0} max={60} step={1} value={rxGain}
             onChange={e => setRxGain(Number(e.target.value))}
-            onPointerUp={e => sendAquasense({ cmd: 'set_rx_gain', value: Number(e.target.value) })}
+            onPointerUp={e => sendSdr({ cmd: 'set_rx_gain', value: Number(e.target.value) })}
             className="rx-slider"
             style={{ '--pct': `${(rxGain / 60) * 100}%` }}
           />

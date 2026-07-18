@@ -1,10 +1,11 @@
 import { cn } from '@/lib/utils';
-import { Activity, Eye, Radio, Zap } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, Zap } from 'lucide-react';
 import ImuDisplay from './ImuDisplay';
 import OptiFlowDisplay from './OptiFlowDisplay';
 import WaveformDisplay from './WaveformDisplay';
 import ReceiverDisplay from './ReceiverDisplay';
 import FftDisplay from './FftDisplay';
+import SfcwDisplay from './SfcwDisplay';
 
 export default function Viewport({
   activePanel,
@@ -18,6 +19,9 @@ export default function Viewport({
   fftData,
   showFFT,
   graphPaused,
+  sfcwResult,
+  sfcwProgress,
+  sfcwRunning,
 }) {
   if (!activePanel) {
     return (
@@ -81,7 +85,7 @@ export default function Viewport({
     );
   }
 
-  if (activePanel === 'aquasense') {
+  if (activePanel === 'rfcalib') {
     return (
       <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
 
@@ -120,6 +124,33 @@ export default function Viewport({
           </div>
         </div>
 
+      </div>
+    );
+  }
+
+  if (activePanel === 'sfcw') {
+    return (
+      <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
+        <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
+          <PaneHeader icon={Radar} label="SFCW Radar" active={sfcwRunning || !!sfcwResult} color="orange" />
+          <div className="flex-1 min-h-0 relative overflow-hidden">
+            {(sfcwRunning || sfcwResult) && (
+              <div className="absolute inset-0 pointer-events-none">
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#D1855C]/4 blur-[80px] rounded-full" />
+              </div>
+            )}
+            <SfcwDisplay
+              sfcwResult={sfcwResult}
+              sfcwProgress={sfcwProgress}
+              sfcwRunning={sfcwRunning}
+            />
+            {!sfcwResult && !sfcwRunning && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No sweep data</span>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     );
   }

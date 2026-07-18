@@ -40,5 +40,8 @@ asked. These files are how context survives across sessions and collaborators.
 ## Current Phase
 
 IMU, LiDAR, Camera, and bladeRF SDR integrated. All stream to groundstation debug panels.
-AquaSense panel provides signal generator + oscilloscope for bladeRF calibration (TX1/RX1).
-Next steps: SFCW stepped-frequency scanning, OptiFlow pipeline.
+RF Calib panel provides signal generator + oscilloscope for bladeRF calibration (TX1/RX1).
+SFCW panel performs stepped-frequency sweeps (1–5 GHz default) with range profile + waterfall display.
+Both RF panels share port 9003 — starting an SFCW sweep auto-stops any active TX/RX in RF Calib.
+Pi-side architecture: bladerf_driver.py (HAL) → sfcw_engine.py (sweep logic) → sdr_server.py (WebSocket).
+Next steps: OptiFlow pipeline, SAR reconstruction integration.
