@@ -92,7 +92,7 @@ class SFCWEngine:
         }
 
     def initialize_tune_table(self, progress_callback=None):
-        """Pre-compute quick-tune values for every frequency step."""
+        """Pre-compute frequency list for every sweep step."""
         with self._lock:
             start = self.start_freq
             stop = self.stop_freq
@@ -101,25 +101,19 @@ class SFCWEngine:
         num_steps = int((stop - start) / step) + 1
         freqs = np.linspace(start, stop, num_steps).astype(np.int64)
 
+        # Validate that the device can tune to each frequency
         ch_tx = self.driver.device.Channel(bladerf.CHANNEL_TX(0))
         ch_rx = self.driver.device.Channel(bladerf.CHANNEL_RX(0))
-
-        tx_tunes = []
-        rx_tunes = []
 
         for i, freq in enumerate(freqs):
             f = int(freq)
             ch_tx.frequency = f
             ch_rx.frequency = f
-            tx_tunes.append(ch_tx.get_quick_tune())
-            rx_tunes.append(ch_rx.get_quick_tune())
 
             if progress_callback and i % 20 == 0:
                 progress_callback(i, num_steps)
 
         self._tune_table = {
-            'tx': tx_tunes,
-            'rx': rx_tunes,
             'freqs': freqs.tolist(),
         }
         self._tune_params = {
@@ -136,8 +130,6 @@ class SFCWEngine:
         data = {
             'params': self._tune_params,
             'freqs': self._tune_table['freqs'],
-            'tx': [self._serialize_quick_tune(qt) for qt in self._tune_table['tx']],
-            'rx': [self._serialize_quick_tune(qt) for qt in self._tune_table['rx']],
         }
         try:
             with open(TUNE_TABLE_PATH, 'w') as f:
@@ -155,41 +147,18 @@ class SFCWEngine:
             self._tune_table = None
 
     def _restore_tune_table(self):
-        """Load the full tune table from disk and reconstruct quick-tune objects."""
+        """Load the tune table (frequency list) from disk."""
         try:
             with open(TUNE_TABLE_PATH, 'r') as f:
                 data = json.load(f)
             self._tune_params = data['params']
             self._tune_table = {
                 'freqs': data['freqs'],
-                'tx': [self._deserialize_quick_tune(qt) for qt in data['tx']],
-                'rx': [self._deserialize_quick_tune(qt) for qt in data['rx']],
             }
         except Exception as e:
             print(f"[sfcw] Warning: could not restore tune table: {e}")
             self._tune_params = None
             self._tune_table = None
-
-    def _serialize_quick_tune(self, qt):
-        return {
-            'freqsel': qt.freqsel,
-            'vcocap': qt.vcocap,
-            'nint': qt.nint,
-            'nfrac': qt.nfrac,
-            'flags': qt.flags,
-            'xb_gpio': qt.xb_gpio if hasattr(qt, 'xb_gpio') else 0,
-        }
-
-    def _deserialize_quick_tune(self, data):
-        qt = bladerf.QuickTune()
-        qt.freqsel = data['freqsel']
-        qt.vcocap = data['vcocap']
-        qt.nint = data['nint']
-        qt.nfrac = data['nfrac']
-        qt.flags = data['flags']
-        if hasattr(qt, 'xb_gpio'):
-            qt.xb_gpio = data.get('xb_gpio', 0)
-        return qt
 
     def start(self, callback):
         if self.running:
@@ -255,9 +224,8 @@ class SFCWEngine:
             settle = self.settle_time
             num_buffers = self.num_buffers
 
-        tx_tunes = self._tune_table['tx']
-        rx_tunes = self._tune_table['rx']
-        num_steps = len(tx_tunes)
+        freqs = self._tune_table['freqs']
+        num_steps = len(freqs)
         h_freq = np.zeros(num_steps, dtype=np.complex128)
 
         ch_tx = self.driver.device.Channel(bladerf.CHANNEL_TX(0))
@@ -267,8 +235,8 @@ class SFCWEngine:
             if self._stop_event.is_set():
                 return None
 
-            ch_tx.set_quick_tune(tx_tunes[i])
-            ch_rx.set_quick_tune(rx_tunes[i])
+            ch_tx.frequency = int(freqs[i])
+            ch_rx.frequency = int(freqs[i])
             time.sleep(settle)
 
             accumulator = 0j
