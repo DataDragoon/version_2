@@ -14,7 +14,6 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
   const [numBuffers, setNumBuffers] = useState(1);
 
   const canActivate = isConnected && sdrConnected;
-  const tuneValid = sfcwStatus?.tune_valid ?? false;
 
   const sendParams = (overrides = {}) => {
     sendSdr({
@@ -103,39 +102,16 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
         </div>
       </Section>
 
-      {/* Initialize */}
-      <Section label="Tune Table">
-        <button
-          onClick={() => sendSdr({ cmd: 'sfcw_initialize' })}
-          disabled={!canActivate}
-          className={cn(
-            'w-full py-3 rounded-2xl text-xs font-semibold uppercase tracking-widest',
-            'border transition-all duration-200 cursor-pointer',
-            'disabled:cursor-not-allowed disabled:opacity-40',
-            tuneValid
-              ? 'bg-emerald-500/8 text-emerald-400 border-emerald-500/30'
-              : 'bg-[#D1855C]/12 text-[#D1855C] border-[#D1855C]/30 hover:bg-[#D1855C]/20',
-          )}
-        >
-          {tuneValid ? 'Initialized ✓' : 'Initialize'}
-        </button>
-        {!tuneValid && canActivate && (
-          <span className="text-[9px] text-[#D1855C]/70 leading-tight">
-            Sweep params changed — re-initialize to apply
-          </span>
-        )}
-      </Section>
-
       {/* Sweep Control */}
       <Section label="Sweep">
         <ToggleButton
           active={sfcwRunning}
-          canActivate={canActivate && tuneValid}
+          canActivate={canActivate}
           onToggle={() => sendSdr({ cmd: sfcwRunning ? 'sfcw_stop' : 'sfcw_start' })}
           activeLabel="Stop Sweep"
           idleLabel="Start Sweep"
           activeSubLabel={`Sweeping ${startFreq}–${stopFreq} MHz`}
-          idleSubLabel={!sdrConnected ? 'SDR not connected' : !tuneValid ? 'Initialize first' : `${numSteps} steps ready`}
+          idleSubLabel={!sdrConnected ? 'SDR not connected' : `${numSteps} steps ready`}
           color="orange"
         />
       </Section>

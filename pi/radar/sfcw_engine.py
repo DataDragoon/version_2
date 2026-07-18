@@ -4,8 +4,6 @@ Orchestrates the bladeRF to sweep through discrete frequency steps,
 capture IQ at each, and compute range profiles via IFFT.
 """
 
-import json
-import os
 import threading
 import time
 import numpy as np
@@ -15,7 +13,6 @@ import bladerf
 from bladerf._bladerf import libbladeRF
 
 SPEED_OF_LIGHT = 299_792_458
-TUNE_TABLE_PATH = os.path.join(os.path.dirname(__file__), '.sfcw_tune_table.json')
 
 
 class SFCWEngine:
@@ -31,9 +28,6 @@ class SFCWEngine:
         self._thread = None
         self._callback = None
         self._lock = threading.Lock()
-        self._tune_table = None
-        self._tune_params = None
-        self._load_tune_table()
 
     @property
     def num_steps(self):
@@ -54,16 +48,6 @@ class SFCWEngine:
         if self.step_size == 0:
             return float('inf')
         return SPEED_OF_LIGHT / (2 * self.step_size)
-
-    @property
-    def tune_valid(self):
-        if self._tune_params is None:
-            return False
-        return (
-            self._tune_params['start_freq'] == self.start_freq and
-            self._tune_params['stop_freq'] == self.stop_freq and
-            self._tune_params['step_size'] == self.step_size
-        )
 
     def set_params(self, **kwargs):
         with self._lock:
@@ -89,91 +73,11 @@ class SFCWEngine:
             'bandwidth': self.bandwidth,
             'range_resolution': self.range_resolution,
             'max_range': self.max_range,
-            'tune_valid': self.tune_valid,
         }
-
-    def initialize_tune_table(self, progress_callback=None):
-        """Validate frequency range and build the tune table."""
-        with self._lock:
-            start = self.start_freq
-            stop = self.stop_freq
-            step = self.step_size
-
-        num_steps = int((stop - start) / step) + 1
-        freqs = np.linspace(start, stop, num_steps).astype(np.int64)
-
-        dev_ptr = self.driver.device.dev[0]
-        tx_ch = bladerf.CHANNEL_TX(0)
-        rx_ch = bladerf.CHANNEL_RX(0)
-
-        for i, freq in enumerate(freqs):
-            f = int(freq)
-            ret = libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
-            if ret != 0:
-                raise RuntimeError(f"TX set_frequency failed at {f} Hz: {ret}")
-            ret = libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
-            if ret != 0:
-                raise RuntimeError(f"RX set_frequency failed at {f} Hz: {ret}")
-
-            if progress_callback and i % 20 == 0:
-                progress_callback(i, num_steps)
-
-        self._tune_table = {
-            'freqs': freqs.tolist(),
-        }
-        self._tune_params = {
-            'start_freq': start,
-            'stop_freq': stop,
-            'step_size': step,
-        }
-        self._save_tune_table()
-
-        if progress_callback:
-            progress_callback(num_steps, num_steps)
-
-    def _save_tune_table(self):
-        data = {
-            'params': self._tune_params,
-            'freqs': self._tune_table['freqs'],
-        }
-        try:
-            with open(TUNE_TABLE_PATH, 'w') as f:
-                json.dump(data, f)
-        except Exception as e:
-            print(f"[sfcw] Warning: could not save tune table: {e}")
-
-    def _load_tune_table(self):
-        try:
-            with open(TUNE_TABLE_PATH, 'r') as f:
-                data = json.load(f)
-            self._tune_params = data['params']
-        except (FileNotFoundError, json.JSONDecodeError, KeyError):
-            self._tune_params = None
-            self._tune_table = None
-
-    def _restore_tune_table(self):
-        """Load the tune table (frequency list) from disk."""
-        try:
-            with open(TUNE_TABLE_PATH, 'r') as f:
-                data = json.load(f)
-            self._tune_params = data['params']
-            self._tune_table = {
-                'freqs': data['freqs'],
-            }
-        except Exception as e:
-            print(f"[sfcw] Warning: could not restore tune table: {e}")
-            self._tune_params = None
-            self._tune_table = None
 
     def start(self, callback):
         if self.running:
             return
-        if not self.tune_valid:
-            return
-        if self._tune_table is None:
-            self._restore_tune_table()
-            if self._tune_table is None:
-                return
         self._callback = callback
         self._stop_event.clear()
         self.running = True
@@ -226,11 +130,14 @@ class SFCWEngine:
 
     def _perform_sweep(self):
         with self._lock:
+            start = self.start_freq
+            stop = self.stop_freq
+            step = self.step_size
             settle = self.settle_time
             num_buffers = self.num_buffers
 
-        freqs = self._tune_table['freqs']
-        num_steps = len(freqs)
+        num_steps = int((stop - start) / step) + 1
+        freqs = np.linspace(start, stop, num_steps).astype(np.int64)
         h_freq = np.zeros(num_steps, dtype=np.complex128)
 
         dev_ptr = self.driver.device.dev[0]
@@ -269,17 +176,13 @@ class SFCWEngine:
                     'type': 'progress',
                     'step': i,
                     'total': num_steps,
-                    'freq_mhz': self._tune_table['freqs'][i] / 1e6,
+                    'freq_mhz': freqs[i] / 1e6,
                 })
 
         window = np.hanning(num_steps)
         h_windowed = h_freq * window
         range_profile = np.fft.ifft(h_windowed)
         magnitude_db = 20 * np.log10(np.abs(range_profile) + 1e-12)
-
-        step = self._tune_params['step_size']
-        start = self._tune_params['start_freq']
-        stop = self._tune_params['stop_freq']
 
         max_range = SPEED_OF_LIGHT / (2 * step)
         distances = np.linspace(0, max_range, num_steps)

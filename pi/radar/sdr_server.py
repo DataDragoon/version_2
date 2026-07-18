@@ -111,16 +111,6 @@ class SDRServer:
                 self.sfcw.set_params(**params)
                 await self._broadcast_sfcw_status()
 
-            elif action == 'sfcw_initialize':
-                if self.driver.tx_running:
-                    self.driver.stop_tx()
-                if self.driver.rx_running:
-                    self.driver.stop_rx()
-                await self._broadcast_status()
-                asyncio.get_event_loop().run_in_executor(
-                    None, self._run_initialize
-                )
-
             elif action == 'sfcw_start':
                 if self.driver.tx_running:
                     self.driver.stop_tx()
@@ -144,23 +134,6 @@ class SDRServer:
         params = self.sfcw.get_params()
         params['running'] = self.sfcw.running
         return params
-
-    def _run_initialize(self):
-        def progress(step, total):
-            self._sfcw_callback({
-                'type': 'progress',
-                'step': step,
-                'total': total,
-                'freq_mhz': 0,
-            })
-
-        try:
-            self.sfcw.initialize_tune_table(progress_callback=progress)
-        except Exception as e:
-            print(f"[sfcw] Initialize error: {e}")
-            self._sfcw_callback({'error': str(e)})
-
-        self._sfcw_callback({'type': 'init_done'})
 
     def _sfcw_callback(self, data):
         try:
@@ -186,10 +159,7 @@ class SDRServer:
             if not self.clients:
                 continue
 
-            if isinstance(data, dict) and data.get('type') == 'init_done':
-                await self._broadcast_sfcw_status()
-                continue
-            elif isinstance(data, dict) and 'error' in data:
+            if isinstance(data, dict) and 'error' in data:
                 msg = json.dumps({'type': 'sfcw_error', 'message': data['error']})
             elif isinstance(data, dict) and data.get('type') == 'progress':
                 msg = json.dumps({'type': 'sfcw_progress', 'step': data['step'], 'total': data['total'], 'freq_mhz': round(data['freq_mhz'], 2)})
