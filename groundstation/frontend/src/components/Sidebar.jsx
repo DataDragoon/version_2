@@ -7,7 +7,7 @@ import AquaSensePanel from './AquaSensePanel';
 const PANELS = [
   { id: 'imu',       label: 'IMU',       icon: Activity },
   { id: 'optiflow',  label: 'OptiFlow',  icon: Eye },
-  { id: 'aquasense', label: 'AquaSense', icon: Radio },
+  { id: 'aquasense', label: 'RF Calibrate', icon: Radio },
 ];
 
 export default function Sidebar({

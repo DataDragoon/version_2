@@ -9,6 +9,8 @@ export default function AquaSensePanel({ isConnected, sdrConnected, txActive, rx
   const [rxGain, setRxGain] = useState(30);
   const [waveform, setWaveform] = useState('cw');
   const [cwOffset, setCwOffset] = useState(100);
+  const [chirpBw, setChirpBw] = useState(500);
+  const [chirpDur, setChirpDur] = useState(1);
   const [sampleRate, setSampleRate] = useState(2);
 
   const canActivate = isConnected && sdrConnected;
@@ -39,20 +41,51 @@ export default function AquaSensePanel({ isConnected, sdrConnected, txActive, rx
           onToggle={() => sendAquasense({ cmd: txActive ? 'stop_tx' : 'start_tx' })}
           activeLabel="Stop Transmission"
           idleLabel="Start Transmission"
-          activeSubLabel="CW tone on TX1 antenna"
+          activeSubLabel={waveform === 'cw' ? 'CW tone on TX1 antenna' : 'Chirp on TX1 antenna'}
           idleSubLabel={!sdrConnected ? 'SDR not connected' : 'Ready to transmit'}
           color="orange"
         />
 
-        <div className="grid grid-cols-2 gap-2 mt-1">
-          <InfoTile label="Waveform" value={waveform.toUpperCase()} />
+        {/* Waveform select */}
+        <div className="flex flex-col gap-2.5 p-3 rounded-xl bg-[#0a0a0a]/50 border border-white/5 mt-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">Waveform</span>
+          </div>
+          <select
+            value={waveform}
+            onChange={e => {
+              const v = e.target.value;
+              setWaveform(v);
+              sendAquasense({ cmd: 'set_waveform', type: v, offset_khz: cwOffset, amplitude: txAmp / 100, chirp_bw_khz: chirpBw, chirp_duration_ms: chirpDur });
+            }}
+            className="bg-[#111] border border-white/10 rounded-lg px-3 py-2 text-sm font-mono text-white outline-none cursor-pointer appearance-none"
+          >
+            <option value="cw">CW (Continuous Wave)</option>
+            <option value="chirp">Chirp (Linear FM)</option>
+          </select>
         </div>
 
-        {/* Offset */}
-        <OffsetField
-          value={cwOffset}
-          onChange={(v) => { setCwOffset(v); sendAquasense({ cmd: 'set_waveform', type: waveform, offset_khz: v, amplitude: txAmp / 100 }); }}
-        />
+        {/* CW Offset — only for CW mode */}
+        {waveform === 'cw' && (
+          <OffsetField
+            value={cwOffset}
+            onChange={(v) => { setCwOffset(v); sendAquasense({ cmd: 'set_waveform', type: waveform, offset_khz: v, amplitude: txAmp / 100 }); }}
+          />
+        )}
+
+        {/* Chirp params — only for chirp mode */}
+        {waveform === 'chirp' && (
+          <>
+            <ChirpBwField
+              value={chirpBw}
+              onChange={(v) => { setChirpBw(v); sendAquasense({ cmd: 'set_waveform', type: waveform, chirp_bw_khz: v, chirp_duration_ms: chirpDur, amplitude: txAmp / 100 }); }}
+            />
+            <ChirpDurField
+              value={chirpDur}
+              onChange={(v) => { setChirpDur(v); sendAquasense({ cmd: 'set_waveform', type: waveform, chirp_bw_khz: chirpBw, chirp_duration_ms: v, amplitude: txAmp / 100 }); }}
+            />
+          </>
+        )}
 
         {/* TX Gain */}
         <div className="flex flex-col gap-2.5 p-3 rounded-xl bg-[#0a0a0a]/50 border border-white/5 mt-1">
@@ -225,4 +258,12 @@ function OffsetField({ value, onChange }) {
 
 function SampleRateField({ value, onChange }) {
   return <EditableField label="Sample Rate" value={value} unit="MSPS" onChange={onChange} min={0.5} max={40} />;
+}
+
+function ChirpBwField({ value, onChange }) {
+  return <EditableField label="Chirp BW" value={value} unit="kHz" onChange={onChange} min={10} max={20000} />;
+}
+
+function ChirpDurField({ value, onChange }) {
+  return <EditableField label="Chirp Duration" value={value} unit="ms" onChange={onChange} min={0.1} max={100} />;
 }

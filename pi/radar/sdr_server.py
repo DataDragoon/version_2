@@ -11,7 +11,7 @@ from bladerf_driver import BladeRFDriver
 SCALE = 2047
 PORT = 9003
 VIS_FPS = 25
-FFT_SIZE = 4096
+FFT_SIZE = 16384
 VIS_SAMPLES = 512
 
 
@@ -132,15 +132,16 @@ class SDRServer:
                 'q': [round(v, 4) for v in q_vis.tolist()],
             })
 
-            # FFT
+            # FFT — max-pool bins to preserve peaks
             fft_len = min(num, FFT_SIZE)
             complex_iq = (i_raw[:fft_len] + 1j * q_raw[:fft_len]) / SCALE
             window = np.hanning(fft_len)
             spectrum = np.fft.fftshift(np.fft.fft(complex_iq * window))
             magnitudes = 20 * np.log10(np.abs(spectrum) / fft_len + 1e-12)
-            if len(magnitudes) > 256:
-                step = len(magnitudes) // 256
-                magnitudes = magnitudes[::step][:256]
+            n_bins = 512
+            if len(magnitudes) > n_bins:
+                trim = len(magnitudes) - len(magnitudes) % n_bins
+                magnitudes = magnitudes[:trim].reshape(n_bins, -1).max(axis=1)
 
             fft_msg = json.dumps({
                 'type': 'rx_fft',

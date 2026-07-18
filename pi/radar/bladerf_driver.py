@@ -186,10 +186,11 @@ class BladeRFDriver:
         self._rx_thread.start()
 
     def _rx_loop(self, callback):
-        buf = bytearray(4096 * 2 * 2)
+        num_samples = 16384
+        buf = bytearray(num_samples * 2 * 2)
         try:
             while not self._rx_stop.is_set():
-                self.device.sync_rx(buf, 4096)
+                self.device.sync_rx(buf, num_samples)
                 iq = np.frombuffer(buf, dtype=np.int16).copy()
                 callback(iq)
         except Exception as e:
