@@ -1,4 +1,4 @@
-"""bladeRF hardware abstraction — TX1/RX1 only."""
+"""bladeRF hardware abstraction — supports dual TX/RX for SFCW reference channel."""
 
 import threading
 import numpy as np
@@ -6,11 +6,6 @@ import bladerf
 from bladerf._bladerf import ChannelLayout, Format, ffi, libbladeRF
 
 SCALE = 2047
-
-# AD9361 register addresses
-_REG_ENSM_CONFIG_2 = 0x015
-# Single-synth value: clear DUAL_SYNTH_MODE (bit2), set POWER_DOWN_RX_SYNTH (bit6) + TXNRX_SPI_CTRL (bit4)
-SINGLE_SYNTH_VAL = 0x50
 
 
 class BladeRFDriver:
@@ -23,6 +18,8 @@ class BladeRFDriver:
         self.bandwidth = 1_500_000
         self.tx_gain = 47
         self.rx_gain = 30
+        self.tx2_gain = 10
+        self.rx2_gain = 0
         self.waveform_type = 'cw'
         self.cw_offset = 100_000
         self.tx_amplitude = 0.8
@@ -35,7 +32,7 @@ class BladeRFDriver:
         self._rx_stop = threading.Event()
         self._lock = threading.Lock()
         self._tx_buffer = None
-        self._single_synth = False
+        self._dual_channel = False
 
     def open(self):
         self.device = bladerf.BladeRF()
@@ -61,51 +58,32 @@ class BladeRFDriver:
         ch_rx.bandwidth = int(self.bandwidth)
         ch_rx.gain = int(self.rx_gain)
 
-    # -- RFIC register access (AD9361 via NIOS SPI) --
+    def _configure_channels_dual(self):
+        """Configure all 4 channels (TX1+TX2, RX1+RX2) for SFCW reference mode."""
+        for ch_idx in range(2):
+            ch_tx = self.device.Channel(bladerf.CHANNEL_TX(ch_idx))
+            ch_rx = self.device.Channel(bladerf.CHANNEL_RX(ch_idx))
+            ch_tx.frequency = int(self.center_freq)
+            ch_tx.sample_rate = int(self.sample_rate)
+            ch_tx.bandwidth = int(self.bandwidth)
+            ch_rx.frequency = int(self.center_freq)
+            ch_rx.sample_rate = int(self.sample_rate)
+            ch_rx.bandwidth = int(self.bandwidth)
 
-    def _read_rfic(self, addr):
-        val = ffi.new("uint8_t *")
-        ret = libbladeRF.bladerf_get_rfic_register(self.device.dev[0], addr, val)
-        if ret != 0:
-            raise RuntimeError(f"RFIC read 0x{addr:03X} failed: {ret}")
-        return val[0]
-
-    def _write_rfic(self, addr, val):
-        ret = libbladeRF.bladerf_set_rfic_register(self.device.dev[0], addr, val)
-        if ret != 0:
-            raise RuntimeError(f"RFIC write 0x{addr:03X}=0x{val:02X} failed: {ret}")
-
-    def enable_single_synth(self):
-        """Route the TX synthesizer to also serve as the RX LO.
-
-        Eliminates PLL phase discontinuity between TX and RX, which is
-        required for coherent SFCW operation. Both channels must be at
-        the same frequency (standard for SFCW).
-        """
-        reg = self._read_rfic(_REG_ENSM_CONFIG_2)
-        # Clear DUAL_SYNTH_MODE (bit 2) — forces single-synth (TX PLL drives both)
-        # Set POWER_DOWN_RX_SYNTH (bit 6) — shuts off the unused RX PLL
-        # Keep TXNRX_SPI_CTRL (bit 4) for SPI-controlled state transitions
-        reg = (reg & ~0x04) | 0x50  # clear bit2, set bits 6 and 4
-        self._write_rfic(_REG_ENSM_CONFIG_2, reg)
-        self._single_synth = True
-        print("[bladerf] Single-synth mode enabled (TX PLL drives RX)")
-
-    def disable_single_synth(self):
-        """Restore independent TX/RX synthesizers (FDD dual-synth)."""
-        reg = self._read_rfic(_REG_ENSM_CONFIG_2)
-        # Set DUAL_SYNTH_MODE (bit 2), clear POWER_DOWN_RX_SYNTH (bit 6)
-        reg = (reg | 0x04) & ~0x40
-        self._write_rfic(_REG_ENSM_CONFIG_2, reg)
-        self._single_synth = False
-        print("[bladerf] Dual-synth mode restored")
+        self.device.Channel(bladerf.CHANNEL_TX(0)).gain = int(self.tx_gain)
+        self.device.Channel(bladerf.CHANNEL_TX(1)).gain = int(self.tx2_gain)
+        self.device.Channel(bladerf.CHANNEL_RX(0)).gain = int(self.rx_gain)
+        self.device.Channel(bladerf.CHANNEL_RX(1)).gain = int(self.rx2_gain)
+        print(f"[bladerf] Dual-channel configured: TX1={self.tx_gain}dB TX2={self.tx2_gain}dB RX1={self.rx_gain}dB RX2={self.rx2_gain}dB")
 
     def set_frequency(self, freq_hz):
         with self._lock:
             self.center_freq = int(freq_hz)
             self.device.Channel(bladerf.CHANNEL_TX(0)).frequency = self.center_freq
-            if not self._single_synth:
-                self.device.Channel(bladerf.CHANNEL_RX(0)).frequency = self.center_freq
+            self.device.Channel(bladerf.CHANNEL_RX(0)).frequency = self.center_freq
+            if self._dual_channel:
+                self.device.Channel(bladerf.CHANNEL_TX(1)).frequency = self.center_freq
+                self.device.Channel(bladerf.CHANNEL_RX(1)).frequency = self.center_freq
 
     def set_tx_gain(self, gain_db):
         with self._lock:
@@ -171,6 +149,8 @@ class BladeRFDriver:
     def _gen_noise(self, n):
         noise = np.random.randn(n * 2) * self.tx_amplitude * SCALE * 0.5
         return np.clip(noise, -2048, 2047).astype(np.int16)
+
+    # -- Single-channel TX/RX (used by RF Calib panel) --
 
     def start_tx(self):
         if self.tx_running:
@@ -255,6 +235,123 @@ class BladeRFDriver:
             self._rx_thread.join(timeout=2)
             self._rx_thread = None
         self.rx_running = False
+
+    # -- Dual-channel TX/RX (used by SFCW engine for reference channel) --
+
+    def start_tx_dual(self):
+        """Start TX on both channels (TX1=antenna, TX2=reference cable)."""
+        if self.tx_running:
+            return
+        self._tx_buffer = self._generate(int(self.sample_rate * 0.01))
+        self._tx_stop.clear()
+        self.tx_running = True
+        self._dual_channel = True
+        self.device.enable_module(bladerf.CHANNEL_TX(0), True)
+        self.device.enable_module(bladerf.CHANNEL_TX(1), True)
+        self.device.sync_config(
+            layout=ChannelLayout.TX_X2,
+            fmt=Format.SC16_Q11,
+            num_buffers=16,
+            buffer_size=4096,
+            num_transfers=8,
+            stream_timeout=3500
+        )
+        self._tx_thread = threading.Thread(target=self._tx_loop_dual, daemon=True)
+        self._tx_thread.start()
+
+    def _tx_loop_dual(self):
+        """TX loop for dual channel — interleaved TX1+TX2 samples."""
+        try:
+            while not self._tx_stop.is_set():
+                with self._lock:
+                    buf = self._tx_buffer
+                # TX_X2 layout: samples are interleaved [TX1_I, TX1_Q, TX2_I, TX2_Q, ...]
+                # Same CW on both channels
+                samples = buf.tobytes()
+                n_samples = len(buf) // 2
+                # Interleave: each "sample" in X2 mode is 2 channels worth
+                dual_buf = np.empty(len(buf) * 2, dtype=np.int16)
+                dual_buf[0::4] = buf[0::2]  # TX1 I
+                dual_buf[1::4] = buf[1::2]  # TX1 Q
+                dual_buf[2::4] = buf[0::2]  # TX2 I (same waveform)
+                dual_buf[3::4] = buf[1::2]  # TX2 Q (same waveform)
+                self.device.sync_tx(dual_buf.tobytes(), n_samples)
+        except Exception as e:
+            print(f"[bladerf] TX dual error: {e}")
+        finally:
+            try:
+                self.device.enable_module(bladerf.CHANNEL_TX(0), False)
+                self.device.enable_module(bladerf.CHANNEL_TX(1), False)
+            except Exception:
+                pass
+            self.tx_running = False
+
+    def stop_tx_dual(self):
+        if not self.tx_running:
+            return
+        self._tx_stop.set()
+        if self._tx_thread:
+            self._tx_thread.join(timeout=2)
+            self._tx_thread = None
+        self.tx_running = False
+        self._dual_channel = False
+
+    def start_rx_dual(self, callback, num_samples=1024):
+        """Start RX on both channels. Callback receives (rx1_iq, rx2_iq) tuple."""
+        if self.rx_running:
+            return
+        self._rx_stop.clear()
+        self.rx_running = True
+        self._dual_channel = True
+        self.device.enable_module(bladerf.CHANNEL_RX(0), True)
+        self.device.enable_module(bladerf.CHANNEL_RX(1), True)
+        self.device.sync_config(
+            layout=ChannelLayout.RX_X2,
+            fmt=Format.SC16_Q11,
+            num_buffers=16,
+            buffer_size=4096,
+            num_transfers=8,
+            stream_timeout=3500
+        )
+        self._rx_thread = threading.Thread(target=self._rx_loop_dual, args=(callback, num_samples), daemon=True)
+        self._rx_thread.start()
+
+    def _rx_loop_dual(self, callback, num_samples):
+        """RX loop for dual channel — deinterleaves RX1 and RX2."""
+        # RX_X2: interleaved [RX1_I, RX1_Q, RX2_I, RX2_Q, ...]
+        # num_samples is per-channel, so total buffer is num_samples * 2 channels * 2 (I+Q) * 2 bytes
+        buf = bytearray(num_samples * 2 * 2 * 2)
+        try:
+            while not self._rx_stop.is_set():
+                self.device.sync_rx(buf, num_samples)
+                iq = np.frombuffer(buf, dtype=np.int16).copy()
+                # Deinterleave: [I1, Q1, I2, Q2, I1, Q1, I2, Q2, ...]
+                rx1 = np.empty(num_samples * 2, dtype=np.int16)
+                rx2 = np.empty(num_samples * 2, dtype=np.int16)
+                rx1[0::2] = iq[0::4]  # RX1 I
+                rx1[1::2] = iq[1::4]  # RX1 Q
+                rx2[0::2] = iq[2::4]  # RX2 I
+                rx2[1::2] = iq[3::4]  # RX2 Q
+                callback(rx1, rx2)
+        except Exception as e:
+            print(f"[bladerf] RX dual error: {e}")
+        finally:
+            try:
+                self.device.enable_module(bladerf.CHANNEL_RX(0), False)
+                self.device.enable_module(bladerf.CHANNEL_RX(1), False)
+            except Exception:
+                pass
+            self.rx_running = False
+
+    def stop_rx_dual(self):
+        if not self.rx_running:
+            return
+        self._rx_stop.set()
+        if self._rx_thread:
+            self._rx_thread.join(timeout=2)
+            self._rx_thread = None
+        self.rx_running = False
+        self._dual_channel = False
 
     def get_status(self):
         return {

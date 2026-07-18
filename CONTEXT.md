@@ -106,9 +106,10 @@ with a simple framed binary protocol. Requirements:
 - Dwell time per step: 1 ms (PLL settle)
 - TX power: 0.9 amplitude, gain 47 dB
 - Antenna polarization: co-pol initially
-- Phase coherence: Single-synth mode — TX PLL drives RX LO via AD9361
-  register 0x015 (ENSM_CONFIG_2). Eliminates inter-channel phase
-  discontinuity that would otherwise corrupt IFFT range profiles.
+- Phase coherence: Dual-channel reference method — TX2→RX2 short SMA cable
+  provides phase reference. Signal (RX1) divided by reference (RX2) cancels
+  random PLL phase offsets between TX and RX synthesizers at each step.
+  AD9361 single-synth mode does NOT work (FDD requires both PLLs active).
 
 ## Wiring — MPU-6500 (I2C mode)
 

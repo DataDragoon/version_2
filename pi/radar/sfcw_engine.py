@@ -2,13 +2,17 @@
 
 Orchestrates the bladeRF to sweep through discrete frequency steps,
 capture IQ at each, and compute range profiles via IFFT.
+
+Uses dual-channel reference: TX1+RX1 for antenna signal, TX2+RX2 as
+phase reference (short cable loopback). Dividing signal by reference
+eliminates random PLL phase offsets between TX and RX synthesizers.
 """
 
 import threading
 import time
 import numpy as np
 
-from bladerf_driver import BladeRFDriver, SINGLE_SYNTH_VAL, _REG_ENSM_CONFIG_2
+from bladerf_driver import BladeRFDriver
 import bladerf
 from bladerf._bladerf import libbladeRF
 
@@ -113,21 +117,22 @@ class SFCWEngine:
 
     def _configure_hardware(self):
         self.driver.set_waveform('cw', offset=0, amplitude=0.9)
-        self.driver.enable_single_synth()
+        self.driver._configure_channels_dual()
 
     def _start_tx_rx(self):
-        self._rx_buffer = None
+        self._rx1_buffer = None
+        self._rx2_buffer = None
         self._rx_event = threading.Event()
-        self.driver.start_tx()
-        self.driver.start_rx(self._rx_capture, num_samples=1024)
+        self.driver.start_tx_dual()
+        self.driver.start_rx_dual(self._rx_capture, num_samples=1024)
 
     def _stop_tx_rx(self):
-        self.driver.stop_rx()
-        self.driver.stop_tx()
-        self.driver.disable_single_synth()
+        self.driver.stop_rx_dual()
+        self.driver.stop_tx_dual()
 
-    def _rx_capture(self, iq_buffer):
-        self._rx_buffer = iq_buffer
+    def _rx_capture(self, rx1_iq, rx2_iq):
+        self._rx1_buffer = rx1_iq
+        self._rx2_buffer = rx2_iq
         self._rx_event.set()
 
     def _perform_sweep(self):
@@ -140,38 +145,54 @@ class SFCWEngine:
 
         num_steps = int((stop - start) / step) + 1
         freqs = np.linspace(start, stop, num_steps).astype(np.int64)
-        h_freq = np.zeros(num_steps, dtype=np.complex128)
+        h_signal = np.zeros(num_steps, dtype=np.complex128)
+        h_reference = np.zeros(num_steps, dtype=np.complex128)
 
         dev_ptr = self.driver.device.dev[0]
-        tx_ch = bladerf.CHANNEL_TX(0)
+        tx_ch0 = bladerf.CHANNEL_TX(0)
+        tx_ch1 = bladerf.CHANNEL_TX(1)
+        rx_ch0 = bladerf.CHANNEL_RX(0)
+        rx_ch1 = bladerf.CHANNEL_RX(1)
 
         for i in range(num_steps):
             if self._stop_event.is_set():
                 return None
 
             f = int(freqs[i])
-            # Retune TX — then re-apply single-synth (set_frequency resets ENSM)
-            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
-            libbladeRF.bladerf_set_rfic_register(dev_ptr, _REG_ENSM_CONFIG_2, SINGLE_SYNTH_VAL)
+            # Retune all channels to the same frequency
+            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch0, f)
+            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch1, f)
+            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch0, f)
+            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch1, f)
             time.sleep(settle)
 
-            accumulator = 0j
+            sig_accum = 0j
+            ref_accum = 0j
             captured = 0
             for _ in range(num_buffers):
                 self._rx_event.clear()
                 if not self._rx_event.wait(timeout=1.0):
                     break
 
-                iq = self._rx_buffer
-                if iq is None:
+                rx1 = self._rx1_buffer
+                rx2 = self._rx2_buffer
+                if rx1 is None or rx2 is None:
                     continue
 
-                i_samples = iq[0::2].astype(np.float64) / 2047.0
-                q_samples = iq[1::2].astype(np.float64) / 2047.0
-                accumulator += np.mean(i_samples + 1j * q_samples)
+                # RX1 = antenna signal
+                i1 = rx1[0::2].astype(np.float64) / 2047.0
+                q1 = rx1[1::2].astype(np.float64) / 2047.0
+                sig_accum += np.mean(i1 + 1j * q1)
+
+                # RX2 = reference (TX2 loopback cable)
+                i2 = rx2[0::2].astype(np.float64) / 2047.0
+                q2 = rx2[1::2].astype(np.float64) / 2047.0
+                ref_accum += np.mean(i2 + 1j * q2)
+
                 captured += 1
 
-            h_freq[i] = accumulator / max(captured, 1)
+            h_signal[i] = sig_accum / max(captured, 1)
+            h_reference[i] = ref_accum / max(captured, 1)
 
             if self._callback and i % 10 == 0:
                 self._callback({
@@ -181,16 +202,24 @@ class SFCWEngine:
                     'freq_mhz': freqs[i] / 1e6,
                 })
 
-        # Phase coherence diagnostics (unwrapped phase slope)
-        phase_raw = np.angle(h_freq)
+        # Phase-reference division: cancels TX and RX PLL phase offsets
+        # h_cal[i] = h_signal[i] / h_reference[i]
+        # The reference cable has a fixed tiny delay, so its phase is just
+        # the PLL offset + a small constant. Dividing removes the PLL part.
+        ref_mag = np.abs(h_reference)
+        valid = ref_mag > 1e-10
+        h_cal = np.zeros(num_steps, dtype=np.complex128)
+        h_cal[valid] = h_signal[valid] / h_reference[valid]
+
+        # Phase coherence diagnostics on calibrated data
+        phase_raw = np.angle(h_cal)
         phase_unwrapped = np.unwrap(phase_raw)
-        # Linear fit: slope should be -2π·τ (constant delay)
         coeffs = np.polyfit(np.arange(num_steps), phase_unwrapped, 1)
         residuals = phase_unwrapped - np.polyval(coeffs, np.arange(num_steps))
         phase_std = float(np.std(residuals))
 
         window = np.hanning(num_steps)
-        h_windowed = h_freq * window
+        h_windowed = h_cal * window
         range_profile = np.fft.ifft(h_windowed)
         magnitude_db = 20 * np.log10(np.abs(range_profile) + 1e-12)
 
