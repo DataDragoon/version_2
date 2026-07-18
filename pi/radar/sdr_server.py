@@ -164,7 +164,7 @@ class SDRServer:
             elif isinstance(data, dict) and data.get('type') == 'progress':
                 msg = json.dumps({'type': 'sfcw_progress', 'step': data['step'], 'total': data['total'], 'freq_mhz': round(data['freq_mhz'], 2)})
             elif isinstance(data, dict) and data.get('type') == 'range_profile':
-                msg = json.dumps({
+                result_msg = {
                     'type': 'sfcw_result',
                     'distances': [round(d, 4) for d in data['distances']],
                     'magnitudes': [round(m, 2) for m in data['magnitudes']],
@@ -172,7 +172,10 @@ class SDRServer:
                     'max_range': round(data['max_range'], 4),
                     'num_steps': data['num_steps'],
                     'timestamp': data['timestamp'],
-                })
+                }
+                if 'phase_coherence' in data:
+                    result_msg['phase_coherence'] = data['phase_coherence']
+                msg = json.dumps(result_msg)
             else:
                 continue
 
