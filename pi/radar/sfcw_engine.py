@@ -12,6 +12,7 @@ import numpy as np
 
 from bladerf_driver import BladeRFDriver
 import bladerf
+from bladerf._bladerf import ffi, libbladeRF
 
 SPEED_OF_LIGHT = 299_792_458
 TUNE_TABLE_PATH = os.path.join(os.path.dirname(__file__), '.sfcw_tune_table.json')
@@ -91,8 +92,24 @@ class SFCWEngine:
             'tune_valid': self.tune_valid,
         }
 
+    def _get_quick_tune(self, channel_id):
+        """Call libbladeRF's bladerf_get_quick_tune via CFFI."""
+        qt = ffi.new("struct bladerf_quick_tune *")
+        ret = libbladeRF.bladerf_get_quick_tune(
+            self.driver.device.dev[0], channel_id, qt)
+        if ret != 0:
+            raise RuntimeError(f"bladerf_get_quick_tune failed: {ret}")
+        return qt
+
+    def _schedule_retune(self, channel_id, qt):
+        """Call libbladeRF's bladerf_schedule_retune with RETUNE_NOW."""
+        ret = libbladeRF.bladerf_schedule_retune(
+            self.driver.device.dev[0], channel_id, 0, 0, qt)
+        if ret != 0:
+            raise RuntimeError(f"bladerf_schedule_retune failed: {ret}")
+
     def initialize_tune_table(self, progress_callback=None):
-        """Pre-compute frequency list for every sweep step."""
+        """Pre-compute quick-tune values for every frequency step."""
         with self._lock:
             start = self.start_freq
             stop = self.stop_freq
@@ -101,19 +118,26 @@ class SFCWEngine:
         num_steps = int((stop - start) / step) + 1
         freqs = np.linspace(start, stop, num_steps).astype(np.int64)
 
-        # Validate that the device can tune to each frequency
-        ch_tx = self.driver.device.Channel(bladerf.CHANNEL_TX(0))
-        ch_rx = self.driver.device.Channel(bladerf.CHANNEL_RX(0))
+        dev_ptr = self.driver.device.dev[0]
+        tx_ch = bladerf.CHANNEL_TX(0)
+        rx_ch = bladerf.CHANNEL_RX(0)
+
+        tx_tunes = []
+        rx_tunes = []
 
         for i, freq in enumerate(freqs):
             f = int(freq)
-            ch_tx.frequency = f
-            ch_rx.frequency = f
+            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+            tx_tunes.append(self._get_quick_tune(tx_ch))
+            rx_tunes.append(self._get_quick_tune(rx_ch))
 
             if progress_callback and i % 20 == 0:
                 progress_callback(i, num_steps)
 
         self._tune_table = {
+            'tx': tx_tunes,
+            'rx': rx_tunes,
             'freqs': freqs.tolist(),
         }
         self._tune_params = {
@@ -130,6 +154,8 @@ class SFCWEngine:
         data = {
             'params': self._tune_params,
             'freqs': self._tune_table['freqs'],
+            'tx': [self._serialize_quick_tune(qt) for qt in self._tune_table['tx']],
+            'rx': [self._serialize_quick_tune(qt) for qt in self._tune_table['rx']],
         }
         try:
             with open(TUNE_TABLE_PATH, 'w') as f:
@@ -147,18 +173,36 @@ class SFCWEngine:
             self._tune_table = None
 
     def _restore_tune_table(self):
-        """Load the tune table (frequency list) from disk."""
+        """Load the full tune table from disk and reconstruct quick-tune structs."""
         try:
             with open(TUNE_TABLE_PATH, 'r') as f:
                 data = json.load(f)
             self._tune_params = data['params']
             self._tune_table = {
                 'freqs': data['freqs'],
+                'tx': [self._deserialize_quick_tune(qt) for qt in data['tx']],
+                'rx': [self._deserialize_quick_tune(qt) for qt in data['rx']],
             }
         except Exception as e:
             print(f"[sfcw] Warning: could not restore tune table: {e}")
             self._tune_params = None
             self._tune_table = None
+
+    def _serialize_quick_tune(self, qt):
+        return {
+            'nios_profile': qt.nios_profile,
+            'rffe_profile': qt.rffe_profile,
+            'port': qt.port,
+            'spdt': qt.spdt,
+        }
+
+    def _deserialize_quick_tune(self, data):
+        qt = ffi.new("struct bladerf_quick_tune *")
+        qt.nios_profile = data['nios_profile']
+        qt.rffe_profile = data['rffe_profile']
+        qt.port = data['port']
+        qt.spdt = data['spdt']
+        return qt
 
     def start(self, callback):
         if self.running:
@@ -224,19 +268,20 @@ class SFCWEngine:
             settle = self.settle_time
             num_buffers = self.num_buffers
 
-        freqs = self._tune_table['freqs']
-        num_steps = len(freqs)
+        tx_tunes = self._tune_table['tx']
+        rx_tunes = self._tune_table['rx']
+        num_steps = len(tx_tunes)
         h_freq = np.zeros(num_steps, dtype=np.complex128)
 
-        ch_tx = self.driver.device.Channel(bladerf.CHANNEL_TX(0))
-        ch_rx = self.driver.device.Channel(bladerf.CHANNEL_RX(0))
+        tx_ch = bladerf.CHANNEL_TX(0)
+        rx_ch = bladerf.CHANNEL_RX(0)
 
         for i in range(num_steps):
             if self._stop_event.is_set():
                 return None
 
-            ch_tx.frequency = int(freqs[i])
-            ch_rx.frequency = int(freqs[i])
+            self._schedule_retune(tx_ch, tx_tunes[i])
+            self._schedule_retune(rx_ch, rx_tunes[i])
             time.sleep(settle)
 
             accumulator = 0j
