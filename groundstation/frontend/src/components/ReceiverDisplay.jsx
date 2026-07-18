@@ -15,7 +15,7 @@ export default function ReceiverDisplay({ active, samples, paused }) {
     frozenRef.current = samples;
   }
 
-  const zoomRef = useRef(128);
+  const zoomRef = useRef(512);
   const offsetRef = useRef(0);
   const mouseRef = useRef(null);
 
@@ -27,9 +27,9 @@ export default function ReceiverDisplay({ active, samples, paused }) {
       e.preventDefault();
       const factor = e.deltaY > 0 ? 1.3 : 0.77;
       const curr = zoomRef.current;
-      zoomRef.current = Math.round(Math.max(8, Math.min(128, curr * factor)));
+      zoomRef.current = Math.round(Math.max(8, Math.min(512, curr * factor)));
       const s = frozenRef.current || samplesRef.current;
-      const len = s?.length || 128;
+      const len = s?.length || 512;
       offsetRef.current = Math.max(0, Math.min(len - zoomRef.current, offsetRef.current));
     };
 
@@ -189,7 +189,7 @@ export default function ReceiverDisplay({ active, samples, paused }) {
       ctx.fillText('-1.0', 4, h - 4);
 
       // Zoom indicator
-      if (zoomRef.current < 128) {
+      if (zoomRef.current < 512) {
         ctx.textAlign = 'right';
         ctx.fillStyle = 'rgba(34,211,238,0.4)';
         ctx.fillText(`${visibleCount}/${totalLen} samples`, w - 6, 12);
