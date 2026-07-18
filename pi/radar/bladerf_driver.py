@@ -9,6 +9,8 @@ SCALE = 2047
 
 # AD9361 register addresses
 _REG_ENSM_CONFIG_2 = 0x015
+# Single-synth value: clear DUAL_SYNTH_MODE (bit2), set POWER_DOWN_RX_SYNTH (bit6) + TXNRX_SPI_CTRL (bit4)
+SINGLE_SYNTH_VAL = 0x50
 
 
 class BladeRFDriver:

@@ -8,7 +8,7 @@ import threading
 import time
 import numpy as np
 
-from bladerf_driver import BladeRFDriver
+from bladerf_driver import BladeRFDriver, SINGLE_SYNTH_VAL, _REG_ENSM_CONFIG_2
 import bladerf
 from bladerf._bladerf import libbladeRF
 
@@ -150,8 +150,9 @@ class SFCWEngine:
                 return None
 
             f = int(freqs[i])
-            # Single-synth: TX PLL drives RX LO, only retune TX
+            # Retune TX — then re-apply single-synth (set_frequency resets ENSM)
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+            libbladeRF.bladerf_set_rfic_register(dev_ptr, _REG_ENSM_CONFIG_2, SINGLE_SYNTH_VAL)
             time.sleep(settle)
 
             accumulator = 0j
