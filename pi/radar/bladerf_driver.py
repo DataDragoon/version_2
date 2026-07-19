@@ -77,7 +77,10 @@ class BladeRFDriver:
         self.device.Channel(bladerf.CHANNEL_TX(1)).gain = int(self.tx2_gain)
         self.device.Channel(bladerf.CHANNEL_RX(0)).gain = int(self.rx_gain)
         self.device.Channel(bladerf.CHANNEL_RX(1)).gain = int(self.rx2_gain)
+        rx0_rb = self.device.Channel(bladerf.CHANNEL_RX(0)).gain
+        rx1_rb = self.device.Channel(bladerf.CHANNEL_RX(1)).gain
         print(f"[bladerf] Dual-channel configured: TX1={self.tx_gain}dB TX2={self.tx2_gain}dB RX1={self.rx_gain}dB RX2={self.rx2_gain}dB")
+        print(f"[bladerf] Readback: RX1={rx0_rb}dB RX2={rx1_rb}dB")
 
     def set_frequency(self, freq_hz):
         with self._lock:
@@ -163,12 +166,6 @@ class BladeRFDriver:
         self._tx_buffer = self._generate(int(self.sample_rate * 0.01))
         self._tx_stop.clear()
         self.tx_running = True
-        # Ensure all TX modules are off before reconfiguring layout
-        for ch in range(2):
-            try:
-                self.device.enable_module(bladerf.CHANNEL_TX(ch), False)
-            except Exception:
-                pass
         self.device.enable_module(bladerf.CHANNEL_TX(0), True)
         self.device.sync_config(
             layout=ChannelLayout.TX_X1,
@@ -210,12 +207,6 @@ class BladeRFDriver:
             return
         self._rx_stop.clear()
         self.rx_running = True
-        # Ensure all RX modules are off before reconfiguring layout
-        for ch in range(2):
-            try:
-                self.device.enable_module(bladerf.CHANNEL_RX(ch), False)
-            except Exception:
-                pass
         self.device.enable_module(bladerf.CHANNEL_RX(0), True)
         self.device.sync_config(
             layout=ChannelLayout.RX_X1,

@@ -31,7 +31,7 @@ class SFCWEngine:
         self.rx1_gain = 30
         self.tx2_gain = 10
         self.rx2_gain = 20
-        self.range_offset = 0
+        self.range_offset = 1.44
         self.running = False
         self._stop_event = threading.Event()
         self._thread = None
@@ -154,8 +154,6 @@ class SFCWEngine:
         self.driver._configure_channels_dual()
 
     def _start_tx_rx(self):
-        self._rx1_buffer = None
-        self._rx2_buffer = None
         self._rx_latest = (None, None)
         self._rx_event = threading.Event()
         # Pre-compute correlation tone for single-bin DFT at CW offset
@@ -170,8 +168,6 @@ class SFCWEngine:
         self.driver.stop_tx_dual()
 
     def _rx_capture(self, rx1_iq, rx2_iq):
-        self._rx1_buffer = rx1_iq
-        self._rx2_buffer = rx2_iq
         self._rx_latest = (rx1_iq, rx2_iq)
         self._rx_event.set()
 
@@ -189,7 +185,6 @@ class SFCWEngine:
         h_reference = np.zeros(num_steps, dtype=np.complex128)
 
         dev_ptr = self.driver.device.dev[0]
-        # TX1+TX2 share one PLL, RX1+RX2 share another — only retune once per PLL
         tx_ch = bladerf.CHANNEL_TX(0)
         rx_ch = bladerf.CHANNEL_RX(0)
 
@@ -259,7 +254,7 @@ class SFCWEngine:
         if self._background is not None and len(self._background) == num_steps:
             h_cal = h_cal - self._background
 
-        # Phase coherence diagnostics on calibrated data
+        # Phase coherence diagnostics
         phase_raw = np.angle(h_cal)
         phase_unwrapped = np.unwrap(phase_raw)
         coeffs = np.polyfit(np.arange(num_steps), phase_unwrapped, 1)
