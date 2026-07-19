@@ -6,6 +6,7 @@ import bladerf
 from bladerf._bladerf import ChannelLayout, Format, ffi, libbladeRF
 
 SCALE = 2047
+MGC = libbladeRF.BLADERF_GAIN_MGC
 
 
 class BladeRFDriver:
@@ -49,6 +50,7 @@ class BladeRFDriver:
     def _configure_channels(self):
         ch_tx = self.device.Channel(bladerf.CHANNEL_TX(0))
         ch_rx = self.device.Channel(bladerf.CHANNEL_RX(0))
+        ch_rx.gain_mode = MGC
         ch_tx.frequency = int(self.center_freq)
         ch_tx.sample_rate = int(self.sample_rate)
         ch_tx.bandwidth = int(self.bandwidth)
@@ -63,6 +65,7 @@ class BladeRFDriver:
         for ch_idx in range(2):
             ch_tx = self.device.Channel(bladerf.CHANNEL_TX(ch_idx))
             ch_rx = self.device.Channel(bladerf.CHANNEL_RX(ch_idx))
+            ch_rx.gain_mode = MGC
             ch_tx.frequency = int(self.center_freq)
             ch_tx.sample_rate = int(self.sample_rate)
             ch_tx.bandwidth = int(self.bandwidth)
@@ -93,7 +96,9 @@ class BladeRFDriver:
     def set_rx_gain(self, gain_db):
         with self._lock:
             self.rx_gain = int(gain_db)
-            self.device.Channel(bladerf.CHANNEL_RX(0)).gain = self.rx_gain
+            ch = self.device.Channel(bladerf.CHANNEL_RX(0))
+            ch.gain_mode = MGC
+            ch.gain = self.rx_gain
 
     def set_sample_rate(self, rate):
         with self._lock:

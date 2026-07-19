@@ -31,6 +31,7 @@ class SFCWEngine:
         self.rx1_gain = 30
         self.tx2_gain = 10
         self.rx2_gain = 20
+        self.range_offset = 1.44
         self.running = False
         self._stop_event = threading.Event()
         self._thread = None
@@ -79,6 +80,8 @@ class SFCWEngine:
                 self.tx2_gain = int(kwargs['tx2_gain'])
             if 'rx2_gain' in kwargs:
                 self.rx2_gain = int(kwargs['rx2_gain'])
+            if 'range_offset' in kwargs:
+                self.range_offset = float(kwargs['range_offset'])
 
     def get_params(self):
         return {
@@ -91,6 +94,7 @@ class SFCWEngine:
             'rx1_gain': self.rx1_gain,
             'tx2_gain': self.tx2_gain,
             'rx2_gain': self.rx2_gain,
+            'range_offset': self.range_offset,
             'num_steps': self.num_steps,
             'bandwidth': self.bandwidth,
             'range_resolution': self.range_resolution,
@@ -103,6 +107,7 @@ class SFCWEngine:
 
     def clear_background(self):
         self._background = None
+        self._capture_background = False
 
     def start(self, callback):
         if self.running:
@@ -267,7 +272,7 @@ class SFCWEngine:
         magnitude_db = 20 * np.log10(np.abs(range_profile) + 1e-12)
 
         max_range = SPEED_OF_LIGHT / (2 * step)
-        distances = np.linspace(0, max_range, num_steps)
+        distances = np.linspace(0, max_range, num_steps) - self.range_offset
 
         half = num_steps // 2
         magnitude_db = magnitude_db[:half]

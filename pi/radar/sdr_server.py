@@ -116,6 +116,8 @@ class SDRServer:
                     params['tx2_gain'] = int(cmd['tx2_gain'])
                 if 'rx2_gain' in cmd:
                     params['rx2_gain'] = int(cmd['rx2_gain'])
+                if 'range_offset' in cmd:
+                    params['range_offset'] = float(cmd['range_offset'])
                 self.sfcw.set_params(**params)
                 await self._broadcast_sfcw_status()
 

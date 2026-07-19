@@ -16,6 +16,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
   const [rx1Gain, setRx1Gain] = useState(30);
   const [tx2Gain, setTx2Gain] = useState(10);
   const [rx2Gain, setRx2Gain] = useState(20);
+  const [rangeOffset, setRangeOffset] = useState(1.44);
 
   const canActivate = isConnected && sdrConnected;
 
@@ -31,6 +32,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
       rx1_gain: overrides.rx1Gain ?? rx1Gain,
       tx2_gain: overrides.tx2Gain ?? tx2Gain,
       rx2_gain: overrides.rx2Gain ?? rx2Gain,
+      range_offset: overrides.rangeOffset ?? rangeOffset,
     });
   };
 
@@ -98,6 +100,14 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             {captureTimeMs.toFixed(2)} ms capture per step ({(numBuffers * BUFFER_SAMPLES).toLocaleString()} samples)
           </span>
         </div>
+        <EditableField
+          label="Range Offset"
+          value={rangeOffset}
+          unit="m"
+          onChange={(v) => { setRangeOffset(v); sendParams({ rangeOffset: v }); }}
+          min={0}
+          max={10}
+        />
       </Section>
 
       {/* Gains */}
