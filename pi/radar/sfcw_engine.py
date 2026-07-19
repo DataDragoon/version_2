@@ -36,6 +36,8 @@ class SFCWEngine:
         self._thread = None
         self._callback = None
         self._lock = threading.Lock()
+        self._background = None
+        self._capture_background = False
 
     @property
     def num_steps(self):
@@ -93,7 +95,14 @@ class SFCWEngine:
             'bandwidth': self.bandwidth,
             'range_resolution': self.range_resolution,
             'max_range': self.max_range,
+            'background_active': self._background is not None,
         }
+
+    def capture_background(self):
+        self._capture_background = True
+
+    def clear_background(self):
+        self._background = None
 
     def start(self, callback):
         if self.running:
@@ -136,7 +145,7 @@ class SFCWEngine:
         self.driver.rx_gain = self.rx1_gain
         self.driver.tx2_gain = self.tx2_gain
         self.driver.rx2_gain = self.rx2_gain
-        self.driver.set_waveform('cw', offset=0, amplitude=0.9)
+        self.driver.set_waveform('cw', offset=100_000, amplitude=0.9)
         self.driver._configure_channels_dual()
 
     def _start_tx_rx(self):
@@ -144,8 +153,12 @@ class SFCWEngine:
         self._rx2_buffer = None
         self._rx_latest = (None, None)
         self._rx_event = threading.Event()
+        # Pre-compute correlation tone for single-bin DFT at CW offset
+        n = 1024
+        t = np.arange(n, dtype=np.float64) / self.driver.sample_rate
+        self._ref_tone = np.exp(-1j * 2 * np.pi * self.driver.cw_offset * t)
         self.driver.start_tx_dual()
-        self.driver.start_rx_dual(self._rx_capture, num_samples=1024)
+        self.driver.start_rx_dual(self._rx_capture, num_samples=n)
 
     def _stop_tx_rx(self):
         self.driver.stop_rx_dual()
@@ -184,6 +197,10 @@ class SFCWEngine:
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
             time.sleep(settle)
 
+            # Discard first buffer — may contain samples from before PLL settled
+            self._rx_event.clear()
+            self._rx_event.wait(timeout=1.0)
+
             sig_accum = 0j
             ref_accum = 0j
             captured = 0
@@ -196,15 +213,15 @@ class SFCWEngine:
                 if rx1 is None or rx2 is None:
                     continue
 
-                # RX1 = antenna signal
+                # RX1 = antenna signal (single-bin DFT at CW offset)
                 i1 = rx1[0::2].astype(np.float64) / 2047.0
                 q1 = rx1[1::2].astype(np.float64) / 2047.0
-                sig_accum += np.mean(i1 + 1j * q1)
+                sig_accum += np.mean((i1 + 1j * q1) * self._ref_tone)
 
-                # RX2 = reference (TX2 loopback cable)
+                # RX2 = reference (single-bin DFT at CW offset)
                 i2 = rx2[0::2].astype(np.float64) / 2047.0
                 q2 = rx2[1::2].astype(np.float64) / 2047.0
-                ref_accum += np.mean(i2 + 1j * q2)
+                ref_accum += np.mean((i2 + 1j * q2) * self._ref_tone)
 
                 captured += 1
 
@@ -227,6 +244,15 @@ class SFCWEngine:
         valid = ref_mag > 1e-10
         h_cal = np.zeros(num_steps, dtype=np.complex128)
         h_cal[valid] = h_signal[valid] / h_reference[valid]
+
+        # Background subtraction: removes TX→RX coupling and static clutter
+        if self._capture_background:
+            self._background = h_cal.copy()
+            self._capture_background = False
+            print(f"[sfcw] Background captured ({num_steps} steps)")
+
+        if self._background is not None and len(self._background) == num_steps:
+            h_cal = h_cal - self._background
 
         # Phase coherence diagnostics on calibrated data
         phase_raw = np.angle(h_cal)

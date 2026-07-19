@@ -132,6 +132,12 @@ class SDRServer:
                 self.sfcw.stop()
                 await self._broadcast_sfcw_status()
 
+            elif action == 'sfcw_capture_bg':
+                self.sfcw.capture_background()
+
+            elif action == 'sfcw_clear_bg':
+                self.sfcw.clear_background()
+
             elif action == 'sfcw_get_status':
                 await ws.send(json.dumps({'type': 'sfcw_status', **self._get_sfcw_status()}))
 

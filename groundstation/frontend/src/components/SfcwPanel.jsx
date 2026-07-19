@@ -160,6 +160,26 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
           idleSubLabel={!sdrConnected ? 'SDR not connected' : `${numSteps} steps ready`}
           color="orange"
         />
+        <div className="grid grid-cols-2 gap-2 mt-2">
+          <button
+            onClick={() => sendSdr({ cmd: 'sfcw_capture_bg' })}
+            disabled={!sfcwRunning}
+            className={cn(
+              'px-3 py-2 rounded-lg text-xs font-medium transition-all',
+              sfcwRunning
+                ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+                : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
+            )}
+          >
+            Capture BG
+          </button>
+          <button
+            onClick={() => sendSdr({ cmd: 'sfcw_clear_bg' })}
+            className="px-3 py-2 rounded-lg text-xs font-medium bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
+          >
+            Clear BG
+          </button>
+        </div>
       </Section>
     </>
   );
