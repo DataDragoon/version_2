@@ -25,8 +25,8 @@ class SFCWEngine:
         self.start_freq = 1_000_000_000
         self.stop_freq = 5_000_000_000
         self.step_size = 10_000_000
-        self.settle_time = 0.001
-        self.num_buffers = 1
+        self.settle_time = 0.003
+        self.num_buffers = 4
         self.running = False
         self._stop_event = threading.Event()
         self._thread = None
@@ -149,21 +149,17 @@ class SFCWEngine:
         h_reference = np.zeros(num_steps, dtype=np.complex128)
 
         dev_ptr = self.driver.device.dev[0]
-        tx_ch0 = bladerf.CHANNEL_TX(0)
-        tx_ch1 = bladerf.CHANNEL_TX(1)
-        rx_ch0 = bladerf.CHANNEL_RX(0)
-        rx_ch1 = bladerf.CHANNEL_RX(1)
+        # TX1+TX2 share one PLL, RX1+RX2 share another — only retune once per PLL
+        tx_ch = bladerf.CHANNEL_TX(0)
+        rx_ch = bladerf.CHANNEL_RX(0)
 
         for i in range(num_steps):
             if self._stop_event.is_set():
                 return None
 
             f = int(freqs[i])
-            # Retune all channels to the same frequency
-            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch0, f)
-            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch1, f)
-            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch0, f)
-            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch1, f)
+            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
             time.sleep(settle)
 
             sig_accum = 0j
