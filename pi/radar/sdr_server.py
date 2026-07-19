@@ -184,6 +184,7 @@ class SDRServer:
                     'type': 'sfcw_result',
                     'distances': [round(d, 4) for d in data['distances']],
                     'magnitudes': [round(m, 2) for m in data['magnitudes']],
+                    'magnitudes_raw': [round(m, 2) for m in data['magnitudes_raw']],
                     'range_resolution': round(data['range_resolution'], 4),
                     'max_range': round(data['max_range'], 4),
                     'num_steps': data['num_steps'],

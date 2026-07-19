@@ -40,16 +40,6 @@ class BladeRFDriver:
         self.serial = self.device.get_serial()
         self._configure_channels()
 
-    def _reopen(self):
-        """Close and reopen device to reset sync streaming state between layout changes."""
-        if self.device:
-            try:
-                self.device.close()
-            except Exception:
-                pass
-        self.device = bladerf.BladeRF()
-        self._configure_channels()
-
     def close(self):
         self.stop_tx()
         self.stop_rx()
@@ -173,6 +163,12 @@ class BladeRFDriver:
         self._tx_buffer = self._generate(int(self.sample_rate * 0.01))
         self._tx_stop.clear()
         self.tx_running = True
+        # Ensure all TX modules are off before reconfiguring layout
+        for ch in range(2):
+            try:
+                self.device.enable_module(bladerf.CHANNEL_TX(ch), False)
+            except Exception:
+                pass
         self.device.enable_module(bladerf.CHANNEL_TX(0), True)
         self.device.sync_config(
             layout=ChannelLayout.TX_X1,
@@ -214,6 +210,12 @@ class BladeRFDriver:
             return
         self._rx_stop.clear()
         self.rx_running = True
+        # Ensure all RX modules are off before reconfiguring layout
+        for ch in range(2):
+            try:
+                self.device.enable_module(bladerf.CHANNEL_RX(ch), False)
+            except Exception:
+                pass
         self.device.enable_module(bladerf.CHANNEL_RX(0), True)
         self.device.sync_config(
             layout=ChannelLayout.RX_X1,
