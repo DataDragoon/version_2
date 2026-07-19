@@ -68,8 +68,8 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
     const plotW = w - pad.left - pad.right;
     const plotH = h - pad.top - pad.bottom;
 
-    const magMin = -80;
-    const magMax = Math.max(...mags) + 5;
+    const magMin = -40;
+    const magMax = 40;
 
     // Grid
     ctx.strokeStyle = GRID_COLOR;
@@ -185,7 +185,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
     }
   }, [crosshair]);
 
-  const drawRaw = useCallback(() => {
+  const drawLinear = useCallback(() => {
     const canvas = waterfallCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -201,23 +201,25 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
     ctx.fillRect(0, 0, w, h);
 
     const result = latestResult.current;
-    if (!result || !result.magnitudes_raw || result.magnitudes_raw.length === 0) {
+    if (!result || !result.magnitudes || result.magnitudes.length === 0) {
       ctx.fillStyle = '#333333';
       ctx.font = '11px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText('No raw data', w / 2, h / 2);
+      ctx.fillText('No sweep data', w / 2, h / 2);
       return;
     }
 
-    const mags = result.magnitudes_raw;
+    // Convert dB to linear
+    const magsDb = result.magnitudes;
+    const mags = magsDb.map(db => Math.pow(10, db / 20));
     const dists = result.distances;
     const n = mags.length;
     const pad = { top: 24, bottom: 36, left: 52, right: 16 };
     const plotW = w - pad.left - pad.right;
     const plotH = h - pad.top - pad.bottom;
 
-    const magMin = -80;
-    const magMax = Math.max(...mags) + 5;
+    const magMax = Math.max(...mags) * 1.1;
+    const magMin = 0;
 
     // Grid
     ctx.strokeStyle = GRID_COLOR;
@@ -233,7 +235,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
       ctx.fillStyle = '#555555';
       ctx.font = '9px monospace';
       ctx.textAlign = 'right';
-      ctx.fillText(`${val.toFixed(0)} dB`, pad.left - 6, y + 3);
+      ctx.fillText(`${val.toFixed(2)}`, pad.left - 6, y + 3);
     }
 
     const maxDist = dists[dists.length - 1];
@@ -267,18 +269,18 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
     ctx.fillStyle = '#6B9BD2';
     ctx.font = 'bold 10px monospace';
     ctx.textAlign = 'left';
-    ctx.fillText('RAW (no phase correction)', pad.left, 14);
+    ctx.fillText('LINEAR SCALE', pad.left, 14);
   }, []);
 
   useEffect(() => {
     const render = () => {
       drawRange();
-      drawRaw();
+      drawLinear();
       animRef.current = requestAnimationFrame(render);
     };
     animRef.current = requestAnimationFrame(render);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [drawRange, drawRaw]);
+  }, [drawRange, drawLinear]);
 
   const handleMouseMove = (e) => {
     const rect = rangeCanvasRef.current?.getBoundingClientRect();

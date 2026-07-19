@@ -267,13 +267,6 @@ class SFCWEngine:
         phase_std = float(np.std(residuals))
 
         window = np.hanning(num_steps)
-
-        # Uncorrected range profile (RX1 only, no phase reference)
-        h_uncorrected = h_signal
-        range_uncorrected = np.fft.ifft(h_uncorrected * window)
-        mag_uncorrected_db = 20 * np.log10(np.abs(range_uncorrected) + 1e-12)
-
-        # Corrected range profile
         h_windowed = h_cal * window
         range_profile = np.fft.ifft(h_windowed)
         magnitude_db = 20 * np.log10(np.abs(range_profile) + 1e-12)
@@ -283,14 +276,12 @@ class SFCWEngine:
 
         half = num_steps // 2
         magnitude_db = magnitude_db[:half]
-        mag_uncorrected_db = mag_uncorrected_db[:half]
         distances = distances[:half]
 
         return {
             'type': 'range_profile',
             'distances': distances.tolist(),
             'magnitudes': magnitude_db.tolist(),
-            'magnitudes_raw': mag_uncorrected_db.tolist(),
             'range_resolution': SPEED_OF_LIGHT / (2 * (stop - start)),
             'max_range': max_range / 2,
             'num_steps': num_steps,
