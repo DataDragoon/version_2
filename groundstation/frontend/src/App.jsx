@@ -45,7 +45,7 @@ export default function App() {
     rx1Gain: 30,
     tx2Gain: 10,
     rx2Gain: 20,
-    rangeOffset: 1.44,
+    rangeOffset: 0,
   });
 
   // IMU WebSocket

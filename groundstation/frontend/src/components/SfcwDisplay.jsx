@@ -61,7 +61,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
       return;
     }
 
-    const mags = result.magnitudes;
+    const mags = result.magnitudes_raw || result.magnitudes;
     const dists = result.distances;
     const n = mags.length;
     const pad = { top: 24, bottom: 36, left: 52, right: 16 };
@@ -290,14 +290,6 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
           className="absolute inset-0 w-full h-full"
           onMouseMove={handleMouseMove}
           onMouseLeave={handleMouseLeave}
-        />
-      </div>
-
-      {/* Waterfall */}
-      <div className="relative border-t border-white/5" style={{ flex: '0 0 35%' }}>
-        <canvas
-          ref={waterfallCanvasRef}
-          className="absolute inset-0 w-full h-full"
         />
       </div>
     </div>
