@@ -68,7 +68,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
     const plotW = w - pad.left - pad.right;
     const plotH = h - pad.top - pad.bottom;
 
-    const magMin = -40;
+    const magMin = -60;
     const magMax = 40;
 
     // Grid
@@ -218,8 +218,8 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
     const plotW = w - pad.left - pad.right;
     const plotH = h - pad.top - pad.bottom;
 
-    const magMin = Math.pow(10, -40 / 20);  // 0.01
-    const magMax = Math.pow(10, 0 / 20);    // 1.0
+    const magMin = Math.pow(10, -60 / 20);  // 0.001
+    const magMax = Math.pow(10, 40 / 20);   // 100.0
 
     // Grid
     ctx.strokeStyle = GRID_COLOR;
