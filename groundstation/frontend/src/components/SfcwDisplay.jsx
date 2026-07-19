@@ -61,7 +61,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
       return;
     }
 
-    const mags = result.magnitudes_raw || result.magnitudes;
+    const mags = result.magnitudes;
     const dists = result.distances;
     const n = mags.length;
     const pad = { top: 24, bottom: 36, left: 52, right: 16 };
@@ -185,7 +185,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
     }
   }, [crosshair]);
 
-  const drawWaterfall = useCallback(() => {
+  const drawRaw = useCallback(() => {
     const canvas = waterfallCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -200,68 +200,85 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
     ctx.fillStyle = BG;
     ctx.fillRect(0, 0, w, h);
 
-    const rows = waterfallData.current;
-    if (rows.length === 0) {
+    const result = latestResult.current;
+    if (!result || !result.magnitudes_raw || result.magnitudes_raw.length === 0) {
       ctx.fillStyle = '#333333';
       ctx.font = '11px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText('Waterfall — awaiting sweeps', w / 2, h / 2);
+      ctx.fillText('No raw data', w / 2, h / 2);
       return;
     }
 
-    const pad = { top: 20, bottom: 4, left: 52, right: 16 };
+    const mags = result.magnitudes_raw;
+    const dists = result.distances;
+    const n = mags.length;
+    const pad = { top: 24, bottom: 36, left: 52, right: 16 };
     const plotW = w - pad.left - pad.right;
     const plotH = h - pad.top - pad.bottom;
-    const numRows = rows.length;
-    const rowH = plotH / WATERFALL_ROWS;
 
     const magMin = -80;
-    const magMax = 0;
+    const magMax = Math.max(...mags) + 5;
 
-    for (let r = 0; r < numRows; r++) {
-      const row = rows[r];
-      const n = row.length;
-      const colW = plotW / n;
-      const y = pad.top + r * rowH;
-
-      for (let c = 0; c < n; c++) {
-        const t = (row[c] - magMin) / (magMax - magMin);
-        const [cr, cg, cb] = lerpColor(WATERFALL_COLD, WATERFALL_HOT, t);
-        ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
-        ctx.fillRect(pad.left + c * colW, y, colW + 0.5, rowH + 0.5);
-      }
+    // Grid
+    ctx.strokeStyle = GRID_COLOR;
+    ctx.lineWidth = 0.5;
+    const yTicks = 5;
+    for (let i = 0; i <= yTicks; i++) {
+      const y = pad.top + (i / yTicks) * plotH;
+      ctx.beginPath();
+      ctx.moveTo(pad.left, y);
+      ctx.lineTo(w - pad.right, y);
+      ctx.stroke();
+      const val = magMax - (i / yTicks) * (magMax - magMin);
+      ctx.fillStyle = '#555555';
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(`${val.toFixed(0)} dB`, pad.left - 6, y + 3);
     }
 
-    // Title
-    ctx.fillStyle = '#666666';
-    ctx.font = 'bold 10px monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText('WATERFALL', pad.left, 14);
-
-    // Distance axis
-    if (rows[0]) {
-      const maxDist = latestResult.current?.max_range || 0;
-      const xTicks = 6;
-      ctx.fillStyle = '#444444';
+    const maxDist = dists[dists.length - 1];
+    const xTicks = 6;
+    for (let i = 0; i <= xTicks; i++) {
+      const x = pad.left + (i / xTicks) * plotW;
+      ctx.beginPath();
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, h - pad.bottom);
+      ctx.stroke();
+      const dist = (i / xTicks) * maxDist;
+      ctx.fillStyle = '#555555';
       ctx.font = '9px monospace';
       ctx.textAlign = 'center';
-      for (let i = 0; i <= xTicks; i++) {
-        const x = pad.left + (i / xTicks) * plotW;
-        const dist = (i / xTicks) * maxDist;
-        ctx.fillText(`${dist.toFixed(1)}`, x, h - 1);
-      }
+      ctx.fillText(`${dist.toFixed(1)} m`, x, h - pad.bottom + 14);
     }
+
+    // Trace
+    ctx.beginPath();
+    ctx.strokeStyle = '#6B9BD2';
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < n; i++) {
+      const x = pad.left + (i / (n - 1)) * plotW;
+      const y = pad.top + ((magMax - mags[i]) / (magMax - magMin)) * plotH;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Title
+    ctx.fillStyle = '#6B9BD2';
+    ctx.font = 'bold 10px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('RAW (no phase correction)', pad.left, 14);
   }, []);
 
   useEffect(() => {
     const render = () => {
       drawRange();
-      drawWaterfall();
+      drawRaw();
       animRef.current = requestAnimationFrame(render);
     };
     animRef.current = requestAnimationFrame(render);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [drawRange, drawWaterfall]);
+  }, [drawRange, drawRaw]);
 
   const handleMouseMove = (e) => {
     const rect = rangeCanvasRef.current?.getBoundingClientRect();
@@ -283,13 +300,21 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
         </div>
       )}
 
-      {/* Range Profile */}
+      {/* Range Profile (phase corrected) */}
       <div className="relative flex-1 min-h-0">
         <canvas
           ref={rangeCanvasRef}
           className="absolute inset-0 w-full h-full"
           onMouseMove={handleMouseMove}
           onMouseLeave={handleMouseLeave}
+        />
+      </div>
+
+      {/* Raw Range Profile (no phase correction) */}
+      <div className="relative border-t border-white/5" style={{ flex: '0 0 45%' }}>
+        <canvas
+          ref={waterfallCanvasRef}
+          className="absolute inset-0 w-full h-full"
         />
       </div>
     </div>
