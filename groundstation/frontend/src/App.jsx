@@ -34,6 +34,20 @@ export default function App() {
   const [sfcwResult, setSfcwResult] = useState(null);
   const [sfcwProgress, setSfcwProgress] = useState(null);
 
+  // SFCW panel params (lifted so they survive panel switches)
+  const [sfcwParams, setSfcwParams] = useState({
+    startFreq: 1000,
+    stopFreq: 5000,
+    stepSize: 10,
+    settleTime: 1,
+    numBuffers: 1,
+    tx1Gain: 47,
+    rx1Gain: 30,
+    tx2Gain: 10,
+    rx2Gain: 20,
+    rangeOffset: 1.44,
+  });
+
   // IMU WebSocket
   const handleImuMessage = useCallback((msg) => {
     imuCountRef.current++;
@@ -156,6 +170,8 @@ export default function App() {
         sendOptiflow={sendOptiflow}
         sfcwRunning={sfcwRunning}
         sfcwStatus={sfcwStatus}
+        sfcwParams={sfcwParams}
+        onSfcwParamsChange={setSfcwParams}
       />
       <Viewport
         activePanel={activePanel}

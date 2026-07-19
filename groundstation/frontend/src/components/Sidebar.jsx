@@ -38,6 +38,8 @@ export default function Sidebar({
   sendOptiflow,
   sfcwRunning,
   sfcwStatus,
+  sfcwParams,
+  onSfcwParamsChange,
 }) {
   return (
     <div className="flex h-screen shrink-0">
@@ -178,6 +180,8 @@ export default function Sidebar({
                   sfcwRunning={sfcwRunning}
                   sfcwStatus={sfcwStatus}
                   sendSdr={sendSdr}
+                  params={sfcwParams}
+                  onParamsChange={onSfcwParamsChange}
                 />
               )}
             </div>

@@ -40,6 +40,16 @@ class BladeRFDriver:
         self.serial = self.device.get_serial()
         self._configure_channels()
 
+    def _reopen(self):
+        """Close and reopen device to reset sync streaming state between layout changes."""
+        if self.device:
+            try:
+                self.device.close()
+            except Exception:
+                pass
+        self.device = bladerf.BladeRF()
+        self._configure_channels()
+
     def close(self):
         self.stop_tx()
         self.stop_rx()

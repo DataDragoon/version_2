@@ -168,6 +168,7 @@ class SFCWEngine:
     def _stop_tx_rx(self):
         self.driver.stop_rx_dual()
         self.driver.stop_tx_dual()
+        self.driver._reopen()
 
     def _rx_capture(self, rx1_iq, rx2_iq):
         self._rx1_buffer = rx1_iq

@@ -6,17 +6,12 @@ const BUFFER_SAMPLES = 1024;
 const SAMPLE_RATE = 2_000_000;
 const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
-export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr }) {
-  const [startFreq, setStartFreq] = useState(1000);
-  const [stopFreq, setStopFreq] = useState(5000);
-  const [stepSize, setStepSize] = useState(10);
-  const [settleTime, setSettleTime] = useState(1);
-  const [numBuffers, setNumBuffers] = useState(1);
-  const [tx1Gain, setTx1Gain] = useState(47);
-  const [rx1Gain, setRx1Gain] = useState(30);
-  const [tx2Gain, setTx2Gain] = useState(10);
-  const [rx2Gain, setRx2Gain] = useState(20);
-  const [rangeOffset, setRangeOffset] = useState(1.44);
+export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange }) {
+  const { startFreq, stopFreq, stepSize, settleTime, numBuffers, tx1Gain, rx1Gain, tx2Gain, rx2Gain, rangeOffset } = params;
+
+  const update = (key, value) => {
+    onParamsChange({ ...params, [key]: value });
+  };
 
   const canActivate = isConnected && sdrConnected;
 
@@ -52,7 +47,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             label="Start"
             value={startFreq}
             unit="MHz"
-            onChange={(v) => { setStartFreq(v); sendParams({ startFreq: v }); }}
+            onChange={(v) => { update('startFreq', v); sendParams({ startFreq: v }); }}
             min={47}
             max={6000}
           />
@@ -60,7 +55,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             label="Stop"
             value={stopFreq}
             unit="MHz"
-            onChange={(v) => { setStopFreq(v); sendParams({ stopFreq: v }); }}
+            onChange={(v) => { update('stopFreq', v); sendParams({ stopFreq: v }); }}
             min={47}
             max={6000}
           />
@@ -74,7 +69,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             label="Step Size"
             value={stepSize}
             unit="MHz"
-            onChange={(v) => { setStepSize(v); sendParams({ stepSize: v }); }}
+            onChange={(v) => { update('stepSize', v); sendParams({ stepSize: v }); }}
             min={0.1}
             max={500}
           />
@@ -82,7 +77,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             label="Settle"
             value={settleTime}
             unit="ms"
-            onChange={(v) => { setSettleTime(v); sendParams({ settleTime: v }); }}
+            onChange={(v) => { update('settleTime', v); sendParams({ settleTime: v }); }}
             min={0.1}
             max={50}
           />
@@ -91,8 +86,8 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
           <EditableField
             label="Buffers"
             value={numBuffers}
-            unit="×1024 smp"
-            onChange={(v) => { setNumBuffers(v); sendParams({ numBuffers: v }); }}
+            unit="x1024 smp"
+            onChange={(v) => { update('numBuffers', v); sendParams({ numBuffers: v }); }}
             min={1}
             max={64}
           />
@@ -104,7 +99,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
           label="Range Offset"
           value={rangeOffset}
           unit="m"
-          onChange={(v) => { setRangeOffset(v); sendParams({ rangeOffset: v }); }}
+          onChange={(v) => { update('rangeOffset', v); sendParams({ rangeOffset: v }); }}
           min={0}
           max={10}
         />
@@ -117,7 +112,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             label="TX1"
             value={tx1Gain}
             unit="dB"
-            onChange={(v) => { setTx1Gain(v); sendParams({ tx1Gain: v }); }}
+            onChange={(v) => { update('tx1Gain', v); sendParams({ tx1Gain: v }); }}
             min={0}
             max={60}
           />
@@ -125,7 +120,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             label="RX1"
             value={rx1Gain}
             unit="dB"
-            onChange={(v) => { setRx1Gain(v); sendParams({ rx1Gain: v }); }}
+            onChange={(v) => { update('rx1Gain', v); sendParams({ rx1Gain: v }); }}
             min={0}
             max={60}
           />
@@ -133,7 +128,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             label="TX2 ref"
             value={tx2Gain}
             unit="dB"
-            onChange={(v) => { setTx2Gain(v); sendParams({ tx2Gain: v }); }}
+            onChange={(v) => { update('tx2Gain', v); sendParams({ tx2Gain: v }); }}
             min={0}
             max={60}
           />
@@ -141,7 +136,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             label="RX2 ref"
             value={rx2Gain}
             unit="dB"
-            onChange={(v) => { setRx2Gain(v); sendParams({ rx2Gain: v }); }}
+            onChange={(v) => { update('rx2Gain', v); sendParams({ rx2Gain: v }); }}
             min={0}
             max={60}
           />
