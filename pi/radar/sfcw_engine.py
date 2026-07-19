@@ -13,8 +13,8 @@ import time
 import numpy as np
 
 from bladerf_driver import BladeRFDriver
+from bladerf._bladerf import libbladeRF, ffi
 import bladerf
-from bladerf._bladerf import libbladeRF
 
 SPEED_OF_LIGHT = 299_792_458
 
@@ -23,14 +23,16 @@ class SFCWEngine:
     def __init__(self, driver: BladeRFDriver):
         self.driver = driver
         self.start_freq = 1_000_000_000
-        self.stop_freq = 5_000_000_000
+        self.stop_freq = 6_000_000_000
         self.step_size = 10_000_000
         self.settle_time = 0.003
         self.num_buffers = 4
-        self.tx1_gain = 47
+        self.tx1_gain = 30
         self.rx1_gain = 30
-        self.tx2_gain = 10
+        self.tx2_gain = 30
         self.rx2_gain = 20
+        self.rx_gain_min = 5
+        self.rx_gain_max = 38
         self.range_offset = 1.44
         self.running = False
         self._stop_event = threading.Event()
@@ -80,6 +82,10 @@ class SFCWEngine:
                 self.tx2_gain = int(kwargs['tx2_gain'])
             if 'rx2_gain' in kwargs:
                 self.rx2_gain = int(kwargs['rx2_gain'])
+            if 'rx_gain_min' in kwargs:
+                self.rx_gain_min = int(kwargs['rx_gain_min'])
+            if 'rx_gain_max' in kwargs:
+                self.rx_gain_max = int(kwargs['rx_gain_max'])
             if 'range_offset' in kwargs:
                 self.range_offset = float(kwargs['range_offset'])
 
@@ -94,6 +100,8 @@ class SFCWEngine:
             'rx1_gain': self.rx1_gain,
             'tx2_gain': self.tx2_gain,
             'rx2_gain': self.rx2_gain,
+            'rx_gain_min': self.rx_gain_min,
+            'rx_gain_max': self.rx_gain_max,
             'range_offset': self.range_offset,
             'num_steps': self.num_steps,
             'bandwidth': self.bandwidth,
@@ -156,12 +164,21 @@ class SFCWEngine:
     def _start_tx_rx(self):
         self._rx_latest = (None, None)
         self._rx_event = threading.Event()
-        # Pre-compute correlation tone for single-bin DFT at CW offset
         n = 1024
         t = np.arange(n, dtype=np.float64) / self.driver.sample_rate
         self._ref_tone = np.exp(-1j * 2 * np.pi * self.driver.cw_offset * t)
         self.driver.start_tx_dual()
         self.driver.start_rx_dual(self._rx_capture, num_samples=n)
+        time.sleep(0.05)
+
+        # Apply gains AFTER modules are enabled (enable_module resets gain state)
+        dev_ptr = self.driver.device.dev[0]
+        libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(0), libbladeRF.BLADERF_GAIN_MGC)
+        libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(1), libbladeRF.BLADERF_GAIN_MGC)
+        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(0), int(self.rx1_gain))
+        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(1), int(self.rx2_gain))
+        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(0), int(self.tx1_gain))
+        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(1), int(self.tx2_gain))
 
     def _stop_tx_rx(self):
         self.driver.stop_rx_dual()
@@ -187,14 +204,24 @@ class SFCWEngine:
         dev_ptr = self.driver.device.dev[0]
         tx_ch = bladerf.CHANNEL_TX(0)
         rx_ch = bladerf.CHANNEL_RX(0)
+        rx_ch1 = bladerf.CHANNEL_RX(1)
+
+        # Dynamic RX gain ramp: compensates AD9361 output power rolloff at higher
+        # frequencies. Both RX1 and RX2 get identical gain at each step so any
+        # gain-dependent phase offset cancels in the h_signal/h_reference division.
+        freq_norm = (freqs - freqs[0]) / max(float(freqs[-1] - freqs[0]), 1)
+        rx_gains = (self.rx_gain_min + freq_norm * (self.rx_gain_max - self.rx_gain_min)).astype(int)
 
         for i in range(num_steps):
             if self._stop_event.is_set():
                 return None
 
             f = int(freqs[i])
+            g = int(rx_gains[i])
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, g)
+            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, g)
             time.sleep(settle)
 
             # Discard first buffer — may contain samples from before PLL settled
@@ -213,12 +240,10 @@ class SFCWEngine:
                 if rx1 is None or rx2 is None:
                     continue
 
-                # RX1 = antenna signal (single-bin DFT at CW offset)
                 i1 = rx1[0::2].astype(np.float64) / 2047.0
                 q1 = rx1[1::2].astype(np.float64) / 2047.0
                 sig_accum += np.mean((i1 + 1j * q1) * self._ref_tone)
 
-                # RX2 = reference (single-bin DFT at CW offset)
                 i2 = rx2[0::2].astype(np.float64) / 2047.0
                 q2 = rx2[1::2].astype(np.float64) / 2047.0
                 ref_accum += np.mean((i2 + 1j * q2) * self._ref_tone)
@@ -238,18 +263,14 @@ class SFCWEngine:
 
         # Phase-reference division: cancels TX and RX PLL phase offsets
         ref_mag = np.abs(h_reference)
-        ref_power_db = 10 * np.log10(np.mean(ref_mag**2) + 1e-12)
-        sig_power_db = 10 * np.log10(np.mean(np.abs(h_signal)**2) + 1e-12)
-        print(f"[sfcw] sig={sig_power_db:.1f} dB  ref={ref_power_db:.1f} dB  ref_min={20*np.log10(np.min(ref_mag)+1e-12):.1f} dB")
         valid = ref_mag > 1e-10
         h_cal = np.zeros(num_steps, dtype=np.complex128)
         h_cal[valid] = h_signal[valid] / h_reference[valid]
 
-        # Background subtraction: removes TX→RX coupling and static clutter
+        # Background subtraction: removes TX->RX coupling and static clutter
         if self._capture_background:
             self._background = h_cal.copy()
             self._capture_background = False
-            print(f"[sfcw] Background captured ({num_steps} steps)")
 
         if self._background is not None and len(self._background) == num_steps:
             h_cal = h_cal - self._background

@@ -62,25 +62,24 @@ class BladeRFDriver:
 
     def _configure_channels_dual(self):
         """Configure all 4 channels (TX1+TX2, RX1+RX2) for SFCW reference mode."""
-        for ch_idx in range(2):
-            ch_tx = self.device.Channel(bladerf.CHANNEL_TX(ch_idx))
-            ch_rx = self.device.Channel(bladerf.CHANNEL_RX(ch_idx))
-            ch_rx.gain_mode = MGC
-            ch_tx.frequency = int(self.center_freq)
-            ch_tx.sample_rate = int(self.sample_rate)
-            ch_tx.bandwidth = int(self.bandwidth)
-            ch_rx.frequency = int(self.center_freq)
-            ch_rx.sample_rate = int(self.sample_rate)
-            ch_rx.bandwidth = int(self.bandwidth)
+        dev_ptr = self.device.dev[0]
+        gains_tx = [int(self.tx_gain), int(self.tx2_gain)]
+        gains_rx = [int(self.rx_gain), int(self.rx2_gain)]
 
-        self.device.Channel(bladerf.CHANNEL_TX(0)).gain = int(self.tx_gain)
-        self.device.Channel(bladerf.CHANNEL_TX(1)).gain = int(self.tx2_gain)
-        self.device.Channel(bladerf.CHANNEL_RX(0)).gain = int(self.rx_gain)
-        self.device.Channel(bladerf.CHANNEL_RX(1)).gain = int(self.rx2_gain)
-        rx0_rb = self.device.Channel(bladerf.CHANNEL_RX(0)).gain
-        rx1_rb = self.device.Channel(bladerf.CHANNEL_RX(1)).gain
-        print(f"[bladerf] Dual-channel configured: TX1={self.tx_gain}dB TX2={self.tx2_gain}dB RX1={self.rx_gain}dB RX2={self.rx2_gain}dB")
-        print(f"[bladerf] Readback: RX1={rx0_rb}dB RX2={rx1_rb}dB")
+        for ch_idx in range(2):
+            tx_ch = bladerf.CHANNEL_TX(ch_idx)
+            rx_ch = bladerf.CHANNEL_RX(ch_idx)
+            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, int(self.center_freq))
+            libbladeRF.bladerf_set_sample_rate(dev_ptr, tx_ch, int(self.sample_rate), ffi.NULL)
+            libbladeRF.bladerf_set_bandwidth(dev_ptr, tx_ch, int(self.bandwidth), ffi.NULL)
+            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, int(self.center_freq))
+            libbladeRF.bladerf_set_sample_rate(dev_ptr, rx_ch, int(self.sample_rate), ffi.NULL)
+            libbladeRF.bladerf_set_bandwidth(dev_ptr, rx_ch, int(self.bandwidth), ffi.NULL)
+            libbladeRF.bladerf_set_gain_mode(dev_ptr, rx_ch, MGC)
+            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, gains_rx[ch_idx])
+            libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, gains_tx[ch_idx])
+
+        print(f"[bladerf] Dual-channel configured: TX1={gains_tx[0]}dB TX2={gains_tx[1]}dB RX1={gains_rx[0]}dB RX2={gains_rx[1]}dB")
 
     def set_frequency(self, freq_hz):
         with self._lock:
@@ -254,8 +253,6 @@ class BladeRFDriver:
         self._tx_stop.clear()
         self.tx_running = True
         self._dual_channel = True
-        self.device.enable_module(bladerf.CHANNEL_TX(0), True)
-        self.device.enable_module(bladerf.CHANNEL_TX(1), True)
         self.device.sync_config(
             layout=ChannelLayout.TX_X2,
             fmt=Format.SC16_Q11,
@@ -264,6 +261,8 @@ class BladeRFDriver:
             num_transfers=8,
             stream_timeout=3500
         )
+        self.device.enable_module(bladerf.CHANNEL_TX(0), True)
+        self.device.enable_module(bladerf.CHANNEL_TX(1), True)
         self._tx_thread = threading.Thread(target=self._tx_loop_dual, daemon=True)
         self._tx_thread.start()
 
@@ -273,16 +272,12 @@ class BladeRFDriver:
             while not self._tx_stop.is_set():
                 with self._lock:
                     buf = self._tx_buffer
-                # TX_X2 layout: samples are interleaved [TX1_I, TX1_Q, TX2_I, TX2_Q, ...]
-                # Same CW on both channels
-                samples = buf.tobytes()
                 n_samples = len(buf) // 2
-                # Interleave: each "sample" in X2 mode is 2 channels worth
                 dual_buf = np.empty(len(buf) * 2, dtype=np.int16)
                 dual_buf[0::4] = buf[0::2]  # TX1 I
                 dual_buf[1::4] = buf[1::2]  # TX1 Q
-                dual_buf[2::4] = buf[0::2]  # TX2 I (same waveform)
-                dual_buf[3::4] = buf[1::2]  # TX2 Q (same waveform)
+                dual_buf[2::4] = buf[0::2]  # TX2 I
+                dual_buf[3::4] = buf[1::2]  # TX2 Q
                 self.device.sync_tx(dual_buf.tobytes(), n_samples)
         except Exception as e:
             print(f"[bladerf] TX dual error: {e}")
@@ -311,8 +306,6 @@ class BladeRFDriver:
         self._rx_stop.clear()
         self.rx_running = True
         self._dual_channel = True
-        self.device.enable_module(bladerf.CHANNEL_RX(0), True)
-        self.device.enable_module(bladerf.CHANNEL_RX(1), True)
         self.device.sync_config(
             layout=ChannelLayout.RX_X2,
             fmt=Format.SC16_Q11,
@@ -321,6 +314,8 @@ class BladeRFDriver:
             num_transfers=8,
             stream_timeout=3500
         )
+        self.device.enable_module(bladerf.CHANNEL_RX(0), True)
+        self.device.enable_module(bladerf.CHANNEL_RX(1), True)
         self._rx_thread = threading.Thread(target=self._rx_loop_dual, args=(callback, num_samples), daemon=True)
         self._rx_thread.start()
 

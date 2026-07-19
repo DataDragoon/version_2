@@ -37,15 +37,13 @@ export default function App() {
   // SFCW panel params (lifted so they survive panel switches)
   const [sfcwParams, setSfcwParams] = useState({
     startFreq: 1000,
-    stopFreq: 5000,
+    stopFreq: 6000,
     stepSize: 10,
-    settleTime: 1,
-    numBuffers: 1,
-    tx1Gain: 47,
+    settleTime: 3,
+    numBuffers: 4,
+    tx1Gain: 30,
     rx1Gain: 30,
-    tx2Gain: 10,
-    rx2Gain: 20,
-    rangeOffset: 0,
+    rangeOffset: 1.44,
   });
 
   // IMU WebSocket

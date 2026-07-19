@@ -7,7 +7,7 @@ const SAMPLE_RATE = 2_000_000;
 const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
 export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange }) {
-  const { startFreq, stopFreq, stepSize, settleTime, numBuffers, tx1Gain, rx1Gain, tx2Gain, rx2Gain, rangeOffset } = params;
+  const { startFreq, stopFreq, stepSize, settleTime, numBuffers, tx1Gain, rx1Gain, rangeOffset } = params;
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
@@ -25,8 +25,6 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
       num_buffers: overrides.numBuffers ?? numBuffers,
       tx1_gain: overrides.tx1Gain ?? tx1Gain,
       rx1_gain: overrides.rx1Gain ?? rx1Gain,
-      tx2_gain: overrides.tx2Gain ?? tx2Gain,
-      rx2_gain: overrides.rx2Gain ?? rx2Gain,
       range_offset: overrides.rangeOffset ?? rangeOffset,
     });
   };
@@ -114,29 +112,13 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             unit="dB"
             onChange={(v) => { update('tx1Gain', v); sendParams({ tx1Gain: v }); }}
             min={0}
-            max={60}
+            max={30}
           />
           <EditableField
             label="RX1"
             value={rx1Gain}
             unit="dB"
             onChange={(v) => { update('rx1Gain', v); sendParams({ rx1Gain: v }); }}
-            min={0}
-            max={60}
-          />
-          <EditableField
-            label="TX2 ref"
-            value={tx2Gain}
-            unit="dB"
-            onChange={(v) => { update('tx2Gain', v); sendParams({ tx2Gain: v }); }}
-            min={0}
-            max={60}
-          />
-          <EditableField
-            label="RX2 ref"
-            value={rx2Gain}
-            unit="dB"
-            onChange={(v) => { update('rx2Gain', v); sendParams({ rx2Gain: v }); }}
             min={0}
             max={60}
           />
