@@ -27,6 +27,10 @@ class SFCWEngine:
         self.step_size = 10_000_000
         self.settle_time = 0.003
         self.num_buffers = 4
+        self.tx1_gain = 47
+        self.rx1_gain = 30
+        self.tx2_gain = 10
+        self.rx2_gain = 20
         self.running = False
         self._stop_event = threading.Event()
         self._thread = None
@@ -65,6 +69,14 @@ class SFCWEngine:
                 self.settle_time = float(kwargs['settle_time'])
             if 'num_buffers' in kwargs:
                 self.num_buffers = max(1, int(kwargs['num_buffers']))
+            if 'tx1_gain' in kwargs:
+                self.tx1_gain = int(kwargs['tx1_gain'])
+            if 'rx1_gain' in kwargs:
+                self.rx1_gain = int(kwargs['rx1_gain'])
+            if 'tx2_gain' in kwargs:
+                self.tx2_gain = int(kwargs['tx2_gain'])
+            if 'rx2_gain' in kwargs:
+                self.rx2_gain = int(kwargs['rx2_gain'])
 
     def get_params(self):
         return {
@@ -73,6 +85,10 @@ class SFCWEngine:
             'step_size': self.step_size,
             'settle_time': self.settle_time,
             'num_buffers': self.num_buffers,
+            'tx1_gain': self.tx1_gain,
+            'rx1_gain': self.rx1_gain,
+            'tx2_gain': self.tx2_gain,
+            'rx2_gain': self.rx2_gain,
             'num_steps': self.num_steps,
             'bandwidth': self.bandwidth,
             'range_resolution': self.range_resolution,
@@ -116,12 +132,17 @@ class SFCWEngine:
             self.running = False
 
     def _configure_hardware(self):
+        self.driver.tx_gain = self.tx1_gain
+        self.driver.rx_gain = self.rx1_gain
+        self.driver.tx2_gain = self.tx2_gain
+        self.driver.rx2_gain = self.rx2_gain
         self.driver.set_waveform('cw', offset=0, amplitude=0.9)
         self.driver._configure_channels_dual()
 
     def _start_tx_rx(self):
         self._rx1_buffer = None
         self._rx2_buffer = None
+        self._rx_latest = (None, None)
         self._rx_event = threading.Event()
         self.driver.start_tx_dual()
         self.driver.start_rx_dual(self._rx_capture, num_samples=1024)
@@ -133,6 +154,7 @@ class SFCWEngine:
     def _rx_capture(self, rx1_iq, rx2_iq):
         self._rx1_buffer = rx1_iq
         self._rx2_buffer = rx2_iq
+        self._rx_latest = (rx1_iq, rx2_iq)
         self._rx_event.set()
 
     def _perform_sweep(self):
@@ -170,8 +192,7 @@ class SFCWEngine:
                 if not self._rx_event.wait(timeout=1.0):
                     break
 
-                rx1 = self._rx1_buffer
-                rx2 = self._rx2_buffer
+                rx1, rx2 = self._rx_latest
                 if rx1 is None or rx2 is None:
                     continue
 
@@ -199,10 +220,10 @@ class SFCWEngine:
                 })
 
         # Phase-reference division: cancels TX and RX PLL phase offsets
-        # h_cal[i] = h_signal[i] / h_reference[i]
-        # The reference cable has a fixed tiny delay, so its phase is just
-        # the PLL offset + a small constant. Dividing removes the PLL part.
         ref_mag = np.abs(h_reference)
+        ref_power_db = 10 * np.log10(np.mean(ref_mag**2) + 1e-12)
+        sig_power_db = 10 * np.log10(np.mean(np.abs(h_signal)**2) + 1e-12)
+        print(f"[sfcw] sig={sig_power_db:.1f} dB  ref={ref_power_db:.1f} dB  ref_min={20*np.log10(np.min(ref_mag)+1e-12):.1f} dB")
         valid = ref_mag > 1e-10
         h_cal = np.zeros(num_steps, dtype=np.complex128)
         h_cal[valid] = h_signal[valid] / h_reference[valid]

@@ -12,6 +12,10 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
   const [stepSize, setStepSize] = useState(10);
   const [settleTime, setSettleTime] = useState(1);
   const [numBuffers, setNumBuffers] = useState(1);
+  const [tx1Gain, setTx1Gain] = useState(47);
+  const [rx1Gain, setRx1Gain] = useState(30);
+  const [tx2Gain, setTx2Gain] = useState(10);
+  const [rx2Gain, setRx2Gain] = useState(20);
 
   const canActivate = isConnected && sdrConnected;
 
@@ -23,6 +27,10 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
       step_size_mhz: overrides.stepSize ?? stepSize,
       settle_time_ms: overrides.settleTime ?? settleTime,
       num_buffers: overrides.numBuffers ?? numBuffers,
+      tx1_gain: overrides.tx1Gain ?? tx1Gain,
+      rx1_gain: overrides.rx1Gain ?? rx1Gain,
+      tx2_gain: overrides.tx2Gain ?? tx2Gain,
+      rx2_gain: overrides.rx2Gain ?? rx2Gain,
     });
   };
 
@@ -89,6 +97,44 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
           <span className="text-[9px] text-[#333333] leading-tight px-1">
             {captureTimeMs.toFixed(2)} ms capture per step ({(numBuffers * BUFFER_SAMPLES).toLocaleString()} samples)
           </span>
+        </div>
+      </Section>
+
+      {/* Gains */}
+      <Section label="Gains">
+        <div className="grid grid-cols-2 gap-2">
+          <EditableField
+            label="TX1"
+            value={tx1Gain}
+            unit="dB"
+            onChange={(v) => { setTx1Gain(v); sendParams({ tx1Gain: v }); }}
+            min={0}
+            max={60}
+          />
+          <EditableField
+            label="RX1"
+            value={rx1Gain}
+            unit="dB"
+            onChange={(v) => { setRx1Gain(v); sendParams({ rx1Gain: v }); }}
+            min={0}
+            max={60}
+          />
+          <EditableField
+            label="TX2 ref"
+            value={tx2Gain}
+            unit="dB"
+            onChange={(v) => { setTx2Gain(v); sendParams({ tx2Gain: v }); }}
+            min={0}
+            max={60}
+          />
+          <EditableField
+            label="RX2 ref"
+            value={rx2Gain}
+            unit="dB"
+            onChange={(v) => { setRx2Gain(v); sendParams({ rx2Gain: v }); }}
+            min={0}
+            max={60}
+          />
         </div>
       </Section>
 

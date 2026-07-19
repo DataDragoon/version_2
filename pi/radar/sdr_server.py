@@ -108,6 +108,14 @@ class SDRServer:
                     params['settle_time'] = float(cmd['settle_time_ms']) / 1000
                 if 'num_buffers' in cmd:
                     params['num_buffers'] = int(cmd['num_buffers'])
+                if 'tx1_gain' in cmd:
+                    params['tx1_gain'] = int(cmd['tx1_gain'])
+                if 'rx1_gain' in cmd:
+                    params['rx1_gain'] = int(cmd['rx1_gain'])
+                if 'tx2_gain' in cmd:
+                    params['tx2_gain'] = int(cmd['tx2_gain'])
+                if 'rx2_gain' in cmd:
+                    params['rx2_gain'] = int(cmd['rx2_gain'])
                 self.sfcw.set_params(**params)
                 await self._broadcast_sfcw_status()
 
