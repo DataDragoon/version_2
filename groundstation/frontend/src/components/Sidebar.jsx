@@ -1,15 +1,17 @@
-import { Activity, Eye, Radio, Radar, ChevronLeft, Wifi, WifiOff } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ScanLine, ChevronLeft, Wifi, WifiOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ImuPanel from './ImuPanel';
 import OptiFlowPanel from './OptiFlowPanel';
 import RfCalibPanel from './RfCalibPanel';
 import SfcwPanel from './SfcwPanel';
+import BscanPanel from './BscanPanel';
 
 const PANELS = [
   { id: 'imu',       label: 'IMU',       icon: Activity },
   { id: 'optiflow',  label: 'OptiFlow',  icon: Eye },
   { id: 'rfcalib',   label: 'RF Calibrate', icon: Radio },
   { id: 'sfcw',      label: 'SFCW',      icon: Radar },
+  { id: 'bscan',     label: 'B-Scan',    icon: ScanLine },
 ];
 
 export default function Sidebar({
@@ -40,6 +42,11 @@ export default function Sidebar({
   sfcwStatus,
   sfcwParams,
   onSfcwParamsChange,
+  sfcwResult,
+  bscanData,
+  bscanParams,
+  onBscanParamsChange,
+  onBscanAction,
 }) {
   return (
     <div className="flex h-screen shrink-0">
@@ -182,6 +189,18 @@ export default function Sidebar({
                   sendSdr={sendSdr}
                   params={sfcwParams}
                   onParamsChange={onSfcwParamsChange}
+                />
+              )}
+              {activePanel === 'bscan' && (
+                <BscanPanel
+                  isConnected={isConnected}
+                  sdrConnected={sdrConnected}
+                  sfcwRunning={sfcwRunning}
+                  sfcwResult={sfcwResult}
+                  scanData={bscanData}
+                  onScanAction={onBscanAction}
+                  params={bscanParams}
+                  onParamsChange={onBscanParamsChange}
                 />
               )}
             </div>

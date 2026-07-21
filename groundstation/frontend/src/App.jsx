@@ -46,6 +46,25 @@ export default function App() {
     rangeOffset: 1.44,
   });
 
+  // B-Scan state
+  const [bscanData, setBscanData] = useState([]);
+  const [bscanParams, setBscanParams] = useState({
+    stepSize: 5,
+    numPositions: 20,
+  });
+
+  const handleBscanAction = useCallback((action) => {
+    if (action === 'capture') {
+      if (sfcwResult) {
+        setBscanData(prev => [...prev, { magnitudes: [...sfcwResult.magnitudes], distances: [...sfcwResult.distances] }]);
+      }
+    } else if (action === 'new') {
+      setBscanData([]);
+    } else if (action === 'undo') {
+      setBscanData(prev => prev.slice(0, -1));
+    }
+  }, [sfcwResult]);
+
   // IMU WebSocket
   const handleImuMessage = useCallback((msg) => {
     imuCountRef.current++;
@@ -170,6 +189,11 @@ export default function App() {
         sfcwStatus={sfcwStatus}
         sfcwParams={sfcwParams}
         onSfcwParamsChange={setSfcwParams}
+        sfcwResult={sfcwResult}
+        bscanData={bscanData}
+        bscanParams={bscanParams}
+        onBscanParamsChange={setBscanParams}
+        onBscanAction={handleBscanAction}
       />
       <Viewport
         activePanel={activePanel}
@@ -186,6 +210,8 @@ export default function App() {
         sfcwResult={sfcwResult}
         sfcwProgress={sfcwProgress}
         sfcwRunning={sfcwRunning}
+        bscanData={bscanData}
+        bscanParams={bscanParams}
       />
     </div>
   );
