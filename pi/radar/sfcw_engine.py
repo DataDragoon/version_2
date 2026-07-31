@@ -41,6 +41,8 @@ class SFCWEngine:
         self._lock = threading.Lock()
         self._background = None
         self._capture_background = False
+        self._quick_tunes = None
+        self._qt_freqs = None
 
     @property
     def num_steps(self):
@@ -64,12 +66,16 @@ class SFCWEngine:
 
     def set_params(self, **kwargs):
         with self._lock:
+            freq_changed = False
             if 'start_freq' in kwargs:
                 self.start_freq = int(kwargs['start_freq'])
+                freq_changed = True
             if 'stop_freq' in kwargs:
                 self.stop_freq = int(kwargs['stop_freq'])
+                freq_changed = True
             if 'step_size' in kwargs:
                 self.step_size = int(kwargs['step_size'])
+                freq_changed = True
             if 'settle_time' in kwargs:
                 self.settle_time = float(kwargs['settle_time'])
             if 'num_buffers' in kwargs:
@@ -88,6 +94,9 @@ class SFCWEngine:
                 self.rx_gain_max = int(kwargs['rx_gain_max'])
             if 'range_offset' in kwargs:
                 self.range_offset = float(kwargs['range_offset'])
+            if freq_changed:
+                self._quick_tunes = None
+                self._qt_freqs = None
 
     def get_params(self):
         return {
@@ -141,6 +150,9 @@ class SFCWEngine:
             self._start_tx_rx()
 
             while not self._stop_event.is_set():
+                # Rebuild quick-tune cache if params changed
+                if self._quick_tunes is None:
+                    self._cache_quick_tunes()
                 range_profile = self._perform_sweep()
                 if range_profile is not None and self._callback:
                     self._callback(range_profile)
@@ -160,6 +172,19 @@ class SFCWEngine:
         self.driver.rx2_gain = self.rx2_gain
         self.driver.set_waveform('cw', offset=100_000, amplitude=0.9)
         self.driver._configure_channels_dual()
+        self.driver.set_tuning_mode_fpga()
+        self._cache_quick_tunes()
+
+    def _cache_quick_tunes(self):
+        """Pre-compute quick_tune register snapshots for current sweep params."""
+        num_steps = int((self.stop_freq - self.start_freq) / self.step_size) + 1
+        freqs = np.linspace(self.start_freq, self.stop_freq, num_steps).astype(np.int64)
+        channels = [bladerf.CHANNEL_TX(0), bladerf.CHANNEL_RX(0)]
+        t0 = time.time()
+        self._quick_tunes = self.driver.cache_quick_tunes(freqs, channels)
+        self._qt_freqs = freqs
+        elapsed = time.time() - t0
+        print(f"[sfcw] Quick-tune cache built: {num_steps} steps in {elapsed:.1f}s")
 
     def _start_tx_rx(self):
         self._rx_latest = (None, None)
@@ -212,17 +237,42 @@ class SFCWEngine:
         freq_norm = (freqs - freqs[0]) / max(float(freqs[-1] - freqs[0]), 1)
         rx_gains = (self.rx_gain_min + freq_norm * (self.rx_gain_max - self.rx_gain_min)).astype(int)
 
+        # Use cached quick-tune params if available and matching current sweep
+        use_quick_tune = (
+            self._quick_tunes is not None
+            and self._qt_freqs is not None
+            and len(self._quick_tunes) == num_steps
+            and np.array_equal(self._qt_freqs, freqs)
+        )
+
+        # Settle time in samples (for schedule_retune timestamp offset)
+        settle_samples = int(settle * self.driver.sample_rate)
+
         for i in range(num_steps):
             if self._stop_event.is_set():
                 return None
 
-            f = int(freqs[i])
             g = int(rx_gains[i])
-            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
-            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+
+            if use_quick_tune:
+                # Quick retune via pre-cached register values — executes on FPGA
+                tx_qt, rx_qt = self._quick_tunes[i]
+                self.driver.schedule_retune(tx_ch, 0, tx_qt)
+                self.driver.schedule_retune(rx_ch, 0, rx_qt)
+            else:
+                # Fallback: full PLL retune (if params changed mid-sweep)
+                f = int(freqs[i])
+                libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+                libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+
             libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, g)
             libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, g)
-            time.sleep(settle)
+
+            # Wait for PLL settle — quick_tune is ~1ms, full retune needs more
+            if use_quick_tune:
+                time.sleep(settle * 0.4)
+            else:
+                time.sleep(settle)
 
             # Discard first buffer — may contain samples from before PLL settled
             self._rx_event.clear()
