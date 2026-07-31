@@ -41,7 +41,39 @@ asked. These files are how context survives across sessions and collaborators.
 
 IMU, LiDAR, Camera, and bladeRF SDR integrated. All stream to groundstation debug panels.
 RF Calib panel provides signal generator + oscilloscope for bladeRF calibration (TX1/RX1).
-SFCW panel performs stepped-frequency sweeps (1–5 GHz default) with range profile + waterfall display.
+SFCW panel performs stepped-frequency sweeps (1–6 GHz default) with range profile + waterfall display.
 Both RF panels share port 9003 — starting an SFCW sweep auto-stops any active TX/RX in RF Calib.
 Pi-side architecture: bladerf_driver.py (HAL) → sfcw_engine.py (sweep logic) → sdr_server.py (WebSocket).
 Next steps: OptiFlow pipeline, SAR reconstruction integration.
+
+## SFCW Phase Coherence — Known Constraints
+
+The bladeRF2 (AD9361 RFIC) has **separate TX and RX synthesizers**. After each frequency
+retune, both PLLs relock to independent random phases. We compensate via dual-channel
+reference: TX2→RX2 loopback cable captures the random offset, then h_cal = h_signal / h_reference
+cancels it. This gets us ~0.80 sweep-to-sweep correlation — good enough for SAR averaging.
+
+**Why gain must stay constant during a sweep:**
+The AD9361 RX gain table uses different analog stage combinations (LNA, mixer, TIA) at each
+gain index. Switching gain literally routes the signal through different physical paths with
+different parasitic capacitances → non-deterministic phase shifts between RX1 and RX2.
+This is an inherent hardware characteristic with NO known software fix (confirmed via AD9361
+driver source, bladeRF GitHub issues, Analog Devices forums). Frequency-dependent power
+rolloff is handled in post-processing instead.
+
+**Optimizations applied:**
+- FPGA tuning mode (`BLADERF_TUNING_MODE_FPGA`) — deterministic retune timing
+- Buffer-discard settle (2× 1024-sample buffers = 1.024ms) instead of time.sleep()
+- Flat gain throughout sweep; gains set once after enable_module
+
+**Why ~0.80 is the ceiling without architectural change:**
+- Reference-channel division inherently amplifies noise (dividing two noisy measurements)
+- Thermal drift in PLL/VCO between frequency steps
+- USB FIFO timing jitter (non-deterministic buffer boundaries)
+
+**Path to 1.0: shared-LO architecture.**
+A single local oscillator feeding both TX and RX mixers would eliminate the random phase
+offset entirely — no reference channel needed. The bladeRF2/AD9361 cannot do this.
+Hardware that can: NI USRP X310 + UBX daughterboards (LO export/import ports), or a
+custom discrete design (single wideband PLL + power splitter + two mixers + FPGA).
+This is a future hardware upgrade path, not a software fix.
