@@ -284,23 +284,32 @@ class SFCWEngine:
 
         window = np.hanning(num_steps)
         h_windowed = h_cal * window
-        range_profile = np.fft.ifft(h_windowed)
+        nfft = num_steps * 4
+        range_profile = np.fft.ifft(h_windowed, n=nfft)
         magnitude_db = 20 * np.log10(np.abs(range_profile) + 1e-12)
 
         max_range = SPEED_OF_LIGHT / (2 * step)
-        distances = np.linspace(0, max_range, num_steps) - self.range_offset
+        distances = np.linspace(0, max_range, nfft) - self.range_offset
 
-        half = num_steps // 2
+        half = nfft // 2
         magnitude_db = magnitude_db[:half]
         distances = distances[:half]
+
+        # Send raw h_cal so groundstation can re-window client-side
+        h_cal_real = h_cal.real.tolist()
+        h_cal_imag = h_cal.imag.tolist()
 
         return {
             'type': 'range_profile',
             'distances': distances.tolist(),
             'magnitudes': magnitude_db.tolist(),
+            'h_cal_real': [round(v, 8) for v in h_cal_real],
+            'h_cal_imag': [round(v, 8) for v in h_cal_imag],
             'range_resolution': SPEED_OF_LIGHT / (2 * (stop - start)),
             'max_range': max_range / 2,
             'num_steps': num_steps,
+            'step_size': step,
+            'range_offset': self.range_offset,
             'timestamp': time.time(),
             'phase_coherence': {
                 'phase_std_rad': phase_std,

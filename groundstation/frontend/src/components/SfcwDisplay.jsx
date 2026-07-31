@@ -1,44 +1,244 @@
-import { useRef, useEffect, useCallback, useState } from 'react';
+import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import { cn } from '@/lib/utils';
 
-const WATERFALL_ROWS = 128;
 const BG = '#000000';
 const GRID_COLOR = '#1a1a1a';
 const TRACE_COLOR = '#D1855C';
-const PEAK_COLOR = '#E5A986';
-const WATERFALL_COLD = [0, 0, 0];
-const WATERFALL_HOT = [209, 133, 92];
+const CFAR_COLOR = 'rgba(78, 205, 196, 0.6)';
+const CFAR_FILL = 'rgba(78, 205, 196, 0.06)';
+const NOISE_FILL = 'rgba(255, 255, 255, 0.02)';
+const LINEAR_TRACE = '#6B9BD2';
 
-function lerpColor(cold, hot, t) {
-  const c = Math.max(0, Math.min(1, t));
-  return [
-    Math.round(cold[0] + (hot[0] - cold[0]) * c),
-    Math.round(cold[1] + (hot[1] - cold[1]) * c),
-    Math.round(cold[2] + (hot[2] - cold[2]) * c),
-  ];
+const CFAR_GUARD = 4;
+const CFAR_TRAIN = 16;
+const CFAR_ALPHA = 6;
+const SPEED_OF_LIGHT = 299_792_458;
+
+function computeCFAR(mags, guardCells, trainCells, alphaDb) {
+  const n = mags.length;
+  const threshold = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    let count = 0;
+    for (let side = -1; side <= 1; side += 2) {
+      for (let k = guardCells + 1; k <= guardCells + trainCells; k++) {
+        const idx = i + side * k;
+        if (idx >= 0 && idx < n) {
+          sum += mags[idx];
+          count++;
+        }
+      }
+    }
+    threshold[i] = (count > 0 ? sum / count : mags[i]) + alphaDb;
+  }
+  return threshold;
+}
+
+// Modified Bessel function I0 (for Kaiser window)
+function besselI0(x) {
+  let sum = 1.0;
+  let term = 1.0;
+  for (let k = 1; k <= 25; k++) {
+    term *= (x / (2 * k)) * (x / (2 * k));
+    sum += term;
+    if (term < sum * 1e-12) break;
+  }
+  return sum;
+}
+
+function kaiserWindow(n, beta) {
+  const w = new Float64Array(n);
+  const denom = besselI0(beta);
+  for (let i = 0; i < n; i++) {
+    const a = 2.0 * i / (n - 1) - 1.0;
+    w[i] = besselI0(beta * Math.sqrt(1.0 - a * a)) / denom;
+  }
+  return w;
+}
+
+function hanningWindow(n) {
+  const w = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    w[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (n - 1)));
+  }
+  return w;
+}
+
+// Radix-2 FFT (in-place, decimation-in-time)
+function fft(re, im) {
+  const n = re.length;
+  // Bit-reverse permutation
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      [re[i], re[j]] = [re[j], re[i]];
+      [im[i], im[j]] = [im[j], im[i]];
+    }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const halfLen = len >> 1;
+    const angle = -2 * Math.PI / len;
+    const wRe = Math.cos(angle);
+    const wIm = Math.sin(angle);
+    for (let i = 0; i < n; i += len) {
+      let curRe = 1, curIm = 0;
+      for (let j = 0; j < halfLen; j++) {
+        const uRe = re[i + j], uIm = im[i + j];
+        const vRe = re[i + j + halfLen] * curRe - im[i + j + halfLen] * curIm;
+        const vIm = re[i + j + halfLen] * curIm + im[i + j + halfLen] * curRe;
+        re[i + j] = uRe + vRe;
+        im[i + j] = uIm + vIm;
+        re[i + j + halfLen] = uRe - vRe;
+        im[i + j + halfLen] = uIm - vIm;
+        const newCurRe = curRe * wRe - curIm * wIm;
+        curIm = curRe * wIm + curIm * wRe;
+        curRe = newCurRe;
+      }
+    }
+  }
+}
+
+function ifft(re, im) {
+  const n = re.length;
+  // Conjugate
+  for (let i = 0; i < n; i++) im[i] = -im[i];
+  fft(re, im);
+  // Conjugate and scale
+  for (let i = 0; i < n; i++) {
+    re[i] /= n;
+    im[i] = -im[i] / n;
+  }
+}
+
+function nextPow2(n) {
+  let p = 1;
+  while (p < n) p <<= 1;
+  return p;
+}
+
+function computeRangeProfile(hCalReal, hCalImag, windowFn, zeroPadFactor) {
+  const numSteps = hCalReal.length;
+  const nfft = nextPow2(numSteps * zeroPadFactor);
+  const re = new Float64Array(nfft);
+  const im = new Float64Array(nfft);
+
+  const win = windowFn(numSteps);
+  for (let i = 0; i < numSteps; i++) {
+    re[i] = hCalReal[i] * win[i];
+    im[i] = hCalImag[i] * win[i];
+  }
+
+  ifft(re, im);
+
+  const half = nfft >> 1;
+  const magnitudeDb = new Float64Array(half);
+  for (let i = 0; i < half; i++) {
+    const mag = Math.sqrt(re[i] * re[i] + im[i] * im[i]);
+    magnitudeDb[i] = 20 * Math.log10(mag + 1e-12);
+  }
+  return { magnitudeDb, nfft };
 }
 
 export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
   const rangeCanvasRef = useRef(null);
-  const waterfallCanvasRef = useRef(null);
-  const waterfallData = useRef([]);
+  const linearCanvasRef = useRef(null);
   const animRef = useRef(null);
   const latestResult = useRef(null);
-  const [crosshair, setCrosshair] = useState(null);
+  const [crosshairDb, setCrosshairDb] = useState(null);
+  const [crosshairLin, setCrosshairLin] = useState(null);
 
+  // Windowing state
+  const [windowType, setWindowType] = useState('kaiser');
+  const [kaiserBeta, setKaiserBeta] = useState(8);
+  const hCalRef = useRef(null);
+
+  // Averaging state
+  const avgBuffer = useRef([]);
+  const [avgCount, setAvgCount] = useState(1);
+  const [averaged, setAveraged] = useState(null);
+
+  // Zoom/pan state for dB chart
+  const [dbView, setDbView] = useState({ xMin: 0, xMax: 1, yMin: -60, yMax: 40, autoY: true });
+  const dbDrag = useRef(null);
+
+  // Zoom/pan state for linear chart
+  const [linView, setLinView] = useState({ xMin: 0, xMax: 1, yMin: 0, yMax: 1, autoY: true });
+  const linDrag = useRef(null);
+
+  // CFAR params
+  const [cfarGuard, setCfarGuard] = useState(CFAR_GUARD);
+  const [cfarTrain, setCfarTrain] = useState(CFAR_TRAIN);
+  const [cfarAlpha, setCfarAlpha] = useState(CFAR_ALPHA);
+  const [cfarEnabled, setCfarEnabled] = useState(true);
+
+  // Recomputed profile state
+  const [recomputed, setRecomputed] = useState(null);
+
+  // Store raw h_cal when it arrives
   useEffect(() => {
-    if (sfcwResult) {
-      latestResult.current = sfcwResult;
-      const row = sfcwResult.magnitudes.slice();
-      waterfallData.current.unshift(row);
-      if (waterfallData.current.length > WATERFALL_ROWS) {
-        waterfallData.current.length = WATERFALL_ROWS;
-      }
+    if (!sfcwResult) return;
+    latestResult.current = sfcwResult;
+    if (sfcwResult.h_cal_real && sfcwResult.h_cal_imag) {
+      hCalRef.current = {
+        real: sfcwResult.h_cal_real,
+        imag: sfcwResult.h_cal_imag,
+        step_size: sfcwResult.step_size,
+        range_offset: sfcwResult.range_offset,
+        num_steps: sfcwResult.num_steps,
+      };
     }
   }, [sfcwResult]);
 
-  const drawRange = useCallback(() => {
-    const canvas = rangeCanvasRef.current;
+  // Recompute range profile client-side when window params change
+  useEffect(() => {
+    const hCal = hCalRef.current;
+    if (!hCal) return;
+
+    const winFn = windowType === 'kaiser'
+      ? (n) => kaiserWindow(n, kaiserBeta)
+      : hanningWindow;
+
+    const { magnitudeDb, nfft } = computeRangeProfile(
+      hCal.real, hCal.imag, winFn, 4
+    );
+
+    const maxRange = SPEED_OF_LIGHT / (2 * hCal.step_size);
+    const half = nfft >> 1;
+    const distances = new Float64Array(half);
+    for (let i = 0; i < half; i++) {
+      distances[i] = (i / nfft) * maxRange - hCal.range_offset;
+    }
+
+    setRecomputed({ magnitudes: magnitudeDb, distances });
+  }, [windowType, kaiserBeta, sfcwResult]);
+
+  // Averaging — uses recomputed data
+  useEffect(() => {
+    const mags = recomputed ? recomputed.magnitudes : (sfcwResult && sfcwResult.magnitudes);
+    if (!mags) return;
+
+    avgBuffer.current.push(Array.from(mags));
+    if (avgBuffer.current.length > avgCount) {
+      avgBuffer.current = avgBuffer.current.slice(-avgCount);
+    }
+
+    if (avgBuffer.current.length > 0) {
+      const len = avgBuffer.current[0].length;
+      const avg = new Float64Array(len);
+      for (let i = 0; i < len; i++) {
+        let sum = 0;
+        for (let j = 0; j < avgBuffer.current.length; j++) {
+          sum += avgBuffer.current[j][i];
+        }
+        avg[i] = sum / avgBuffer.current.length;
+      }
+      setAveraged(avg);
+    }
+  }, [recomputed, sfcwResult, avgCount]);
+
+  const drawChart = useCallback((canvas, opts) => {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const rect = canvas.getBoundingClientRect();
@@ -61,15 +261,34 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
       return;
     }
 
-    const mags = result.magnitudes;
-    const dists = result.distances;
+    const {
+      mags, dists, view, traceColor, title, crosshair,
+      showCFAR, isDb
+    } = opts;
     const n = mags.length;
     const pad = { top: 24, bottom: 36, left: 52, right: 16 };
     const plotW = w - pad.left - pad.right;
     const plotH = h - pad.top - pad.bottom;
 
-    const magMin = -60;
-    const magMax = 40;
+    // Determine Y range
+    let yMin = view.yMin;
+    let yMax = view.yMax;
+    if (view.autoY) {
+      let dataMin = Infinity, dataMax = -Infinity;
+      const startIdx = Math.max(0, Math.floor(view.xMin * (n - 1)));
+      const endIdx = Math.min(n - 1, Math.ceil(view.xMax * (n - 1)));
+      for (let i = startIdx; i <= endIdx; i++) {
+        if (mags[i] < dataMin) dataMin = mags[i];
+        if (mags[i] > dataMax) dataMax = mags[i];
+      }
+      const margin = (dataMax - dataMin) * 0.1 || 1;
+      yMin = dataMin - margin;
+      yMax = dataMax + margin;
+    }
+
+    const xToPixel = (frac) => pad.left + ((frac - view.xMin) / (view.xMax - view.xMin)) * plotW;
+    const yToPixel = (val) => pad.top + ((yMax - val) / (yMax - yMin)) * plotH;
+    const pixelToX = (px) => view.xMin + ((px - pad.left) / plotW) * (view.xMax - view.xMin);
 
     // Grid
     ctx.strokeStyle = GRID_COLOR;
@@ -81,68 +300,125 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
       ctx.moveTo(pad.left, y);
       ctx.lineTo(w - pad.right, y);
       ctx.stroke();
-      const val = magMax - (i / yTicks) * (magMax - magMin);
+      const val = yMax - (i / yTicks) * (yMax - yMin);
       ctx.fillStyle = '#555555';
       ctx.font = '9px monospace';
       ctx.textAlign = 'right';
-      ctx.fillText(`${val.toFixed(0)} dB`, pad.left - 6, y + 3);
+      ctx.fillText(isDb ? `${val.toFixed(0)} dB` : val.toExponential(1), pad.left - 6, y + 3);
     }
 
     const maxDist = dists[dists.length - 1];
+    const minDist = dists[0];
+    const distRange = maxDist - minDist;
     const xTicks = 6;
     for (let i = 0; i <= xTicks; i++) {
+      const frac = view.xMin + (i / xTicks) * (view.xMax - view.xMin);
       const x = pad.left + (i / xTicks) * plotW;
       ctx.beginPath();
       ctx.moveTo(x, pad.top);
       ctx.lineTo(x, h - pad.bottom);
       ctx.stroke();
-      const dist = (i / xTicks) * maxDist;
+      const dist = minDist + frac * distRange;
       ctx.fillStyle = '#555555';
       ctx.font = '9px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(`${dist.toFixed(1)} m`, x, h - pad.bottom + 14);
+      ctx.fillText(`${dist.toFixed(2)} m`, x, h - pad.bottom + 14);
+    }
+
+    // CFAR threshold + noise shading
+    let cfarThreshold = null;
+    if (showCFAR && isDb) {
+      cfarThreshold = computeCFAR(mags, cfarGuard, cfarTrain, cfarAlpha);
+
+      // Shade below CFAR as noise floor
+      ctx.beginPath();
+      ctx.moveTo(pad.left, h - pad.bottom);
+      for (let i = 0; i < n; i++) {
+        const frac = i / (n - 1);
+        if (frac < view.xMin || frac > view.xMax) continue;
+        const x = xToPixel(frac);
+        const y = yToPixel(cfarThreshold[i]);
+        if (frac === view.xMin || i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.lineTo(xToPixel(view.xMax), h - pad.bottom);
+      ctx.lineTo(pad.left, h - pad.bottom);
+      ctx.closePath();
+      ctx.fillStyle = NOISE_FILL;
+      ctx.fill();
+
+      // CFAR threshold line
+      ctx.beginPath();
+      ctx.strokeStyle = CFAR_COLOR;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      let started = false;
+      for (let i = 0; i < n; i++) {
+        const frac = i / (n - 1);
+        if (frac < view.xMin || frac > view.xMax) continue;
+        const x = xToPixel(frac);
+        const y = yToPixel(cfarThreshold[i]);
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     // Trace
     ctx.beginPath();
-    ctx.strokeStyle = TRACE_COLOR;
+    ctx.strokeStyle = traceColor;
     ctx.lineWidth = 1.5;
+    let first = true;
     for (let i = 0; i < n; i++) {
-      const x = pad.left + (i / (n - 1)) * plotW;
-      const y = pad.top + ((magMax - mags[i]) / (magMax - magMin)) * plotH;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+      const frac = i / (n - 1);
+      if (frac < view.xMin || frac > view.xMax) continue;
+      const x = xToPixel(frac);
+      const y = yToPixel(mags[i]);
+      const clampedY = Math.max(pad.top, Math.min(h - pad.bottom, y));
+      if (first) { ctx.moveTo(x, clampedY); first = false; }
+      else ctx.lineTo(x, clampedY);
     }
     ctx.stroke();
 
-    // Peak
-    let peakIdx = 0;
-    let peakVal = -Infinity;
-    for (let i = 1; i < n; i++) {
-      if (mags[i] > peakVal) {
-        peakVal = mags[i];
-        peakIdx = i;
+    // CFAR detections
+    if (cfarThreshold && isDb) {
+      for (let i = 1; i < n - 1; i++) {
+        if (mags[i] > cfarThreshold[i] && mags[i] > mags[i - 1] && mags[i] > mags[i + 1]) {
+          const frac = i / (n - 1);
+          if (frac < view.xMin || frac > view.xMax) continue;
+          const x = xToPixel(frac);
+          const y = yToPixel(mags[i]);
+          if (y < pad.top || y > h - pad.bottom) continue;
+
+          ctx.beginPath();
+          ctx.arc(x, y, 5, 0, Math.PI * 2);
+          ctx.fillStyle = CFAR_FILL;
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+          ctx.fillStyle = CFAR_COLOR;
+          ctx.fill();
+
+          const dist = minDist + frac * distRange;
+          ctx.fillStyle = CFAR_COLOR;
+          ctx.font = '8px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(`${dist.toFixed(2)}m`, x, y - 10);
+        }
       }
     }
-    const peakX = pad.left + (peakIdx / (n - 1)) * plotW;
-    const peakY = pad.top + ((magMax - peakVal) / (magMax - magMin)) * plotH;
-    ctx.beginPath();
-    ctx.arc(peakX, peakY, 3, 0, Math.PI * 2);
-    ctx.fillStyle = PEAK_COLOR;
-    ctx.fill();
-    ctx.fillStyle = PEAK_COLOR;
-    ctx.font = '9px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(`${dists[peakIdx].toFixed(2)} m`, peakX, peakY - 8);
 
     // Crosshair
     if (crosshair) {
       const { x: mx } = crosshair;
-      const relX = (mx - pad.left) / plotW;
-      if (relX >= 0 && relX <= 1) {
+      const relX = pixelToX(mx);
+      if (relX >= view.xMin && relX <= view.xMax) {
         const idx = Math.round(relX * (n - 1));
-        const cx = pad.left + (idx / (n - 1)) * plotW;
-        const cy = pad.top + ((magMax - mags[idx]) / (magMax - magMin)) * plotH;
+        const clampedIdx = Math.max(0, Math.min(n - 1, idx));
+        const cx = xToPixel(clampedIdx / (n - 1));
+        const cy = yToPixel(mags[clampedIdx]);
         ctx.setLineDash([3, 3]);
         ctx.strokeStyle = '#ffffff44';
         ctx.lineWidth = 0.5;
@@ -152,18 +428,20 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
         ctx.stroke();
         ctx.setLineDash([]);
 
+        const dist = minDist + (clampedIdx / (n - 1)) * distRange;
         ctx.fillStyle = '#ffffff';
         ctx.font = '10px monospace';
         ctx.textAlign = 'left';
-        ctx.fillText(`${dists[idx].toFixed(2)} m  ${mags[idx].toFixed(1)} dB`, cx + 8, cy - 4);
+        const label = isDb ? `${dist.toFixed(2)} m  ${mags[clampedIdx].toFixed(1)} dB` : `${dist.toFixed(2)} m  ${mags[clampedIdx].toExponential(2)}`;
+        ctx.fillText(label, cx + 8, Math.max(pad.top + 12, cy - 4));
       }
     }
 
     // Title
-    ctx.fillStyle = '#666666';
+    ctx.fillStyle = traceColor;
     ctx.font = 'bold 10px monospace';
     ctx.textAlign = 'left';
-    ctx.fillText('RANGE PROFILE', pad.left, 14);
+    ctx.fillText(title, pad.left, 14);
     if (result.range_resolution) {
       ctx.fillStyle = '#444444';
       ctx.font = '9px monospace';
@@ -171,8 +449,8 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
       ctx.fillText(`Δr=${(result.range_resolution * 100).toFixed(1)}cm`, w - pad.right, 14);
     }
 
-    // Phase coherence indicator
-    if (result.phase_coherence) {
+    // Phase coherence (dB chart only)
+    if (isDb && result.phase_coherence) {
       const pc = result.phase_coherence;
       const color = pc.coherent ? '#4ade80' : '#ef4444';
       ctx.fillStyle = color;
@@ -183,112 +461,90 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
         w - pad.right, 26
       );
     }
-  }, [crosshair]);
 
-  const drawLinear = useCallback(() => {
-    const canvas = waterfallCanvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const rect = canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
-    const w = rect.width;
-    const h = rect.height;
-
-    ctx.fillStyle = BG;
-    ctx.fillRect(0, 0, w, h);
-
-    const result = latestResult.current;
-    if (!result || !result.magnitudes || result.magnitudes.length === 0) {
-      ctx.fillStyle = '#333333';
-      ctx.font = '11px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('No sweep data', w / 2, h / 2);
-      return;
-    }
-
-    // Convert dB to linear
-    const magsDb = result.magnitudes;
-    const mags = magsDb.map(db => Math.pow(10, db / 20));
-    const dists = result.distances;
-    const n = mags.length;
-    const pad = { top: 24, bottom: 36, left: 52, right: 16 };
-    const plotW = w - pad.left - pad.right;
-    const plotH = h - pad.top - pad.bottom;
-
-    const magMin = Math.pow(10, -60 / 20);  // 0.001
-    const magMax = Math.pow(10, 40 / 20);   // 100.0
-
-    // Grid
-    ctx.strokeStyle = GRID_COLOR;
-    ctx.lineWidth = 0.5;
-    const yTicks = 5;
-    for (let i = 0; i <= yTicks; i++) {
-      const y = pad.top + (i / yTicks) * plotH;
-      ctx.beginPath();
-      ctx.moveTo(pad.left, y);
-      ctx.lineTo(w - pad.right, y);
-      ctx.stroke();
-      const val = magMax - (i / yTicks) * (magMax - magMin);
-      ctx.fillStyle = '#555555';
-      ctx.font = '9px monospace';
-      ctx.textAlign = 'right';
-      ctx.fillText(`${val.toFixed(2)}`, pad.left - 6, y + 3);
-    }
-
-    const maxDist = dists[dists.length - 1];
-    const xTicks = 6;
-    for (let i = 0; i <= xTicks; i++) {
-      const x = pad.left + (i / xTicks) * plotW;
-      ctx.beginPath();
-      ctx.moveTo(x, pad.top);
-      ctx.lineTo(x, h - pad.bottom);
-      ctx.stroke();
-      const dist = (i / xTicks) * maxDist;
-      ctx.fillStyle = '#555555';
-      ctx.font = '9px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`${dist.toFixed(1)} m`, x, h - pad.bottom + 14);
-    }
-
-    // Trace
-    ctx.beginPath();
-    ctx.strokeStyle = '#6B9BD2';
-    ctx.lineWidth = 1.5;
-    for (let i = 0; i < n; i++) {
-      const x = pad.left + (i / (n - 1)) * plotW;
-      const y = pad.top + ((magMax - mags[i]) / (magMax - magMin)) * plotH;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-
-    // Title
-    ctx.fillStyle = '#6B9BD2';
-    ctx.font = 'bold 10px monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText('LINEAR SCALE', pad.left, 14);
-  }, []);
+    return { pad, plotW, plotH, yMin, yMax };
+  }, [cfarGuard, cfarTrain, cfarAlpha, cfarEnabled]);
 
   useEffect(() => {
     const render = () => {
-      drawRange();
-      drawLinear();
+      const result = latestResult.current;
+      if (result && (recomputed || result.magnitudes)) {
+        const dists = recomputed ? Array.from(recomputed.distances) : result.distances;
+        const dbMags = averaged || (recomputed ? recomputed.magnitudes : result.magnitudes);
+        const linMags = Array.from(dbMags).map(db => Math.pow(10, db / 20));
+
+        drawChart(rangeCanvasRef.current, {
+          mags: dbMags, dists, view: dbView, traceColor: TRACE_COLOR,
+          title: 'RANGE PROFILE (dB)', crosshair: crosshairDb,
+          showCFAR: cfarEnabled, isDb: true,
+        });
+        drawChart(linearCanvasRef.current, {
+          mags: linMags, dists, view: linView, traceColor: LINEAR_TRACE,
+          title: 'LINEAR SCALE', crosshair: crosshairLin,
+          showCFAR: false, isDb: false,
+        });
+      }
       animRef.current = requestAnimationFrame(render);
     };
     animRef.current = requestAnimationFrame(render);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [drawRange, drawLinear]);
+  }, [drawChart, dbView, linView, crosshairDb, crosshairLin, cfarEnabled, averaged, recomputed]);
 
-  const handleMouseMove = (e) => {
-    const rect = rangeCanvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    setCrosshair({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+  // Zoom handler factory
+  const makeWheelHandler = (view, setView) => (e) => {
+    e.preventDefault();
+    const canvas = e.currentTarget;
+    const rect = canvas.getBoundingClientRect();
+    const pad = { left: 52, right: 16 };
+    const plotW = rect.width - pad.left - pad.right;
+    const mx = e.clientX - rect.left;
+    const relX = (mx - pad.left) / plotW;
+    const frac = view.xMin + relX * (view.xMax - view.xMin);
+
+    const zoomFactor = e.deltaY > 0 ? 1.2 : 0.8;
+    const newXMin = frac - (frac - view.xMin) * zoomFactor;
+    const newXMax = frac + (view.xMax - frac) * zoomFactor;
+
+    setView(v => ({
+      ...v,
+      xMin: Math.max(0, newXMin),
+      xMax: Math.min(1, newXMax),
+    }));
   };
 
-  const handleMouseLeave = () => setCrosshair(null);
+  // Pan handler factory
+  const makeMouseDown = (view, setView, dragRef) => (e) => {
+    if (e.button !== 0) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pad = { left: 52, right: 16 };
+    const plotW = rect.width - pad.left - pad.right;
+    const mx = e.clientX - rect.left;
+    if (mx < pad.left || mx > rect.width - pad.right) return;
+    dragRef.current = { startX: e.clientX, startView: { ...view } };
+
+    const onMove = (me) => {
+      if (!dragRef.current) return;
+      const dx = me.clientX - dragRef.current.startX;
+      const xRange = dragRef.current.startView.xMax - dragRef.current.startView.xMin;
+      const shift = -(dx / plotW) * xRange;
+      const newMin = Math.max(0, dragRef.current.startView.xMin + shift);
+      const newMax = Math.min(1, dragRef.current.startView.xMax + shift);
+      if (newMax - newMin > 0.001) {
+        setView(v => ({ ...v, xMin: newMin, xMax: newMax }));
+      }
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  const resetZoom = (setView) => () => {
+    setView({ xMin: 0, xMax: 1, yMin: 0, yMax: 1, autoY: true });
+  };
 
   return (
     <div className="flex flex-col w-full h-full">
@@ -302,21 +558,131 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
         </div>
       )}
 
-      {/* Range Profile (phase corrected) */}
+      {/* Controls bar */}
+      <div className="flex flex-wrap items-center gap-3 px-3 py-1.5 border-b border-white/5 bg-black/40 shrink-0">
+        {/* Window selector + Kaiser beta */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[9px] text-white/40 uppercase tracking-wider">Win</span>
+          <select
+            value={windowType}
+            onChange={(e) => setWindowType(e.target.value)}
+            className="bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-[10px] text-white/70 outline-none"
+          >
+            <option value="kaiser">Kaiser</option>
+            <option value="hanning">Hanning</option>
+          </select>
+        </div>
+
+        {windowType === 'kaiser' && (
+          <div className="flex items-center gap-1.5">
+            <span className="text-[9px] text-white/40">β</span>
+            <input
+              type="range"
+              min={2}
+              max={14}
+              step={0.5}
+              value={kaiserBeta}
+              onChange={(e) => setKaiserBeta(Number(e.target.value))}
+              className="w-20 h-1 accent-primary cursor-pointer"
+            />
+            <span className="text-[10px] text-white/60 font-mono w-6">{kaiserBeta.toFixed(1)}</span>
+          </div>
+        )}
+
+        <div className="w-px h-3 bg-white/10" />
+
+        {/* Averaging */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[9px] text-white/40 uppercase tracking-wider">Avg</span>
+          <select
+            value={avgCount}
+            onChange={(e) => { setAvgCount(Number(e.target.value)); avgBuffer.current = []; }}
+            className="bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-[10px] text-white/70 outline-none"
+          >
+            {[1, 2, 4, 8, 16, 32].map(v => (
+              <option key={v} value={v}>{v === 1 ? 'Off' : `${v}x`}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="w-px h-3 bg-white/10" />
+
+        {/* CFAR toggle */}
+        <button
+          onClick={() => setCfarEnabled(!cfarEnabled)}
+          className={cn(
+            'px-2 py-0.5 rounded text-[9px] uppercase tracking-wider font-medium transition-all',
+            cfarEnabled ? 'bg-[#4ecdc4]/20 text-[#4ecdc4] border border-[#4ecdc4]/30' : 'bg-white/5 text-white/30 border border-white/10'
+          )}
+        >
+          CFAR
+        </button>
+
+        {cfarEnabled && (
+          <>
+            <div className="flex items-center gap-1">
+              <span className="text-[9px] text-white/30">G</span>
+              <input type="number" min={1} max={20} value={cfarGuard}
+                onChange={e => setCfarGuard(Number(e.target.value))}
+                className="w-7 bg-white/5 border border-white/10 rounded px-1 py-0.5 text-[10px] text-white/70 outline-none"
+              />
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="text-[9px] text-white/30">T</span>
+              <input type="number" min={1} max={64} value={cfarTrain}
+                onChange={e => setCfarTrain(Number(e.target.value))}
+                className="w-7 bg-white/5 border border-white/10 rounded px-1 py-0.5 text-[10px] text-white/70 outline-none"
+              />
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="text-[9px] text-white/30">α</span>
+              <input type="number" min={1} max={20} value={cfarAlpha}
+                onChange={e => setCfarAlpha(Number(e.target.value))}
+                className="w-7 bg-white/5 border border-white/10 rounded px-1 py-0.5 text-[10px] text-white/70 outline-none"
+              />
+              <span className="text-[9px] text-white/20">dB</span>
+            </div>
+          </>
+        )}
+
+        <div className="flex-1" />
+
+        {/* Reset zoom */}
+        <button
+          onClick={() => { resetZoom(setDbView)(); resetZoom(setLinView)(); }}
+          className="px-2 py-0.5 rounded text-[9px] text-white/40 border border-white/10 hover:text-white/70 hover:border-white/20 transition-all"
+        >
+          Reset Zoom
+        </button>
+      </div>
+
+      {/* Range Profile (dB) */}
       <div className="relative flex-1 min-h-0">
         <canvas
           ref={rangeCanvasRef}
-          className="absolute inset-0 w-full h-full"
-          onMouseMove={handleMouseMove}
-          onMouseLeave={handleMouseLeave}
+          className="absolute inset-0 w-full h-full cursor-crosshair"
+          onMouseMove={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            setCrosshairDb({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+          }}
+          onMouseLeave={() => setCrosshairDb(null)}
+          onWheel={makeWheelHandler(dbView, setDbView)}
+          onMouseDown={makeMouseDown(dbView, setDbView, dbDrag)}
         />
       </div>
 
-      {/* Raw Range Profile (no phase correction) */}
+      {/* Linear Scale */}
       <div className="relative border-t border-white/5" style={{ flex: '0 0 45%' }}>
         <canvas
-          ref={waterfallCanvasRef}
-          className="absolute inset-0 w-full h-full"
+          ref={linearCanvasRef}
+          className="absolute inset-0 w-full h-full cursor-crosshair"
+          onMouseMove={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            setCrosshairLin({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+          }}
+          onMouseLeave={() => setCrosshairLin(null)}
+          onWheel={makeWheelHandler(linView, setLinView)}
+          onMouseDown={makeMouseDown(linView, setLinView, linDrag)}
         />
       </div>
     </div>
