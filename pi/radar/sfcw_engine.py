@@ -22,9 +22,9 @@ SPEED_OF_LIGHT = 299_792_458
 class SFCWEngine:
     def __init__(self, driver: BladeRFDriver):
         self.driver = driver
-        self.start_freq = 1_000_000_000
-        self.stop_freq = 6_000_000_000
-        self.step_size = 10_000_000
+        self.start_freq = 2_000_000_000
+        self.stop_freq = 5_000_000_000
+        self.step_size = 20_000_000
         self.settle_time = 0.003
         self.num_buffers = 4
         self.tx1_gain = 30
