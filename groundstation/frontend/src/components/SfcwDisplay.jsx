@@ -176,6 +176,10 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
   // Recomputed profile state
   const [recomputed, setRecomputed] = useState(null);
 
+  // Session-wide Y-axis tracking (only expands, never shrinks within a session)
+  const sessionYDb = useRef({ min: Infinity, max: -Infinity });
+  const sessionYLin = useRef({ min: Infinity, max: -Infinity });
+
   // Store raw h_cal when it arrives
   useEffect(() => {
     if (!sfcwResult) return;
@@ -263,17 +267,28 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
 
     const {
       mags, dists, view, traceColor, title, crosshair,
-      showCFAR, isDb
+      showCFAR, isDb, sessionY
     } = opts;
     const n = mags.length;
     const pad = { top: 24, bottom: 36, left: 52, right: 16 };
     const plotW = w - pad.left - pad.right;
     const plotH = h - pad.top - pad.bottom;
 
-    // Determine Y range
+    // Determine Y range using session-wide extremes
     let yMin = view.yMin;
     let yMax = view.yMax;
-    if (view.autoY) {
+    if (view.autoY && sessionY) {
+      // Update session extremes with current frame data
+      for (let i = 0; i < n; i++) {
+        if (mags[i] < sessionY.current.min) sessionY.current.min = mags[i];
+        if (mags[i] > sessionY.current.max) sessionY.current.max = mags[i];
+      }
+      // Use session extremes with margin
+      const range = sessionY.current.max - sessionY.current.min;
+      const margin = range * 0.05 || 1;
+      yMin = sessionY.current.min - margin;
+      yMax = sessionY.current.max + margin;
+    } else if (view.autoY) {
       let dataMin = Infinity, dataMax = -Infinity;
       const startIdx = Math.max(0, Math.floor(view.xMin * (n - 1)));
       const endIdx = Math.min(n - 1, Math.ceil(view.xMax * (n - 1)));
@@ -476,12 +491,12 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
         drawChart(rangeCanvasRef.current, {
           mags: dbMags, dists, view: dbView, traceColor: TRACE_COLOR,
           title: 'RANGE PROFILE (dB)', crosshair: crosshairDb,
-          showCFAR: cfarEnabled, isDb: true,
+          showCFAR: cfarEnabled, isDb: true, sessionY: sessionYDb,
         });
         drawChart(linearCanvasRef.current, {
           mags: linMags, dists, view: linView, traceColor: LINEAR_TRACE,
           title: 'LINEAR SCALE', crosshair: crosshairLin,
-          showCFAR: false, isDb: false,
+          showCFAR: false, isDb: false, sessionY: sessionYLin,
         });
       }
       animRef.current = requestAnimationFrame(render);
@@ -646,6 +661,14 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
         )}
 
         <div className="flex-1" />
+
+        {/* Reset scale */}
+        <button
+          onClick={() => { sessionYDb.current = { min: Infinity, max: -Infinity }; sessionYLin.current = { min: Infinity, max: -Infinity }; }}
+          className="px-2 py-0.5 rounded text-[9px] text-white/40 border border-white/10 hover:text-white/70 hover:border-white/20 transition-all"
+        >
+          Reset Scale
+        </button>
 
         {/* Reset zoom */}
         <button
