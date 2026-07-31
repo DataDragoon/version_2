@@ -195,6 +195,12 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
     }
   }, [sfcwResult]);
 
+  // Clear averaging buffer when window params change so new window takes effect instantly
+  useEffect(() => {
+    avgBuffer.current = [];
+    setAveraged(null);
+  }, [windowType, kaiserBeta]);
+
   // Recompute range profile client-side when window params change
   useEffect(() => {
     const hCal = hCalRef.current;
