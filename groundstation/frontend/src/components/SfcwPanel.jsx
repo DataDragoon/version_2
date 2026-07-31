@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile, ToggleButton } from './Sidebar';
 
@@ -245,13 +245,17 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
 function EditableField({ label, value, unit, onChange, min, max }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
+  const committedRef = useRef(false);
 
   const startEdit = () => {
     setDraft(String(value));
     setEditing(true);
+    committedRef.current = false;
   };
 
   const commit = () => {
+    if (committedRef.current) return;
+    committedRef.current = true;
     const num = parseFloat(draft);
     if (!isNaN(num) && num >= min && num <= max) {
       onChange(num);
