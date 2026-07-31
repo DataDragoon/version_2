@@ -118,6 +118,71 @@ class SFCWEngine:
         self._background = None
         self._capture_background = False
 
+    def run_coherence_test(self, callback=None):
+        """Run 3 consecutive sweeps and compute repeatability + correlation metrics.
+
+        Runs in a new thread. Results sent via callback as a dict with type='coherence_result'.
+        """
+        if self.running:
+            return
+        self.running = True
+        self._stop_event.clear()
+        t = threading.Thread(target=self._coherence_test_worker, args=(callback,), daemon=True)
+        t.start()
+
+    def _coherence_test_worker(self, callback):
+        try:
+            self._configure_hardware()
+            self._start_tx_rx()
+            time.sleep(0.1)
+
+            sweeps = []
+            for i in range(3):
+                if self._stop_event.is_set():
+                    return
+                if callback:
+                    callback({'type': 'progress', 'step': i, 'total': 3, 'freq_mhz': 0})
+                result = self._perform_sweep()
+                if result and result.get('type') == 'range_profile':
+                    h_cal = np.array(result['h_cal_real']) + 1j * np.array(result['h_cal_imag'])
+                    sweeps.append(h_cal)
+
+            if len(sweeps) < 2:
+                if callback:
+                    callback({'error': 'Not enough sweeps completed'})
+                return
+
+            reps = []
+            corrs = []
+            for i in range(len(sweeps) - 1):
+                a_raw = sweeps[i]
+                b_raw = sweeps[i + 1]
+                residual = b_raw - a_raw
+                rep = 1.0 - (np.std(residual) / np.std(a_raw))
+                reps.append(float(rep))
+                a = a_raw - np.mean(a_raw)
+                b = b_raw - np.mean(b_raw)
+                corr = np.abs(np.sum(a * np.conj(b))) / (
+                    np.sqrt(np.sum(np.abs(a) ** 2)) * np.sqrt(np.sum(np.abs(b) ** 2))
+                )
+                corrs.append(float(corr))
+
+            if callback:
+                callback({
+                    'type': 'coherence_result',
+                    'repeatability': reps,
+                    'correlation': corrs,
+                    'avg_repeatability': float(np.mean(reps)),
+                    'avg_correlation': float(np.mean(corrs)),
+                    'num_sweeps': len(sweeps),
+                })
+        except Exception as e:
+            if callback:
+                callback({'error': str(e)})
+        finally:
+            self._stop_tx_rx()
+            self.running = False
+
     def start(self, callback):
         if self.running:
             return

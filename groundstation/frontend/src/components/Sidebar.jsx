@@ -43,6 +43,7 @@ export default function Sidebar({
   sfcwParams,
   onSfcwParamsChange,
   sfcwResult,
+  coherenceResult,
   bscanData,
   bscanParams,
   onBscanParamsChange,
@@ -189,6 +190,7 @@ export default function Sidebar({
                   sendSdr={sendSdr}
                   params={sfcwParams}
                   onParamsChange={onSfcwParamsChange}
+                  coherenceResult={coherenceResult}
                 />
               )}
               {activePanel === 'bscan' && (

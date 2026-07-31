@@ -140,6 +140,13 @@ class SDRServer:
             elif action == 'sfcw_clear_bg':
                 self.sfcw.clear_background()
 
+            elif action == 'sfcw_coherence_test':
+                if self.sfcw.running:
+                    await ws.send(json.dumps({'type': 'error', 'message': 'Stop sweep before running coherence test'}))
+                else:
+                    self.sfcw.run_coherence_test(self._sfcw_callback)
+                    await self._broadcast_sfcw_status()
+
             elif action == 'sfcw_get_status':
                 await ws.send(json.dumps({'type': 'sfcw_status', **self._get_sfcw_status()}))
 
@@ -177,6 +184,8 @@ class SDRServer:
 
             if isinstance(data, dict) and 'error' in data:
                 msg = json.dumps({'type': 'sfcw_error', 'message': data['error']})
+            elif isinstance(data, dict) and data.get('type') == 'coherence_result':
+                msg = json.dumps(data)
             elif isinstance(data, dict) and data.get('type') == 'progress':
                 msg = json.dumps({'type': 'sfcw_progress', 'step': data['step'], 'total': data['total'], 'freq_mhz': round(data['freq_mhz'], 2)})
             elif isinstance(data, dict) and data.get('type') == 'range_profile':

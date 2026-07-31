@@ -33,6 +33,7 @@ export default function App() {
   const [sfcwStatus, setSfcwStatus] = useState(null);
   const [sfcwResult, setSfcwResult] = useState(null);
   const [sfcwProgress, setSfcwProgress] = useState(null);
+  const [coherenceResult, setCoherenceResult] = useState(null);
 
   // SFCW panel params (lifted so they survive panel switches)
   const [sfcwParams, setSfcwParams] = useState({
@@ -111,6 +112,9 @@ export default function App() {
     } else if (msg.type === 'sfcw_error') {
       setSfcwRunning(false);
       setSfcwProgress(null);
+    } else if (msg.type === 'coherence_result') {
+      setCoherenceResult(msg);
+      setSfcwRunning(false);
     }
   }, []);
 
@@ -190,6 +194,7 @@ export default function App() {
         sfcwParams={sfcwParams}
         onSfcwParamsChange={setSfcwParams}
         sfcwResult={sfcwResult}
+        coherenceResult={coherenceResult}
         bscanData={bscanData}
         bscanParams={bscanParams}
         onBscanParamsChange={setBscanParams}

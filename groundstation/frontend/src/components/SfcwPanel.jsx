@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile, ToggleButton } from './Sidebar';
 
@@ -6,8 +6,13 @@ const BUFFER_SAMPLES = 1024;
 const SAMPLE_RATE = 2_000_000;
 const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
-export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange }) {
+export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult }) {
   const { startFreq, stopFreq, stepSize, settleTime, numBuffers, tx1Gain, rx1Gain, rangeOffset } = params;
+  const [coherenceRunning, setCoherenceRunning] = useState(false);
+
+  useEffect(() => {
+    if (coherenceResult) setCoherenceRunning(false);
+  }, [coherenceResult]);
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
@@ -167,6 +172,44 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             Clear BG
           </button>
         </div>
+      </Section>
+
+      {/* Coherence Diagnostics */}
+      <Section label="Coherence Test">
+        <button
+          onClick={() => {
+            setCoherenceRunning(true);
+            sendSdr({ cmd: 'sfcw_coherence_test' });
+          }}
+          disabled={sfcwRunning || coherenceRunning || !canActivate}
+          className={cn(
+            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all',
+            !sfcwRunning && !coherenceRunning && canActivate
+              ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+              : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
+          )}
+        >
+          {coherenceRunning ? 'Running (3 sweeps)...' : 'Run Coherence Test'}
+        </button>
+        {coherenceResult && (
+          <div className="mt-2 space-y-1">
+            <div className="grid grid-cols-2 gap-2">
+              <InfoTile
+                label="Repeatability"
+                value={coherenceResult.avg_repeatability?.toFixed(3)}
+              />
+              <InfoTile
+                label="Correlation"
+                value={coherenceResult.avg_correlation?.toFixed(3)}
+              />
+            </div>
+            <div className="text-[9px] text-[#555] px-1 space-y-0.5">
+              <div>Repeatability: {coherenceResult.repeatability?.map(r => r.toFixed(3)).join(', ')}</div>
+              <div>Correlation: {coherenceResult.correlation?.map(c => c.toFixed(3)).join(', ')}</div>
+              <div className="text-[#777] mt-1">1.0 = perfect, {'>'} 0.9 = good</div>
+            </div>
+          </div>
+        )}
       </Section>
     </>
   );
