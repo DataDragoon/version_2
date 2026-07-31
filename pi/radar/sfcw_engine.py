@@ -235,6 +235,8 @@ class SFCWEngine:
         self.driver.rx_gain = self.rx1_gain
         self.driver.tx2_gain = self.tx2_gain
         self.driver.rx2_gain = self.rx2_gain
+        self.driver.sample_rate = 2_000_000
+        self.driver.bandwidth = 1_500_000
         self.driver.set_waveform('cw', offset=100_000, amplitude=0.9)
         self.driver._configure_channels_dual()
         self.driver.set_tuning_mode_fpga()
