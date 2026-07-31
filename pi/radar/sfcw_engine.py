@@ -274,33 +274,23 @@ class SFCWEngine:
         rx_ch = bladerf.CHANNEL_RX(0)
         rx_ch1 = bladerf.CHANNEL_RX(1)
 
-        # Dynamic RX gain ramp: compensates AD9361 output power rolloff at higher
-        # frequencies. Both RX1 and RX2 get identical gain at each step so any
-        # gain-dependent phase offset cancels in the h_signal/h_reference division.
-        freq_norm = (freqs - freqs[0]) / max(float(freqs[-1] - freqs[0]), 1)
-        rx_gains = (self.rx_gain_min + freq_norm * (self.rx_gain_max - self.rx_gain_min)).astype(int)
+        # RX gain held constant during sweep — per-step gain changes introduce
+        # non-deterministic phase offsets between RX1/RX2 that break coherence.
+        # Frequency-dependent power rolloff is compensated in post-processing instead.
 
         for i in range(num_steps):
             if self._stop_event.is_set():
                 return None
 
             f = int(freqs[i])
-            g = int(rx_gains[i])
 
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
-            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, g)
-            libbladeRF.bladerf_set_gain(dev_ptr, rx_ch1, g)
 
-            # FPGA tuning mode gives deterministic settle — can use tighter timing
-            if self._fpga_tuning:
-                time.sleep(settle * 0.5)
-            else:
-                time.sleep(settle)
-
-            # Discard first buffer — may contain samples from before PLL settled
-            self._rx_event.clear()
-            self._rx_event.wait(timeout=1.0)
+            # Settle via buffer discards — each buffer is exactly 0.512ms (1024/2MHz).
+            for _ in range(2):
+                self._rx_event.clear()
+                self._rx_event.wait(timeout=1.0)
 
             sig_accum = 0j
             ref_accum = 0j
