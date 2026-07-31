@@ -194,6 +194,31 @@ class SFCWEngine:
             self._stop_tx_rx()
             self.running = False
 
+    def run_single(self, callback):
+        """Run a single sweep and stop. Used for B-scan position captures."""
+        if self.running:
+            return
+        self._callback = callback
+        self._stop_event.clear()
+        self.running = True
+        self._thread = threading.Thread(target=self._single_sweep_worker, daemon=True)
+        self._thread.start()
+
+    def _single_sweep_worker(self):
+        try:
+            self._configure_hardware()
+            self._start_tx_rx()
+            result = self._perform_sweep()
+            if result is not None and self._callback:
+                self._callback(result)
+        except Exception as e:
+            print(f"[sfcw] Single sweep error: {e}")
+            if self._callback:
+                self._callback({'error': str(e)})
+        finally:
+            self._stop_tx_rx()
+            self.running = False
+
     def start(self, callback):
         if self.running:
             return

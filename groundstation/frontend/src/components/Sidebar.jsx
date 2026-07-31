@@ -45,9 +45,17 @@ export default function Sidebar({
   sfcwResult,
   coherenceResult,
   bscanData,
+  bscanCapturing,
+  bscanBgCaptured,
   bscanParams,
   onBscanParamsChange,
   onBscanAction,
+  svdEnabled,
+  svdK,
+  svdStrength,
+  onSvdEnabledChange,
+  onSvdKChange,
+  onSvdStrengthChange,
 }) {
   return (
     <div className="flex h-screen shrink-0">
@@ -198,12 +206,20 @@ export default function Sidebar({
                 <BscanPanel
                   isConnected={isConnected}
                   sdrConnected={sdrConnected}
-                  sfcwRunning={sfcwRunning}
-                  sfcwResult={sfcwResult}
+                  sendSdr={sendSdr}
                   scanData={bscanData}
+                  scanCapturing={bscanCapturing}
+                  bgCaptured={bscanBgCaptured}
                   onScanAction={onBscanAction}
                   params={bscanParams}
                   onParamsChange={onBscanParamsChange}
+                  sfcwParams={sfcwParams}
+                  svdEnabled={svdEnabled}
+                  svdK={svdK}
+                  svdStrength={svdStrength}
+                  onSvdEnabledChange={onSvdEnabledChange}
+                  onSvdKChange={onSvdKChange}
+                  onSvdStrengthChange={onSvdStrengthChange}
                 />
               )}
             </div>

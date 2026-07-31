@@ -3,15 +3,35 @@ import { useRef, useEffect, useCallback, useState } from 'react';
 const BG = '#000000';
 const GRID_COLOR = '#1a1a1a';
 
-function viridis(t) {
+function jet(t) {
   t = Math.max(0, Math.min(1, t));
-  const r = Math.round(255 * Math.min(1, Math.max(0, -0.0069 + t * (0.116 + t * (5.311 + t * (-15.17 + t * (13.39 + t * -4.13)))))));
-  const g = Math.round(255 * Math.min(1, Math.max(0, 0.0003 + t * (0.115 + t * (-0.888 + t * (4.451 + t * (-5.90 + t * 2.78)))))));
-  const b = Math.round(255 * Math.min(1, Math.max(0, 0.324 + t * (1.442 + t * (-3.193 + t * (4.197 + t * (-2.88 + t * 0.695)))))));
-  return [r, g, b];
+  return [
+    Math.round(255 * Math.min(1, Math.max(0, 1.5 - Math.abs(4 * t - 3)))),
+    Math.round(255 * Math.min(1, Math.max(0, 1.5 - Math.abs(4 * t - 2)))),
+    Math.round(255 * Math.min(1, Math.max(0, 1.5 - Math.abs(4 * t - 1)))),
+  ];
 }
 
-export default function BscanDisplay({ scanData, params }) {
+function correctDistancesForWall(distances, wallStandoff, wallThickness, wallPermittivity) {
+  const standoffM = wallStandoff / 100;
+  const thicknessM = wallThickness / 100;
+  const sqrtEr = Math.sqrt(wallPermittivity);
+  const wallApparentThickness = thicknessM * sqrtEr;
+  const wallFrontApparent = standoffM;
+  const wallBackApparent = standoffM + wallApparentThickness;
+
+  return distances.map(d => {
+    if (d <= wallFrontApparent) {
+      return d;
+    } else if (d <= wallBackApparent) {
+      return standoffM + (d - wallFrontApparent) / sqrtEr;
+    } else {
+      return standoffM + thicknessM + (d - wallBackApparent);
+    }
+  });
+}
+
+export default function BscanDisplay({ scanData, params, capturing, sfcwProgress, dbFloor = -90, dbCeil = -20, distMin = 0, distMax = null }) {
   const canvasRef = useRef(null);
   const animRef = useRef(null);
   const [crosshair, setCrosshair] = useState(null);
@@ -44,15 +64,31 @@ export default function BscanDisplay({ scanData, params }) {
     const plotH = h - pad.top - pad.bottom;
 
     const numPos = scanData.length;
-    const numBins = scanData[0].magnitudes.length;
-    const distances = scanData[0].distances;
-    const maxDist = distances[distances.length - 1];
-    const { stepSize } = params;
+    const rawDistances = scanData[0].distances;
+    const { stepSize, wallEnabled, wallStandoff, wallThickness, wallPermittivity } = params;
+    const allDistances = wallEnabled
+      ? correctDistancesForWall(rawDistances, wallStandoff, wallThickness, wallPermittivity)
+      : rawDistances;
     const apertureLen = (numPos - 1) * stepSize;
 
-    // Dynamic range
-    const dbMin = -40;
-    const dbMax = 20;
+    // Distance range filtering
+    const dMin = distMin || 0;
+    const dMax = distMax || allDistances[allDistances.length - 1];
+    let startBin = 0;
+    let endBin = allDistances.length - 1;
+    for (let i = 0; i < allDistances.length; i++) {
+      if (allDistances[i] >= dMin) { startBin = i; break; }
+    }
+    for (let i = allDistances.length - 1; i >= 0; i--) {
+      if (allDistances[i] <= dMax) { endBin = i; break; }
+    }
+    const numBins = endBin - startBin + 1;
+    const distances = allDistances.slice(startBin, endBin + 1);
+    const maxDist = distances[distances.length - 1];
+    const minDist = distances[0];
+
+    const dbMin = dbFloor;
+    const dbMax = dbCeil;
 
     // Draw B-scan image
     const cellW = plotW / numPos;
@@ -61,9 +97,9 @@ export default function BscanDisplay({ scanData, params }) {
     for (let posIdx = 0; posIdx < numPos; posIdx++) {
       const mags = scanData[posIdx].magnitudes;
       for (let binIdx = 0; binIdx < numBins; binIdx++) {
-        const db = mags[binIdx];
+        const db = mags[startBin + binIdx];
         const t = (db - dbMin) / (dbMax - dbMin);
-        const [r, g, b] = viridis(t);
+        const [r, g, b] = jet(t);
         ctx.fillStyle = `rgb(${r},${g},${b})`;
         const x = pad.left + posIdx * cellW;
         const y = pad.top + binIdx * cellH;
@@ -76,7 +112,6 @@ export default function BscanDisplay({ scanData, params }) {
     ctx.lineWidth = 0.5;
     ctx.globalAlpha = 0.4;
 
-    // Y-axis (range) ticks
     const yTicks = 6;
     for (let i = 0; i <= yTicks; i++) {
       const y = pad.top + (i / yTicks) * plotH;
@@ -86,7 +121,6 @@ export default function BscanDisplay({ scanData, params }) {
       ctx.stroke();
     }
 
-    // X-axis (position) ticks
     const xTicks = Math.min(numPos, 10);
     for (let i = 0; i <= xTicks; i++) {
       const x = pad.left + (i / xTicks) * plotW;
@@ -100,11 +134,11 @@ export default function BscanDisplay({ scanData, params }) {
     // Y-axis labels (range)
     for (let i = 0; i <= yTicks; i++) {
       const y = pad.top + (i / yTicks) * plotH;
-      const dist = (i / yTicks) * maxDist;
+      const dist = minDist + (i / yTicks) * (maxDist - minDist);
       ctx.fillStyle = '#555555';
       ctx.font = '9px monospace';
       ctx.textAlign = 'right';
-      ctx.fillText(`${dist.toFixed(1)} m`, pad.left - 6, y + 3);
+      ctx.fillText(`${dist.toFixed(2)} m`, pad.left - 6, y + 3);
     }
 
     // X-axis labels (position)
@@ -150,7 +184,7 @@ export default function BscanDisplay({ scanData, params }) {
     const barY = pad.top;
     for (let i = 0; i < barH; i++) {
       const t = 1 - i / barH;
-      const [r, g, b] = viridis(t);
+      const [r, g, b] = jet(t);
       ctx.fillStyle = `rgb(${r},${g},${b})`;
       ctx.fillRect(barX, barY + i, barW, 1);
     }
@@ -159,6 +193,34 @@ export default function BscanDisplay({ scanData, params }) {
     ctx.textAlign = 'left';
     ctx.fillText(`${dbMax} dB`, barX, barY - 4);
     ctx.fillText(`${dbMin} dB`, barX, barY + barH + 10);
+
+    // Wall boundary indicators
+    if (wallEnabled) {
+      const wallFrontM = wallStandoff / 100;
+      const wallBackM = wallFrontM + wallThickness / 100;
+      const distRange = maxDist - minDist;
+
+      const drawWallLine = (distM, label) => {
+        if (distM < minDist || distM > maxDist) return;
+        const yFrac = (distM - minDist) / distRange;
+        const y = pad.top + yFrac * plotH;
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = '#f59e0b88';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(w - pad.right, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#f59e0b';
+        ctx.font = '8px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(label, pad.left + 4, y - 3);
+      };
+
+      drawWallLine(wallFrontM, 'wall front');
+      drawWallLine(wallBackM, 'wall back');
+    }
 
     // Crosshair
     if (crosshair) {
@@ -169,7 +231,7 @@ export default function BscanDisplay({ scanData, params }) {
         const binIdx = Math.min(numBins - 1, Math.floor(relY * numBins));
         const dist = distances[binIdx];
         const pos = posIdx * stepSize;
-        const db = scanData[posIdx].magnitudes[binIdx];
+        const db = scanData[posIdx].magnitudes[startBin + binIdx];
 
         ctx.setLineDash([3, 3]);
         ctx.strokeStyle = '#ffffff44';
@@ -192,7 +254,7 @@ export default function BscanDisplay({ scanData, params }) {
         ctx.fillText(label, labelX, crosshair.y - 8);
       }
     }
-  }, [scanData, params, crosshair]);
+  }, [scanData, params, crosshair, dbFloor, dbCeil, distMin, distMax]);
 
   useEffect(() => {
     const render = () => {
@@ -213,6 +275,14 @@ export default function BscanDisplay({ scanData, params }) {
 
   return (
     <div className="flex flex-col w-full h-full">
+      {capturing && sfcwProgress && (
+        <div className="absolute top-0 left-0 right-0 z-10 h-0.5">
+          <div
+            className="h-full bg-gradient-to-r from-[#6B9BD2] to-[#8BB8E8] transition-all duration-200"
+            style={{ width: `${(sfcwProgress.step / sfcwProgress.total) * 100}%` }}
+          />
+        </div>
+      )}
       <div className="relative flex-1 min-h-0">
         <canvas
           ref={canvasRef}

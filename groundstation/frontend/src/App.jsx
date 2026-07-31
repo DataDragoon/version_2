@@ -1,7 +1,8 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
+import { svdFilter } from './lib/svd';
 
 export default function App() {
   const [activePanel, setActivePanel] = useState(null);
@@ -49,22 +50,31 @@ export default function App() {
 
   // B-Scan state
   const [bscanData, setBscanData] = useState([]);
+  const [bscanCapturing, setBscanCapturing] = useState(false);
+  const [bscanBgCaptured, setBscanBgCaptured] = useState(false);
+  const bscanPendingRef = useRef(null);
   const [bscanParams, setBscanParams] = useState({
     stepSize: 5,
     numPositions: 20,
+    dbFloor: -90,
+    dbCeil: -20,
+    distMin: 0,
+    distMax: null,
+    wallEnabled: true,
+    wallStandoff: 5,
+    wallThickness: 15,
+    wallPermittivity: 4.5,
   });
 
-  const handleBscanAction = useCallback((action) => {
-    if (action === 'capture') {
-      if (sfcwResult) {
-        setBscanData(prev => [...prev, { magnitudes: [...sfcwResult.magnitudes], distances: [...sfcwResult.distances] }]);
-      }
-    } else if (action === 'new') {
-      setBscanData([]);
-    } else if (action === 'undo') {
-      setBscanData(prev => prev.slice(0, -1));
-    }
-  }, [sfcwResult]);
+  // SVD filter state
+  const [svdEnabled, setSvdEnabled] = useState(false);
+  const [svdK, setSvdK] = useState(1);
+  const [svdStrength, setSvdStrength] = useState(0.5);
+
+  const filteredBscanData = useMemo(() => {
+    if (!svdEnabled || bscanData.length < 2) return bscanData;
+    return svdFilter(bscanData, svdK, svdStrength);
+  }, [bscanData, svdEnabled, svdK, svdStrength]);
 
   // IMU WebSocket
   const handleImuMessage = useCallback((msg) => {
@@ -104,14 +114,32 @@ export default function App() {
     } else if (msg.type === 'sfcw_status') {
       setSfcwRunning(msg.running);
       setSfcwStatus(msg);
+      if (msg.background_active !== undefined) {
+        setBscanBgCaptured(msg.background_active);
+      }
     } else if (msg.type === 'sfcw_result') {
-      setSfcwResult(msg);
+      if (bscanPendingRef.current === 'capture') {
+        const posData = { magnitudes: [...msg.magnitudes], distances: [...msg.distances] };
+        setBscanData(prev => [...prev, posData]);
+        bscanPendingRef.current = null;
+        setBscanCapturing(false);
+      } else if (bscanPendingRef.current === 'capture_bg') {
+        setBscanBgCaptured(true);
+        bscanPendingRef.current = null;
+        setBscanCapturing(false);
+      } else {
+        setSfcwResult(msg);
+      }
       setSfcwProgress(null);
     } else if (msg.type === 'sfcw_progress') {
       setSfcwProgress(msg);
     } else if (msg.type === 'sfcw_error') {
       setSfcwRunning(false);
       setSfcwProgress(null);
+      if (bscanPendingRef.current) {
+        bscanPendingRef.current = null;
+        setBscanCapturing(false);
+      }
     } else if (msg.type === 'coherence_result') {
       setCoherenceResult(msg);
       setSfcwRunning(false);
@@ -120,6 +148,64 @@ export default function App() {
 
   const sdrUrl = piIp ? `ws://${piIp}:9003` : null;
   const { status: sdrConnectionStatus, send: sendSdr, connect: connectSdr, disconnect: disconnectSdr } = useWebSocket(sdrUrl, handleSdrMessage);
+
+  const handleBscanAction = useCallback((action) => {
+    if (action === 'capture') {
+      bscanPendingRef.current = 'capture';
+      setBscanCapturing(true);
+      sendSdr({ cmd: 'sweep_capture' });
+    } else if (action === 'capture_bg') {
+      bscanPendingRef.current = 'capture_bg';
+      setBscanCapturing(true);
+      sendSdr({ cmd: 'sweep_capture_bg' });
+    } else if (action === 'clear_bg') {
+      sendSdr({ cmd: 'bscan_clear_bg' });
+      setBscanBgCaptured(false);
+    } else if (action === 'new') {
+      setBscanData([]);
+    } else if (action === 'undo') {
+      setBscanData(prev => prev.slice(0, -1));
+    } else if (action === 'export') {
+      const exportData = {
+        version: 1,
+        timestamp: new Date().toISOString(),
+        params: bscanParams,
+        sfcwParams: sfcwParams,
+        data: bscanData,
+      };
+      const blob = new Blob([JSON.stringify(exportData)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `bscan_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } else if (action === 'import') {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json';
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const imported = JSON.parse(ev.target.result);
+            if (imported.data && Array.isArray(imported.data)) {
+              setBscanData(imported.data);
+              if (imported.params) {
+                setBscanParams(prev => ({ ...prev, ...imported.params }));
+              }
+            }
+          } catch (err) {
+            console.error('Failed to import B-scan:', err);
+          }
+        };
+        reader.readAsText(file);
+      };
+      input.click();
+    }
+  }, [sendSdr, bscanData, bscanParams, sfcwParams]);
 
   // Rate counter interval
   const rateIntervalRef = useRef(null);
@@ -196,9 +282,17 @@ export default function App() {
         sfcwResult={sfcwResult}
         coherenceResult={coherenceResult}
         bscanData={bscanData}
+        bscanCapturing={bscanCapturing}
+        bscanBgCaptured={bscanBgCaptured}
         bscanParams={bscanParams}
         onBscanParamsChange={setBscanParams}
         onBscanAction={handleBscanAction}
+        svdEnabled={svdEnabled}
+        svdK={svdK}
+        svdStrength={svdStrength}
+        onSvdEnabledChange={setSvdEnabled}
+        onSvdKChange={setSvdK}
+        onSvdStrengthChange={setSvdStrength}
       />
       <Viewport
         activePanel={activePanel}
@@ -215,8 +309,9 @@ export default function App() {
         sfcwResult={sfcwResult}
         sfcwProgress={sfcwProgress}
         sfcwRunning={sfcwRunning}
-        bscanData={bscanData}
+        bscanData={filteredBscanData}
         bscanParams={bscanParams}
+        bscanCapturing={bscanCapturing}
       />
     </div>
   );

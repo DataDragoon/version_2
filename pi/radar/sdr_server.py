@@ -154,8 +154,35 @@ class SDRServer:
             elif action == 'sfcw_get_status':
                 await ws.send(json.dumps({'type': 'sfcw_status', **self._get_sfcw_status()}))
 
+            elif action == 'sweep_capture':
+                if self.sfcw.running:
+                    self.sfcw.stop()
+                self._stop_all_streams()
+                await self._broadcast_status()
+                self.sfcw.run_single(self._sfcw_callback)
+                await self._broadcast_sfcw_status()
+
+            elif action == 'sweep_capture_bg':
+                self.sfcw.capture_background()
+                if self.sfcw.running:
+                    self.sfcw.stop()
+                self._stop_all_streams()
+                await self._broadcast_status()
+                self.sfcw.run_single(self._sfcw_callback)
+                await self._broadcast_sfcw_status()
+
+            elif action == 'bscan_clear_bg':
+                self.sfcw.clear_background()
+                await self._broadcast_sfcw_status()
+
         except Exception as e:
             await ws.send(json.dumps({'type': 'error', 'message': str(e)}))
+
+    def _stop_all_streams(self):
+        if self.driver.tx_running:
+            self.driver.stop_tx()
+        if self.driver.rx_running:
+            self.driver.stop_rx()
 
     def _get_sfcw_status(self):
         params = self.sfcw.get_params()
