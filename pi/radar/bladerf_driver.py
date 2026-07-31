@@ -92,45 +92,6 @@ class BladeRFDriver:
         else:
             print("[bladerf] Tuning mode set to FPGA")
 
-    def cache_quick_tunes(self, freqs, channels=None):
-        """Pre-compute quick_tune register values for a list of frequencies.
-
-        Sets each frequency via full PLL lock, then snapshots the resulting
-        register state. Returns list of (tx_qt, rx_qt) tuples — one per freq.
-        For dual-channel mode, TX2/RX2 track TX1/RX1 so only one set needed.
-        """
-        if channels is None:
-            channels = [bladerf.CHANNEL_TX(0), bladerf.CHANNEL_RX(0)]
-        dev_ptr = self.device.dev[0]
-        quick_tunes = []
-
-        for f in freqs:
-            f = int(f)
-            per_ch = []
-            for ch in channels:
-                libbladeRF.bladerf_set_frequency(dev_ptr, ch, f)
-            time.sleep(0.001)
-            for ch in channels:
-                qt = ffi.new('struct bladerf_quick_tune *')
-                rc = libbladeRF.bladerf_get_quick_tune(dev_ptr, ch, qt)
-                if rc != 0:
-                    raise RuntimeError(f"bladerf_get_quick_tune failed for ch={ch} freq={f}: rc={rc}")
-                per_ch.append(qt)
-            quick_tunes.append(tuple(per_ch))
-
-        print(f"[bladerf] Cached {len(quick_tunes)} quick-tune entries for {len(channels)} channels")
-        return quick_tunes
-
-    def schedule_retune(self, channel, timestamp, quick_tune):
-        """Schedule a retune using pre-cached quick_tune params at a given timestamp.
-
-        timestamp=0 means BLADERF_RETUNE_NOW (retune immediately on FPGA).
-        """
-        dev_ptr = self.device.dev[0]
-        rc = libbladeRF.bladerf_schedule_retune(dev_ptr, channel, timestamp, 0, quick_tune)
-        if rc != 0:
-            raise RuntimeError(f"bladerf_schedule_retune failed: ch={channel} ts={timestamp} rc={rc}")
-
     def get_timestamp(self, direction):
         """Get current hardware timestamp (in sample counts) for TX or RX direction."""
         dev_ptr = self.device.dev[0]
