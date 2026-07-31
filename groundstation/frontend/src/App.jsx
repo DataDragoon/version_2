@@ -44,7 +44,7 @@ export default function App() {
     numBuffers: 4,
     tx1Gain: 30,
     rx1Gain: 30,
-    rangeOffset: 0.45,
+    rangeOffset: 0.5,
   });
 
   // B-Scan state
