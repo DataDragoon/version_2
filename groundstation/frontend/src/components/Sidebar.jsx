@@ -191,6 +191,7 @@ export default function Sidebar({
                   params={sfcwParams}
                   onParamsChange={onSfcwParamsChange}
                   coherenceResult={coherenceResult}
+                  bgSubtractMode={sfcwStatus?.bg_subtract_mode || 'complex'}
                 />
               )}
               {activePanel === 'bscan' && (

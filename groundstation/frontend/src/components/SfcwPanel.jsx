@@ -6,7 +6,7 @@ const BUFFER_SAMPLES = 1024;
 const SAMPLE_RATE = 2_000_000;
 const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
-export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult }) {
+export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, bgSubtractMode }) {
   const { startFreq, stopFreq, stepSize, settleTime, numBuffers, tx1Gain, rx1Gain, rangeOffset } = params;
   const [coherenceRunning, setCoherenceRunning] = useState(false);
 
@@ -171,6 +171,33 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
           >
             Clear BG
           </button>
+        </div>
+        <div className="flex items-center gap-2 mt-2">
+          <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">BG Sub</span>
+          <div className="flex rounded-lg overflow-hidden border border-white/10">
+            <button
+              onClick={() => sendSdr({ cmd: 'sfcw_bg_mode', mode: 'complex' })}
+              className={cn(
+                'px-2 py-1 text-[10px] font-medium transition-all',
+                bgSubtractMode === 'complex'
+                  ? 'bg-white/15 text-white'
+                  : 'bg-white/2 text-white/40 hover:text-white/70'
+              )}
+            >
+              Complex
+            </button>
+            <button
+              onClick={() => sendSdr({ cmd: 'sfcw_bg_mode', mode: 'magnitude' })}
+              className={cn(
+                'px-2 py-1 text-[10px] font-medium transition-all',
+                bgSubtractMode === 'magnitude'
+                  ? 'bg-white/15 text-white'
+                  : 'bg-white/2 text-white/40 hover:text-white/70'
+              )}
+            >
+              Magnitude
+            </button>
+          </div>
         </div>
       </Section>
 
