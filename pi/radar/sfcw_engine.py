@@ -383,6 +383,10 @@ class SFCWEngine:
         magnitude_db = magnitude_db[:half]
         distances = distances[:half]
 
+        valid = distances >= 0
+        distances = distances[valid]
+        magnitude_db = magnitude_db[valid]
+
         h_cal_real = h_cal.real.tolist()
         h_cal_imag = h_cal.imag.tolist()
 

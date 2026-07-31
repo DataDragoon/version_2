@@ -216,12 +216,17 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
 
     const maxRange = SPEED_OF_LIGHT / (2 * hCal.step_size);
     const half = nfft >> 1;
-    const distances = new Float64Array(half);
+    const allDistances = new Float64Array(half);
     for (let i = 0; i < half; i++) {
-      distances[i] = (i / nfft) * maxRange - hCal.range_offset;
+      allDistances[i] = (i / nfft) * maxRange - hCal.range_offset;
     }
 
-    setRecomputed({ magnitudes: magnitudeDb, distances });
+    let startIdx = 0;
+    while (startIdx < half && allDistances[startIdx] < 0) startIdx++;
+    const distances = allDistances.slice(startIdx);
+    const clippedMag = magnitudeDb.slice(startIdx);
+
+    setRecomputed({ magnitudes: clippedMag, distances });
   }, [windowType, kaiserBeta, sfcwResult]);
 
   // Averaging — uses recomputed data
