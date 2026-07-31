@@ -141,7 +141,7 @@ class SDRServer:
                 self.sfcw.clear_background()
 
             elif action == 'sfcw_bg_mode':
-                self.sfcw.set_bg_subtract_mode(msg.get('mode', 'complex'))
+                self.sfcw.set_bg_subtract_mode(cmd.get('mode', 'complex'))
                 await self._broadcast_sfcw_status()
 
             elif action == 'sfcw_coherence_test':
