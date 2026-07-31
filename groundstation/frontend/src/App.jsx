@@ -37,9 +37,9 @@ export default function App() {
 
   // SFCW panel params (lifted so they survive panel switches)
   const [sfcwParams, setSfcwParams] = useState({
-    startFreq: 1000,
-    stopFreq: 6000,
-    stepSize: 10,
+    startFreq: 2000,
+    stopFreq: 5000,
+    stepSize: 20,
     settleTime: 3,
     numBuffers: 4,
     tx1Gain: 30,
