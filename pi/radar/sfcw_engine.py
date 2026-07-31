@@ -42,6 +42,7 @@ class SFCWEngine:
         self._background = None
         self._capture_background = False
         self._bg_subtract_mode = 'complex'  # 'complex' or 'magnitude'
+        self._last_h_cal = None
         self._fpga_tuning = False
 
     @property
@@ -123,6 +124,10 @@ class SFCWEngine:
     def set_bg_subtract_mode(self, mode):
         if mode in ('complex', 'magnitude'):
             self._bg_subtract_mode = mode
+            if self._last_h_cal is not None and self._background is not None:
+                result = self._process_h_cal(self._last_h_cal.copy())
+                if self._callback and result:
+                    self._callback(result)
 
     def run_coherence_test(self, callback=None):
         """Run 3 consecutive sweeps and compute repeatability + correlation metrics.
@@ -342,6 +347,16 @@ class SFCWEngine:
             self._background = h_cal.copy()
             self._capture_background = False
 
+        self._last_h_cal = h_cal.copy()
+
+        return self._process_h_cal(h_cal)
+
+    def _process_h_cal(self, h_cal):
+        num_steps = len(h_cal)
+        start = self.start_freq
+        stop = self.stop_freq
+        step = self.step_size
+
         if self._background is not None and len(self._background) == num_steps:
             if self._bg_subtract_mode == 'magnitude':
                 mag_diff = np.abs(h_cal) - np.abs(self._background)
@@ -349,7 +364,6 @@ class SFCWEngine:
             else:
                 h_cal = h_cal - self._background
 
-        # Phase coherence diagnostics
         phase_raw = np.angle(h_cal)
         phase_unwrapped = np.unwrap(phase_raw)
         coeffs = np.polyfit(np.arange(num_steps), phase_unwrapped, 1)
@@ -369,7 +383,6 @@ class SFCWEngine:
         magnitude_db = magnitude_db[:half]
         distances = distances[:half]
 
-        # Send raw h_cal so groundstation can re-window client-side
         h_cal_real = h_cal.real.tolist()
         h_cal_imag = h_cal.imag.tolist()
 
