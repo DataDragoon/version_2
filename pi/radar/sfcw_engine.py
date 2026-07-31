@@ -41,6 +41,7 @@ class SFCWEngine:
         self._lock = threading.Lock()
         self._background = None
         self._capture_background = False
+        self._bg_subtract_mode = 'complex'  # 'complex' or 'magnitude'
         self._fpga_tuning = False
 
     @property
@@ -109,6 +110,7 @@ class SFCWEngine:
             'range_resolution': self.range_resolution,
             'max_range': self.max_range,
             'background_active': self._background is not None,
+            'bg_subtract_mode': self._bg_subtract_mode,
         }
 
     def capture_background(self):
@@ -117,6 +119,10 @@ class SFCWEngine:
     def clear_background(self):
         self._background = None
         self._capture_background = False
+
+    def set_bg_subtract_mode(self, mode):
+        if mode in ('complex', 'magnitude'):
+            self._bg_subtract_mode = mode
 
     def run_coherence_test(self, callback=None):
         """Run 3 consecutive sweeps and compute repeatability + correlation metrics.
@@ -337,7 +343,11 @@ class SFCWEngine:
             self._capture_background = False
 
         if self._background is not None and len(self._background) == num_steps:
-            h_cal = h_cal - self._background
+            if self._bg_subtract_mode == 'magnitude':
+                mag_diff = np.abs(h_cal) - np.abs(self._background)
+                h_cal = mag_diff * np.exp(1j * np.angle(h_cal))
+            else:
+                h_cal = h_cal - self._background
 
         # Phase coherence diagnostics
         phase_raw = np.angle(h_cal)

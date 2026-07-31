@@ -140,6 +140,10 @@ class SDRServer:
             elif action == 'sfcw_clear_bg':
                 self.sfcw.clear_background()
 
+            elif action == 'sfcw_bg_mode':
+                self.sfcw.set_bg_subtract_mode(msg.get('mode', 'complex'))
+                await self._broadcast_sfcw_status()
+
             elif action == 'sfcw_coherence_test':
                 if self.sfcw.running:
                     await ws.send(json.dumps({'type': 'error', 'message': 'Stop sweep before running coherence test'}))
