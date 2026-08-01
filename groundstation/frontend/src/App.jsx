@@ -3,6 +3,7 @@ import { useWebSocket } from './hooks/useWebSocket';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
 import { svdFilter } from './lib/svd';
+import { useSarWorker } from './hooks/useSarWorker';
 
 export default function App() {
   const [activePanel, setActivePanel] = useState(null);
@@ -75,6 +76,28 @@ export default function App() {
     if (!svdEnabled || bscanData.length < 2) return bscanData;
     return svdFilter(bscanData, svdK, svdStrength);
   }, [bscanData, svdEnabled, svdK, svdStrength]);
+
+  // SAR state
+  const [sarParams, setSarParams] = useState({
+    pixelsX: 100,
+    pixelsZ: 100,
+    depthMin: 0.1,
+    depthMax: 3.0,
+    lateralMin: undefined,
+    lateralMax: undefined,
+    meanSubtract: true,
+    svdEnabled: true,
+    svdK: 2,
+    window: 'blackman-harris',
+    dbFloor: -85,
+    dbCeil: -60,
+    wallEnabled: true,
+    wallStandoff: 5,
+    wallThickness: 15,
+    wallPermittivity: 4.5,
+  });
+
+  const { sarResult, sarProgress } = useSarWorker(bscanData, bscanParams, sarParams);
 
   // IMU WebSocket
   const handleImuMessage = useCallback((msg) => {
@@ -293,6 +316,11 @@ export default function App() {
         onSvdEnabledChange={setSvdEnabled}
         onSvdKChange={setSvdK}
         onSvdStrengthChange={setSvdStrength}
+        sarBscanData={bscanData}
+        sarParams={sarParams}
+        onSarParamsChange={setSarParams}
+        sarResult={sarResult}
+        sarProgress={sarProgress}
       />
       <Viewport
         activePanel={activePanel}
@@ -312,6 +340,9 @@ export default function App() {
         bscanData={filteredBscanData}
         bscanParams={bscanParams}
         bscanCapturing={bscanCapturing}
+        sarResult={sarResult}
+        sarProgress={sarProgress}
+        sarParams={sarParams}
       />
     </div>
   );

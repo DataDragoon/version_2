@@ -1,10 +1,11 @@
-import { Activity, Eye, Radio, Radar, ScanLine, ChevronLeft, Wifi, WifiOff } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ScanLine, Grid3x3, ChevronLeft, Wifi, WifiOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ImuPanel from './ImuPanel';
 import OptiFlowPanel from './OptiFlowPanel';
 import RfCalibPanel from './RfCalibPanel';
 import SfcwPanel from './SfcwPanel';
 import BscanPanel from './BscanPanel';
+import SarPanel from './SarPanel';
 
 const PANELS = [
   { id: 'imu',       label: 'IMU',       icon: Activity },
@@ -12,6 +13,7 @@ const PANELS = [
   { id: 'rfcalib',   label: 'RF Calibrate', icon: Radio },
   { id: 'sfcw',      label: 'SFCW',      icon: Radar },
   { id: 'bscan',     label: 'B-Scan',    icon: ScanLine },
+  { id: 'sar',       label: 'SAR',       icon: Grid3x3 },
 ];
 
 export default function Sidebar({
@@ -56,6 +58,11 @@ export default function Sidebar({
   onSvdEnabledChange,
   onSvdKChange,
   onSvdStrengthChange,
+  sarBscanData,
+  sarParams,
+  onSarParamsChange,
+  sarResult,
+  sarProgress,
 }) {
   return (
     <div className="flex h-screen shrink-0">
@@ -220,6 +227,15 @@ export default function Sidebar({
                   onSvdEnabledChange={onSvdEnabledChange}
                   onSvdKChange={onSvdKChange}
                   onSvdStrengthChange={onSvdStrengthChange}
+                />
+              )}
+              {activePanel === 'sar' && (
+                <SarPanel
+                  bscanData={sarBscanData}
+                  sarParams={sarParams}
+                  onSarParamsChange={onSarParamsChange}
+                  sarResult={sarResult}
+                  sarProgress={sarProgress}
                 />
               )}
             </div>
