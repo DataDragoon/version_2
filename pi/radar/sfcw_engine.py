@@ -44,6 +44,7 @@ class SFCWEngine:
         self._bg_subtract_mode = 'complex'  # 'complex' or 'magnitude'
         self._last_h_cal = None
         self._fpga_tuning = False
+        self._gains_dirty = False
 
     @property
     def num_steps(self):
@@ -79,12 +80,16 @@ class SFCWEngine:
                 self.num_buffers = max(1, int(kwargs['num_buffers']))
             if 'tx1_gain' in kwargs:
                 self.tx1_gain = int(kwargs['tx1_gain'])
+                self._gains_dirty = True
             if 'rx1_gain' in kwargs:
                 self.rx1_gain = int(kwargs['rx1_gain'])
+                self._gains_dirty = True
             if 'tx2_gain' in kwargs:
                 self.tx2_gain = int(kwargs['tx2_gain'])
+                self._gains_dirty = True
             if 'rx2_gain' in kwargs:
                 self.rx2_gain = int(kwargs['rx2_gain'])
+                self._gains_dirty = True
             if 'rx_gain_min' in kwargs:
                 self.rx_gain_min = int(kwargs['rx_gain_min'])
             if 'rx_gain_max' in kwargs:
@@ -243,6 +248,8 @@ class SFCWEngine:
             self._start_tx_rx()
 
             while not self._stop_event.is_set():
+                if self._gains_dirty:
+                    self._apply_gains()
                 range_profile = self._perform_sweep()
                 if range_profile is not None and self._callback:
                     self._callback(range_profile)
@@ -285,6 +292,14 @@ class SFCWEngine:
         libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(1), int(self.rx2_gain))
         libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(0), int(self.tx1_gain))
         libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(1), int(self.tx2_gain))
+
+    def _apply_gains(self):
+        dev_ptr = self.driver.device.dev[0]
+        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(0), int(self.tx1_gain))
+        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(1), int(self.tx2_gain))
+        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(0), int(self.rx1_gain))
+        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(1), int(self.rx2_gain))
+        self._gains_dirty = False
 
     def _stop_tx_rx(self):
         self.driver.stop_rx_dual()
