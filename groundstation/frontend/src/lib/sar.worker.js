@@ -183,21 +183,22 @@ function computeOpticalPath(lateral, depth, antennaX, wallEnabled, wallStandoffM
 }
 
 self.onmessage = function (e) {
-  const { bscanData, bscanParams, sarParams } = e.data;
+  const { bscanData, bscanParams, sarParams, svdEnabled, svdK } = e.data;
   const t0 = performance.now();
 
-  const { stepSize } = bscanParams;
-  const {
-    pixelsX, pixelsZ, depthMin, depthMax, lateralMin, lateralMax,
-    meanSubtract, svdEnabled, svdK, window: windowType,
-    wallEnabled, wallStandoff, wallThickness, wallPermittivity,
-  } = sarParams;
+  const { stepSize, distMin, distMax, wallEnabled, wallStandoff, wallThickness, wallPermittivity } = bscanParams;
+  const { pixelsX, pixelsZ, lateralMin, lateralMax, window: windowType } = sarParams;
 
   const numPositions = bscanData.length;
   if (numPositions < 2) {
     self.postMessage({ type: 'result', result: null });
     return;
   }
+
+  // Depth range from bscan distMin/distMax
+  const rawDistances = bscanData[0].distances;
+  const depthMin = distMin || 0;
+  const depthMax = distMax || rawDistances[rawDistances.length - 1];
 
   const hasComplex = bscanData[0].h_cal_real && bscanData[0].h_cal_imag && bscanData[0].freqs;
 
@@ -231,7 +232,7 @@ self.onmessage = function (e) {
       applySvd(hReal, hImag, numPositions, numFreqs, svdK);
     }
 
-    if (meanSubtract && !(svdEnabled && svdK > 0)) {
+    if (!svdEnabled || svdK <= 0) {
       const meanRe = new Array(numFreqs).fill(0);
       const meanIm = new Array(numFreqs).fill(0);
       for (let f = 0; f < numFreqs; f++) {
@@ -250,7 +251,7 @@ self.onmessage = function (e) {
       }
     }
 
-    const win = buildWindow(numFreqs, windowType || 'hanning');
+    const win = buildWindow(numFreqs, windowType || 'blackman-harris');
     for (let p = 0; p < numPositions; p++) {
       for (let f = 0; f < numFreqs; f++) {
         hReal[p][f] *= win[f];
@@ -304,18 +305,16 @@ self.onmessage = function (e) {
       magMatrix.push([...bscanData[p].magnitudes]);
     }
 
-    if (meanSubtract) {
-      const mean = new Array(numBins).fill(0);
-      for (let b = 0; b < numBins; b++) {
-        for (let p = 0; p < numPositions; p++) {
-          mean[b] += magMatrix[p][b];
-        }
-        mean[b] /= numPositions;
-      }
+    const mean = new Array(numBins).fill(0);
+    for (let b = 0; b < numBins; b++) {
       for (let p = 0; p < numPositions; p++) {
-        for (let b = 0; b < numBins; b++) {
-          magMatrix[p][b] -= mean[b];
-        }
+        mean[b] += magMatrix[p][b];
+      }
+      mean[b] /= numPositions;
+    }
+    for (let p = 0; p < numPositions; p++) {
+      for (let b = 0; b < numBins; b++) {
+        magMatrix[p][b] -= mean[b];
       }
     }
 

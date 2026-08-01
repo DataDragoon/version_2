@@ -57,8 +57,6 @@ export default function App() {
   const [bscanParams, setBscanParams] = useState({
     stepSize: 5,
     numPositions: 20,
-    dbFloor: -90,
-    dbCeil: -20,
     distMin: 0,
     distMax: null,
     wallEnabled: true,
@@ -77,27 +75,16 @@ export default function App() {
     return svdFilter(bscanData, svdK, svdStrength);
   }, [bscanData, svdEnabled, svdK, svdStrength]);
 
-  // SAR state
+  // SAR state (only SAR-specific params; depth/wall/svd come from bscan)
   const [sarParams, setSarParams] = useState({
     pixelsX: 100,
     pixelsZ: 100,
-    depthMin: 0.1,
-    depthMax: 3.0,
     lateralMin: undefined,
     lateralMax: undefined,
-    meanSubtract: true,
-    svdEnabled: true,
-    svdK: 2,
     window: 'blackman-harris',
-    dbFloor: -85,
-    dbCeil: -60,
-    wallEnabled: true,
-    wallStandoff: 5,
-    wallThickness: 15,
-    wallPermittivity: 4.5,
   });
 
-  const { sarResult, sarProgress } = useSarWorker(bscanData, bscanParams, sarParams);
+  const { sarResult, sarProgress } = useSarWorker(filteredBscanData, bscanParams, sarParams, svdEnabled, svdK);
 
   // IMU WebSocket
   const handleImuMessage = useCallback((msg) => {
@@ -342,7 +329,6 @@ export default function App() {
         bscanCapturing={bscanCapturing}
         sarResult={sarResult}
         sarProgress={sarProgress}
-        sarParams={sarParams}
       />
     </div>
   );

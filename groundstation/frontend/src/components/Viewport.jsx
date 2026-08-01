@@ -29,7 +29,6 @@ export default function Viewport({
   bscanCapturing,
   sarResult,
   sarProgress,
-  sarParams,
 }) {
   if (!activePanel) {
     return (
@@ -179,10 +178,6 @@ export default function Viewport({
               params={bscanParams}
               capturing={bscanCapturing}
               sfcwProgress={sfcwProgress}
-              dbFloor={bscanParams.dbFloor}
-              dbCeil={bscanParams.dbCeil}
-              distMin={bscanParams.distMin}
-              distMax={bscanParams.distMax}
             />
             {bscanData.length === 0 && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -209,7 +204,6 @@ export default function Viewport({
             <SarDisplay
               sarResult={sarResult}
               sarProgress={sarProgress}
-              sarParams={sarParams}
             />
             {!sarResult && sarProgress === null && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

@@ -3,11 +3,7 @@ import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
 
 export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarResult, sarProgress }) {
-  const {
-    pixelsX, pixelsZ, depthMin, depthMax, lateralMin, lateralMax,
-    dbFloor, dbCeil, meanSubtract, svdEnabled, svdK, window: windowType,
-    wallEnabled, wallStandoff, wallThickness, wallPermittivity,
-  } = sarParams;
+  const { pixelsX, pixelsZ, lateralMin, lateralMax, window: windowType } = sarParams;
 
   const update = (key, value) => {
     onSarParamsChange({ ...sarParams, [key]: value });
@@ -17,7 +13,6 @@ export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarR
 
   return (
     <>
-      {/* Status */}
       <Section label="Status">
         <div className="grid grid-cols-2 gap-2">
           <InfoTile label="Positions" value={numPositions < 2 ? `${numPositions} (need ≥2)` : numPositions} />
@@ -43,49 +38,11 @@ export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarR
             </div>
           </div>
         )}
+        <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
+          Uses B-scan panel settings: dist range, wall model, SVD filter.
+        </div>
       </Section>
 
-      {/* Clutter Removal */}
-      <Section label="Clutter Removal">
-        <button
-          onClick={() => update('svdEnabled', !svdEnabled)}
-          className={cn(
-            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-            svdEnabled
-              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-              : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-          )}
-        >
-          {svdEnabled ? `● SVD Filter ON (k=${svdK})` : 'SVD Filter OFF'}
-        </button>
-        {svdEnabled && (
-          <div className="grid grid-cols-1 gap-2">
-            <EditableField
-              label="SVD k"
-              value={svdK}
-              unit="components"
-              onChange={(v) => update('svdK', Math.round(v))}
-              min={1}
-              max={10}
-            />
-          </div>
-        )}
-        {!svdEnabled && (
-          <button
-            onClick={() => update('meanSubtract', !meanSubtract)}
-            className={cn(
-              'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              meanSubtract
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-            )}
-          >
-            {meanSubtract ? '● Mean Subtraction ON' : 'Mean Subtraction OFF'}
-          </button>
-        )}
-      </Section>
-
-      {/* Window */}
       <Section label="Window">
         <div className="flex gap-2">
           <button
@@ -113,7 +70,6 @@ export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarR
         </div>
       </Section>
 
-      {/* Image Grid */}
       <Section label="Image Grid">
         <div className="grid grid-cols-2 gap-2">
           <EditableField
@@ -135,30 +91,11 @@ export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarR
         </div>
       </Section>
 
-      {/* Region of Interest */}
-      <Section label="Region">
-        <div className="grid grid-cols-2 gap-2">
-          <EditableField
-            label="Depth Min"
-            value={depthMin}
-            unit="m"
-            onChange={(v) => update('depthMin', v)}
-            min={0}
-            max={10}
-          />
-          <EditableField
-            label="Depth Max"
-            value={depthMax}
-            unit="m"
-            onChange={(v) => update('depthMax', v)}
-            min={0.01}
-            max={10}
-          />
-        </div>
+      <Section label="Lateral Range">
         <div className="grid grid-cols-2 gap-2">
           <EditableField
             label="Lat Min"
-            value={lateralMin}
+            value={lateralMin !== undefined && lateralMin !== null ? lateralMin : 0}
             unit="m"
             onChange={(v) => update('lateralMin', v)}
             min={-5}
@@ -166,83 +103,11 @@ export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarR
           />
           <EditableField
             label="Lat Max"
-            value={lateralMax}
+            value={lateralMax !== undefined && lateralMax !== null ? lateralMax : (numPositions > 1 ? ((numPositions - 1) * 5 / 100) : 1)}
             unit="m"
             onChange={(v) => update('lateralMax', v)}
             min={-5}
             max={5}
-          />
-        </div>
-      </Section>
-
-      {/* Wall */}
-      <Section label="Wall">
-        <button
-          onClick={() => update('wallEnabled', !wallEnabled)}
-          className={cn(
-            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-            wallEnabled
-              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-              : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-          )}
-        >
-          {wallEnabled ? '● Wall Model ON' : 'Wall Model OFF'}
-        </button>
-        {wallEnabled && (
-          <>
-            <div className="grid grid-cols-2 gap-2">
-              <EditableField
-                label="Standoff"
-                value={wallStandoff}
-                unit="cm"
-                onChange={(v) => update('wallStandoff', v)}
-                min={0}
-                max={100}
-              />
-              <EditableField
-                label="Thickness"
-                value={wallThickness}
-                unit="cm"
-                onChange={(v) => update('wallThickness', v)}
-                min={1}
-                max={100}
-              />
-            </div>
-            <div className="grid grid-cols-1 gap-2">
-              <EditableField
-                label="Permittivity εr"
-                value={wallPermittivity}
-                unit=""
-                onChange={(v) => update('wallPermittivity', v)}
-                min={1}
-                max={20}
-              />
-            </div>
-            <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
-              Depth axis corrected: air → wall (εr={wallPermittivity}) → behind-wall.
-            </div>
-          </>
-        )}
-      </Section>
-
-      {/* Display */}
-      <Section label="Display">
-        <div className="grid grid-cols-2 gap-2">
-          <EditableField
-            label="dB Floor"
-            value={dbFloor}
-            unit="dB"
-            onChange={(v) => update('dbFloor', v)}
-            min={-120}
-            max={40}
-          />
-          <EditableField
-            label="dB Ceil"
-            value={dbCeil}
-            unit="dB"
-            onChange={(v) => update('dbCeil', v)}
-            min={-120}
-            max={40}
           />
         </div>
       </Section>

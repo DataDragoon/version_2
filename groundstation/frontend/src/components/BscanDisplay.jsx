@@ -31,7 +31,7 @@ function correctDistancesForWall(distances, wallStandoff, wallThickness, wallPer
   });
 }
 
-function drawBscan(canvas, scanData, params, crosshair, dbFloor, dbCeil, distMin, distMax, isLinear) {
+function drawBscan(canvas, scanData, params, crosshair, isLinear) {
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   const rect = canvas.getBoundingClientRect();
@@ -59,7 +59,7 @@ function drawBscan(canvas, scanData, params, crosshair, dbFloor, dbCeil, distMin
 
   const numPos = scanData.length;
   const rawDistances = scanData[0].distances;
-  const { stepSize, wallEnabled, wallStandoff, wallThickness, wallPermittivity } = params;
+  const { stepSize, distMin, distMax, wallEnabled, wallStandoff, wallThickness, wallPermittivity } = params;
   const allDistances = wallEnabled
     ? correctDistancesForWall(rawDistances, wallStandoff, wallThickness, wallPermittivity)
     : rawDistances;
@@ -81,8 +81,20 @@ function drawBscan(canvas, scanData, params, crosshair, dbFloor, dbCeil, distMin
   const maxDist = distances[distances.length - 1];
   const minDist = distances[0];
 
-  const dbMin = dbFloor;
-  const dbMax = dbCeil;
+  // Dynamic scaling: compute min/max dB from visible data
+  let dbMin = Infinity;
+  let dbMax = -Infinity;
+  for (let posIdx = 0; posIdx < numPos; posIdx++) {
+    const mags = scanData[posIdx].magnitudes;
+    for (let binIdx = 0; binIdx < numBins; binIdx++) {
+      const db = mags[startBin + binIdx];
+      if (db < dbMin) dbMin = db;
+      if (db > dbMax) dbMax = db;
+    }
+  }
+  if (!isFinite(dbMin)) dbMin = -90;
+  if (!isFinite(dbMax)) dbMax = -20;
+  if (dbMax - dbMin < 1) { dbMin -= 0.5; dbMax += 0.5; }
 
   // For linear mode, compute the linear range from the dB range
   const linMin = Math.pow(10, dbMin / 20);
@@ -269,7 +281,7 @@ function drawBscan(canvas, scanData, params, crosshair, dbFloor, dbCeil, distMin
   }
 }
 
-export default function BscanDisplay({ scanData, params, capturing, sfcwProgress, dbFloor = -90, dbCeil = -20, distMin = 0, distMax = null }) {
+export default function BscanDisplay({ scanData, params, capturing, sfcwProgress }) {
   const dbCanvasRef = useRef(null);
   const linCanvasRef = useRef(null);
   const animRef = useRef(null);
@@ -277,9 +289,9 @@ export default function BscanDisplay({ scanData, params, capturing, sfcwProgress
   const [crosshairLin, setCrosshairLin] = useState(null);
 
   const draw = useCallback(() => {
-    drawBscan(dbCanvasRef.current, scanData, params, crosshairDb, dbFloor, dbCeil, distMin, distMax, false);
-    drawBscan(linCanvasRef.current, scanData, params, crosshairLin, dbFloor, dbCeil, distMin, distMax, true);
-  }, [scanData, params, crosshairDb, crosshairLin, dbFloor, dbCeil, distMin, distMax]);
+    drawBscan(dbCanvasRef.current, scanData, params, crosshairDb, false);
+    drawBscan(linCanvasRef.current, scanData, params, crosshairLin, true);
+  }, [scanData, params, crosshairDb, crosshairLin]);
 
   useEffect(() => {
     const render = () => {

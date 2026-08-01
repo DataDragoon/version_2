@@ -3,7 +3,7 @@ import { cn } from '@/lib/utils';
 import { Section, InfoTile, ToggleButton } from './Sidebar';
 
 export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange }) {
-  const { stepSize, numPositions, dbFloor, dbCeil, distMin, distMax, wallEnabled, wallStandoff, wallThickness, wallPermittivity } = params;
+  const { stepSize, numPositions, distMin, distMax, wallEnabled, wallStandoff, wallThickness, wallPermittivity } = params;
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
@@ -247,24 +247,6 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
       </Section>
 
       <Section label="Display">
-        <div className="grid grid-cols-2 gap-2">
-          <EditableField
-            label="dB Floor"
-            value={dbFloor}
-            unit="dB"
-            onChange={(v) => update('dbFloor', v)}
-            min={-120}
-            max={40}
-          />
-          <EditableField
-            label="dB Ceil"
-            value={dbCeil}
-            unit="dB"
-            onChange={(v) => update('dbCeil', v)}
-            min={-120}
-            max={40}
-          />
-        </div>
         <div className="grid grid-cols-2 gap-2">
           <EditableField
             label="Dist Min"
