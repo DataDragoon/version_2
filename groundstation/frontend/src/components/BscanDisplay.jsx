@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useState } from 'react';
+import { useRef, useEffect, useState } from 'react';
 
 const BG = '#000000';
 const GRID_COLOR = '#1a1a1a';
@@ -32,7 +32,7 @@ function correctDistancesForWall(distances, wallStandoff, wallThickness, wallPer
   });
 }
 
-function drawBscan(canvas, scanData, params, crosshair, isLinear) {
+function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, bgDisplay, animatedShifts, animatedBgShift) {
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   const rect = canvas.getBoundingClientRect();
@@ -54,7 +54,7 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear) {
     return;
   }
 
-  const pad = { top: 24, bottom: 36, left: 60, right: 20 };
+  const pad = { top: 24, bottom: 36, left: 50, right: 20 };
   const plotW = w - pad.left - pad.right;
   const plotH = h - pad.top - pad.bottom;
 
@@ -65,23 +65,24 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear) {
   const thicknessM = wallThickness / 100;
   const sqrtEr = Math.sqrt(wallPermittivity);
   const wallBackApparent = standoffM + thicknessM * sqrtEr;
-  const apertureLen = (numPos - 1) * stepSize;
 
-  // Clip at the apparent wall back in raw distance space
   let startBin = 0;
   let endBin = rawDistances.length - 1;
   for (let i = rawDistances.length - 1; i >= 0; i--) {
     if (rawDistances[i] <= wallBackApparent) { endBin = i; break; }
   }
 
-  // Correct only the clipped range for display
   const allDistances = correctDistancesForWall(rawDistances, wallStandoff, wallThickness, wallPermittivity);
   const numBins = endBin - startBin + 1;
   const distances = allDistances.slice(startBin, endBin + 1);
   const maxDist = distances[distances.length - 1];
   const minDist = distances[0];
 
-  // Dynamic scaling: compute min/max dB from visible data
+  // Build combined row list: BG reference (if present) + scan positions
+  const hasBg = bgDisplay && bgDisplay.magnitudes && bgDisplay.distances;
+  const totalRows = numPos + (hasBg ? 1 : 0);
+
+  // Dynamic scaling: compute min/max dB from visible data (include BG in scaling)
   let dbMin = Infinity;
   let dbMax = -Infinity;
   for (let posIdx = 0; posIdx < numPos; posIdx++) {
@@ -92,52 +93,156 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear) {
       if (db > dbMax) dbMax = db;
     }
   }
+  if (hasBg) {
+    for (let binIdx = 0; binIdx < numBins; binIdx++) {
+      if (startBin + binIdx < bgDisplay.magnitudes.length) {
+        const db = bgDisplay.magnitudes[startBin + binIdx];
+        if (db < dbMin) dbMin = db;
+        if (db > dbMax) dbMax = db;
+      }
+    }
+  }
   if (!isFinite(dbMin)) dbMin = -90;
   if (!isFinite(dbMax)) dbMax = -20;
   if (dbMax - dbMin < 1) { dbMin -= 0.5; dbMax += 0.5; }
 
-  // For linear mode, compute the linear range from the dB range
   const linMin = Math.pow(10, dbMin / 20);
   const linMax = Math.pow(10, dbMax / 20);
 
-  // Draw B-scan image
-  const cellW = plotW / numPos;
-  const cellH = plotH / numBins;
+  // Axes: X = depth (left to right), Y = scan position (oldest at top, newest at bottom)
+  const cellW = plotW / numBins;
+  const cellH = plotH / totalRows;
 
-  for (let posIdx = 0; posIdx < numPos; posIdx++) {
-    const mags = scanData[posIdx].magnitudes;
-    for (let binIdx = 0; binIdx < numBins; binIdx++) {
-      const db = mags[startBin + binIdx];
-      let t;
-      if (isLinear) {
-        const lin = Math.pow(10, db / 20);
-        t = (lin - linMin) / (linMax - linMin);
-      } else {
-        t = (db - dbMin) / (dbMax - dbMin);
+  // Helper: get magnitudes for a given row index (0 = BG if present, then scan data)
+  const getMagsForRow = (rowIdx) => {
+    if (hasBg && rowIdx === 0) return bgDisplay.magnitudes;
+    const scanIdx = hasBg ? rowIdx - 1 : rowIdx;
+    return scanData[scanIdx].magnitudes;
+  };
+
+  // Get pixel offset for a row from animated shifts
+  const getRowPixelOffset = (rowIdx) => {
+    if (hasBg && rowIdx === 0) return (animatedBgShift || 0) * cellW;
+    const scanIdx = hasBg ? rowIdx - 1 : rowIdx;
+    if (!animatedShifts || scanIdx >= animatedShifts.length) return 0;
+    return animatedShifts[scanIdx] * cellW;
+  };
+
+  // Clip region for plot area
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(pad.left, pad.top, plotW, plotH);
+  ctx.clip();
+
+  if (displayMode === 'color') {
+    for (let rowIdx = 0; rowIdx < totalRows; rowIdx++) {
+      const mags = getMagsForRow(rowIdx);
+      const pxOffset = getRowPixelOffset(rowIdx);
+      for (let binIdx = 0; binIdx < numBins; binIdx++) {
+        const db = (startBin + binIdx < mags.length) ? mags[startBin + binIdx] : dbMin;
+        let t;
+        if (isLinear) {
+          const lin = Math.pow(10, db / 20);
+          t = (lin - linMin) / (linMax - linMin);
+        } else {
+          t = (db - dbMin) / (dbMax - dbMin);
+        }
+        const [r, g, b] = jet(t);
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        const x = pad.left + binIdx * cellW + pxOffset;
+        const y = pad.top + rowIdx * cellH;
+        ctx.fillRect(x, y, Math.ceil(cellW) + 1, Math.ceil(cellH) + 1);
       }
-      const [r, g, b] = jet(t);
-      ctx.fillStyle = `rgb(${r},${g},${b})`;
-      const x = pad.left + posIdx * cellW;
-      const y = pad.top + binIdx * cellH;
-      ctx.fillRect(x, y, Math.ceil(cellW) + 1, Math.ceil(cellH) + 1);
+    }
+
+    // BG row indicator: orange border at the bottom of the BG row
+    if (hasBg) {
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      const bgBottom = pad.top + cellH;
+      ctx.moveTo(pad.left, bgBottom);
+      ctx.lineTo(w - pad.right, bgBottom);
+      ctx.stroke();
+
+      ctx.fillStyle = '#f59e0b';
+      ctx.font = 'bold 8px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText('BG REF', w - pad.right - 4, pad.top + cellH / 2 + 3);
+    }
+  } else {
+    // Range profile mode: draw each row as a line graph
+    const lineColors = ['#6B9BD2', '#8BB8E8', '#D1855C', '#E8A87C', '#7EC8A0', '#C78BDB', '#E8D06B', '#E87B7B'];
+
+    for (let rowIdx = 0; rowIdx < totalRows; rowIdx++) {
+      const mags = getMagsForRow(rowIdx);
+      const bandTop = pad.top + rowIdx * cellH;
+      const bandH = cellH;
+      const isBgRow = hasBg && rowIdx === 0;
+      const pxOffset = getRowPixelOffset(rowIdx);
+
+      // BG row uses dashed orange; scan rows use solid colors
+      if (isBgRow) {
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
+      } else {
+        const scanIdx = hasBg ? rowIdx - 1 : rowIdx;
+        ctx.strokeStyle = lineColors[scanIdx % lineColors.length];
+        ctx.lineWidth = 1;
+        ctx.setLineDash([]);
+      }
+      ctx.globalAlpha = 0.9;
+      ctx.beginPath();
+
+      for (let binIdx = 0; binIdx < numBins; binIdx++) {
+        const db = (startBin + binIdx < mags.length) ? mags[startBin + binIdx] : dbMin;
+        let normalized;
+        if (isLinear) {
+          const lin = Math.pow(10, db / 20);
+          normalized = (lin - linMin) / (linMax - linMin);
+        } else {
+          normalized = (db - dbMin) / (dbMax - dbMin);
+        }
+        const x = pad.left + binIdx * cellW + cellW / 2 + pxOffset;
+        const y = bandTop + bandH - normalized * bandH;
+
+        if (binIdx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1.0;
+
+      // BG label
+      if (isBgRow) {
+        ctx.fillStyle = '#f59e0b';
+        ctx.font = 'bold 8px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText('BG REF', w - pad.right - 4, bandTop + bandH / 2 + 3);
+      }
+
+      // Subtle separator between rows
+      if (rowIdx < totalRows - 1) {
+        ctx.strokeStyle = isBgRow ? '#f59e0b44' : '#ffffff08';
+        ctx.lineWidth = 0.5;
+        ctx.beginPath();
+        const sepY = pad.top + (rowIdx + 1) * cellH;
+        ctx.moveTo(pad.left, sepY);
+        ctx.lineTo(w - pad.right, sepY);
+        ctx.stroke();
+      }
     }
   }
+
+  ctx.restore();
 
   // Grid overlay
   ctx.strokeStyle = GRID_COLOR;
   ctx.lineWidth = 0.5;
   ctx.globalAlpha = 0.4;
 
-  const yTicks = 6;
-  for (let i = 0; i <= yTicks; i++) {
-    const y = pad.top + (i / yTicks) * plotH;
-    ctx.beginPath();
-    ctx.moveTo(pad.left, y);
-    ctx.lineTo(w - pad.right, y);
-    ctx.stroke();
-  }
-
-  const xTicks = Math.min(numPos, 10);
+  const xTicks = 6;
   for (let i = 0; i <= xTicks; i++) {
     const x = pad.left + (i / xTicks) * plotW;
     ctx.beginPath();
@@ -145,33 +250,42 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear) {
     ctx.lineTo(x, h - pad.bottom);
     ctx.stroke();
   }
-  ctx.globalAlpha = 1.0;
 
-  // Y-axis labels (range)
+  const yTicks = Math.min(numPos, 10);
   for (let i = 0; i <= yTicks; i++) {
     const y = pad.top + (i / yTicks) * plotH;
-    const dist = minDist + (i / yTicks) * (maxDist - minDist);
-    ctx.fillStyle = '#555555';
-    ctx.font = '9px monospace';
-    ctx.textAlign = 'right';
-    ctx.fillText(`${dist.toFixed(2)} m`, pad.left - 6, y + 3);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(w - pad.right, y);
+    ctx.stroke();
   }
+  ctx.globalAlpha = 1.0;
 
-  // X-axis labels (position)
+  // X-axis labels (depth)
   for (let i = 0; i <= xTicks; i++) {
     const x = pad.left + (i / xTicks) * plotW;
-    const pos = (i / xTicks) * apertureLen;
+    const dist = minDist + (i / xTicks) * (maxDist - minDist);
     ctx.fillStyle = '#555555';
     ctx.font = '9px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(`${pos.toFixed(1)}`, x, h - pad.bottom + 14);
+    ctx.fillText(`${dist.toFixed(2)}`, x, h - pad.bottom + 14);
+  }
+
+  // Y-axis labels (position)
+  for (let i = 0; i <= yTicks; i++) {
+    const y = pad.top + (i / yTicks) * plotH;
+    const pos = (i / yTicks) * (numPos - 1) * stepSize;
+    ctx.fillStyle = '#555555';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${pos.toFixed(0)}`, pad.left - 6, y + 3);
   }
 
   // Axis titles
   ctx.fillStyle = '#444444';
   ctx.font = '9px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('Position (cm)', pad.left + plotW / 2, h - pad.bottom + 28);
+  ctx.fillText('Depth (m)', pad.left + plotW / 2, h - pad.bottom + 28);
 
   ctx.save();
   ctx.translate(12, pad.top + plotH / 2);
@@ -179,63 +293,66 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear) {
   ctx.fillStyle = '#444444';
   ctx.font = '9px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('Depth (m)', 0, 0);
+  ctx.fillText('Position (cm)', 0, 0);
   ctx.restore();
 
   // Title
-  const titleColor = isLinear ? '#6B9BD2' : '#D1855C';
-  ctx.fillStyle = titleColor;
+  const scaleLabel = isLinear ? 'LINEAR' : 'dB';
+  const modeLabel = displayMode === 'color' ? 'COLOR' : 'PROFILE';
+  ctx.fillStyle = '#6B9BD2';
   ctx.font = 'bold 10px monospace';
   ctx.textAlign = 'left';
-  ctx.fillText(isLinear ? 'B-SCAN (LINEAR)' : 'B-SCAN (dB)', pad.left, 14);
+  ctx.fillText(`B-SCAN (${scaleLabel} / ${modeLabel})`, pad.left, 14);
 
   ctx.fillStyle = '#444444';
   ctx.font = '9px monospace';
   ctx.textAlign = 'right';
   ctx.fillText(`${numPos} pos × ${numBins} bins`, w - pad.right, 14);
 
-  // Color bar
-  const barW = 12;
-  const barH = plotH;
-  const barX = w - pad.right + 6;
-  const barY = pad.top;
-  for (let i = 0; i < barH; i++) {
-    const t = 1 - i / barH;
-    const [r, g, b] = jet(t);
-    ctx.fillStyle = `rgb(${r},${g},${b})`;
-    ctx.fillRect(barX, barY + i, barW, 1);
-  }
-  ctx.fillStyle = '#555555';
-  ctx.font = '8px monospace';
-  ctx.textAlign = 'left';
-  if (isLinear) {
-    ctx.fillText(linMax.toExponential(1), barX, barY - 4);
-    ctx.fillText(linMin.toExponential(1), barX, barY + barH + 10);
-  } else {
-    ctx.fillText(`${dbMax} dB`, barX, barY - 4);
-    ctx.fillText(`${dbMin} dB`, barX, barY + barH + 10);
+  // Color bar (only in color mode)
+  if (displayMode === 'color') {
+    const barW = 12;
+    const barH = plotH;
+    const barX = w - pad.right + 6;
+    const barY = pad.top;
+    for (let i = 0; i < barH; i++) {
+      const t = 1 - i / barH;
+      const [r, g, b] = jet(t);
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(barX, barY + i, barW, 1);
+    }
+    ctx.fillStyle = '#555555';
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'left';
+    if (isLinear) {
+      ctx.fillText(linMax.toExponential(1), barX, barY - 4);
+      ctx.fillText(linMin.toExponential(1), barX, barY + barH + 10);
+    } else {
+      ctx.fillText(`${dbMax.toFixed(0)} dB`, barX, barY - 4);
+      ctx.fillText(`${dbMin.toFixed(0)} dB`, barX, barY + barH + 10);
+    }
   }
 
-  // Wall boundary indicator (wall front = where wall begins)
+  // Wall boundary indicator
   {
     const wallFrontM = wallStandoff / 100;
     const distRange = maxDist - minDist;
 
     if (wallFrontM > minDist && wallFrontM < maxDist) {
-      const yFrac = (wallFrontM - minDist) / distRange;
-      const y = pad.top + yFrac * plotH;
+      const xFrac = (wallFrontM - minDist) / distRange;
+      const x = pad.left + xFrac * plotW;
       ctx.setLineDash([4, 4]);
       ctx.strokeStyle = '#f59e0b88';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(pad.left, y);
-      ctx.lineTo(w - pad.right, y);
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, h - pad.bottom);
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.fillStyle = '#f59e0b';
       ctx.font = '8px monospace';
       ctx.textAlign = 'left';
-      ctx.fillText('wall front', pad.left + 4, y - 3);
+      ctx.fillText('wall', x + 3, pad.top + 10);
     }
   }
 
@@ -244,11 +361,12 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear) {
     const relX = (crosshair.x - pad.left) / plotW;
     const relY = (crosshair.y - pad.top) / plotH;
     if (relX >= 0 && relX <= 1 && relY >= 0 && relY <= 1) {
-      const posIdx = Math.min(numPos - 1, Math.floor(relX * numPos));
-      const binIdx = Math.min(numBins - 1, Math.floor(relY * numBins));
+      const binIdx = Math.min(numBins - 1, Math.floor(relX * numBins));
+      const rowIdx = Math.min(totalRows - 1, Math.floor(relY * totalRows));
+      const isBgRow = hasBg && rowIdx === 0;
+      const mags = getMagsForRow(rowIdx);
       const dist = distances[binIdx];
-      const pos = posIdx * stepSize;
-      const db = scanData[posIdx].magnitudes[startBin + binIdx];
+      const db = (startBin + binIdx < mags.length) ? mags[startBin + binIdx] : dbMin;
 
       ctx.setLineDash([3, 3]);
       ctx.strokeStyle = '#ffffff44';
@@ -269,33 +387,61 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear) {
       const valLabel = isLinear
         ? Math.pow(10, db / 20).toExponential(2)
         : `${db.toFixed(1)}dB`;
-      const label = `${pos.toFixed(1)}cm, ${dist.toFixed(2)}m, ${valLabel}`;
-      const labelX = crosshair.x + 10 > w - 160 ? crosshair.x - 160 : crosshair.x + 10;
+      const posLabel = isBgRow ? 'BG REF' : `pos ${((hasBg ? rowIdx - 1 : rowIdx) * stepSize).toFixed(0)}cm`;
+      const label = `${posLabel} | ${dist.toFixed(2)}m | ${valLabel}`;
+      const labelX = crosshair.x + 10 > w - 220 ? crosshair.x - 220 : crosshair.x + 10;
       ctx.fillText(label, labelX, crosshair.y - 8);
     }
   }
 }
 
-export default function BscanDisplay({ scanData, params, capturing, sfcwProgress }) {
-  const dbCanvasRef = useRef(null);
-  const linCanvasRef = useRef(null);
+export default function BscanDisplay({ scanData, bgDisplay, params, capturing, sfcwProgress, scaleMode, displayMode, targetShifts, targetBgShift }) {
+  const canvasRef = useRef(null);
   const animRef = useRef(null);
-  const [crosshairDb, setCrosshairDb] = useState(null);
-  const [crosshairLin, setCrosshairLin] = useState(null);
+  const [crosshair, setCrosshair] = useState(null);
+  const currentShiftsRef = useRef([]);
+  const currentBgShiftRef = useRef(0);
 
-  const draw = useCallback(() => {
-    drawBscan(dbCanvasRef.current, scanData, params, crosshairDb, false);
-    drawBscan(linCanvasRef.current, scanData, params, crosshairLin, true);
-  }, [scanData, params, crosshairDb, crosshairLin]);
+  const isLinear = scaleMode === 'linear';
+  const mode = displayMode || 'color';
+
+  const lerpSpeed = 0.08;
 
   useEffect(() => {
     const render = () => {
-      draw();
+      // Lerp current shifts toward target shifts
+      const targets = targetShifts || [];
+      const current = currentShiftsRef.current;
+
+      // Resize current array if needed
+      while (current.length < targets.length) current.push(0);
+      if (current.length > targets.length) current.length = targets.length;
+
+      for (let i = 0; i < current.length; i++) {
+        const target = targets[i] || 0;
+        const diff = target - current[i];
+        if (Math.abs(diff) < 0.01) {
+          current[i] = target;
+        } else {
+          current[i] += diff * lerpSpeed;
+        }
+      }
+
+      // Lerp BG shift
+      const bgTarget = targetBgShift || 0;
+      const bgDiff = bgTarget - currentBgShiftRef.current;
+      if (Math.abs(bgDiff) < 0.01) {
+        currentBgShiftRef.current = bgTarget;
+      } else {
+        currentBgShiftRef.current += bgDiff * lerpSpeed;
+      }
+
+      drawBscan(canvasRef.current, scanData, params, crosshair, isLinear, mode, bgDisplay, current, currentBgShiftRef.current);
       animRef.current = requestAnimationFrame(render);
     };
     animRef.current = requestAnimationFrame(render);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [draw]);
+  }, [scanData, params, crosshair, isLinear, mode, bgDisplay, targetShifts, targetBgShift]);
 
   return (
     <div className="flex flex-col w-full h-full">
@@ -308,29 +454,15 @@ export default function BscanDisplay({ scanData, params, capturing, sfcwProgress
         </div>
       )}
 
-      {/* dB scale (top) */}
       <div className="relative flex-1 min-h-0">
         <canvas
-          ref={dbCanvasRef}
+          ref={canvasRef}
           className="absolute inset-0 w-full h-full"
           onMouseMove={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
-            setCrosshairDb({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+            setCrosshair({ x: e.clientX - rect.left, y: e.clientY - rect.top });
           }}
-          onMouseLeave={() => setCrosshairDb(null)}
-        />
-      </div>
-
-      {/* Linear scale (bottom) */}
-      <div className="relative border-t border-white/5" style={{ flex: '0 0 45%' }}>
-        <canvas
-          ref={linCanvasRef}
-          className="absolute inset-0 w-full h-full"
-          onMouseMove={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            setCrosshairLin({ x: e.clientX - rect.left, y: e.clientY - rect.top });
-          }}
-          onMouseLeave={() => setCrosshairLin(null)}
+          onMouseLeave={() => setCrosshair(null)}
         />
       </div>
     </div>

@@ -62,8 +62,14 @@ export default function Sidebar({
   onSvdEnabledChange,
   onSvdKChange,
   onSvdStrengthChange,
+  bscanScaleMode,
+  onBscanScaleModeChange,
+  bscanDisplayMode,
+  onBscanDisplayModeChange,
   alignEnabled,
   onAlignEnabledChange,
+  alignNormEnabled,
+  onAlignNormEnabledChange,
   alignBgCaptured,
   onAlignBgCapture,
   onAlignBgClear,
@@ -245,6 +251,10 @@ export default function Sidebar({
                   onSvdEnabledChange={onSvdEnabledChange}
                   onSvdKChange={onSvdKChange}
                   onSvdStrengthChange={onSvdStrengthChange}
+                  scaleMode={bscanScaleMode}
+                  onScaleModeChange={onBscanScaleModeChange}
+                  displayMode={bscanDisplayMode}
+                  onDisplayModeChange={onBscanDisplayModeChange}
                 />
               )}
               {activePanel === 'aligned' && (
@@ -252,6 +262,8 @@ export default function Sidebar({
                   scanData={bscanData}
                   alignEnabled={alignEnabled}
                   onAlignEnabledChange={onAlignEnabledChange}
+                  normEnabled={alignNormEnabled}
+                  onNormEnabledChange={onAlignNormEnabledChange}
                   bgCaptured={alignBgCaptured}
                   onBgCapture={onAlignBgCapture}
                   onBgClear={onAlignBgClear}

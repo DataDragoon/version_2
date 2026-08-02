@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
 
-export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange }) {
+export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange }) {
   const { stepSize, numPositions, wallStandoff, wallThickness, wallPermittivity } = params;
 
   const update = (key, value) => {
@@ -40,6 +40,65 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
         <div className="grid grid-cols-2 gap-2">
           <InfoTile label="Aperture" value={`${apertureLength.toFixed(1)} cm`} />
           <InfoTile label="Captured" value={`${captured} / ${numPositions}`} />
+        </div>
+        {captured > 0 && scanData[captured - 1].lidar_standoff_mm != null && (
+          <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
+            Last lidar standoff: {scanData[captured - 1].lidar_standoff_mm.toFixed(1)} mm
+          </div>
+        )}
+      </Section>
+
+      <Section label="Scale">
+        <div className="flex gap-2">
+          <button
+            onClick={() => onScaleModeChange('linear')}
+            className={cn(
+              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              scaleMode === 'linear'
+                ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            Linear
+          </button>
+          <button
+            onClick={() => onScaleModeChange('db')}
+            className={cn(
+              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              scaleMode === 'db'
+                ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            dB
+          </button>
+        </div>
+      </Section>
+
+      <Section label="Display">
+        <div className="flex gap-2">
+          <button
+            onClick={() => onDisplayModeChange('color')}
+            className={cn(
+              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              displayMode === 'color'
+                ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            Color
+          </button>
+          <button
+            onClick={() => onDisplayModeChange('profile')}
+            className={cn(
+              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              displayMode === 'profile'
+                ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            Range Profile
+          </button>
         </div>
       </Section>
 

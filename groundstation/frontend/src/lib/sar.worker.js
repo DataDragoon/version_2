@@ -221,7 +221,7 @@ self.onmessage = function (e) {
   const t0 = performance.now();
 
   const { stepSize, wallStandoff, wallThickness, wallPermittivity } = bscanParams;
-  const { pixelsX, pixelsZ, window: windowType } = sarParams;
+  const { pixelsX, pixelsZ, window: windowType, coherent: useCoherent } = sarParams;
 
   const numPositions = bscanData.length;
   if (numPositions < 2) {
@@ -233,7 +233,7 @@ self.onmessage = function (e) {
   const depthMin = 0;
   const depthMax = (wallStandoff + wallThickness) / 100;
 
-  const hasComplex = bscanData[0].h_cal_real && bscanData[0].h_cal_imag && bscanData[0].freqs;
+  const hasComplex = useCoherent && bscanData[0].h_cal_real && bscanData[0].h_cal_imag && bscanData[0].freqs;
 
   const antennaX = [];
   for (let p = 0; p < numPositions; p++) {
@@ -245,8 +245,8 @@ self.onmessage = function (e) {
   const latMax = apertureLength;
 
   const wallStandoffM = (wallStandoff || 0) / 100;
-  const wallThicknessM = (wallThickness || 15) / 100;
-  const sqrtEr = Math.sqrt(wallPermittivity || 4.5);
+  const wallThicknessM = (wallThickness || 30) / 100;
+  const sqrtEr = Math.sqrt(wallPermittivity || 1);
 
   const image = new Float64Array(pixelsX * pixelsZ);
 

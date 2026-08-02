@@ -26,8 +26,12 @@ export default function Viewport({
   sfcwRunning,
   sfcwRangeScale,
   bscanData,
+  bscanBgDisplay,
+  bscanAlignShifts,
   bscanParams,
   bscanCapturing,
+  bscanScaleMode,
+  bscanDisplayMode,
   alignedDisplayData,
   sarResult,
   sarProgress,
@@ -165,11 +169,17 @@ export default function Viewport({
     );
   }
 
-  if (activePanel === 'bscan') {
+  if (activePanel === 'bscan' || activePanel === 'aligned') {
+    const isAligned = activePanel === 'aligned';
+    const label = isAligned ? 'Aligned B-Scan' : 'B-Scan Imaging';
+    const icon = isAligned ? AlignVerticalSpaceBetween : ScanLine;
+    const targetScanShifts = isAligned ? bscanAlignShifts.scanShifts : bscanData.map(() => 0);
+    const targetBgShift = isAligned ? bscanAlignShifts.bgShift : 0;
+
     return (
       <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
         <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
-          <PaneHeader icon={ScanLine} label="B-Scan Imaging" active={bscanData.length > 0} color="cyan" />
+          <PaneHeader icon={icon} label={label} active={bscanData.length > 0} color="cyan" />
           <div className="flex-1 min-h-0 relative overflow-hidden">
             {bscanData.length > 0 && (
               <div className="absolute inset-0 pointer-events-none">
@@ -178,41 +188,18 @@ export default function Viewport({
             )}
             <BscanDisplay
               scanData={bscanData}
+              bgDisplay={bscanBgDisplay}
               params={bscanParams}
               capturing={bscanCapturing}
               sfcwProgress={sfcwProgress}
+              scaleMode={bscanScaleMode}
+              displayMode={bscanDisplayMode}
+              targetShifts={targetScanShifts}
+              targetBgShift={targetBgShift}
             />
             {bscanData.length === 0 && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No scan data</span>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (activePanel === 'aligned') {
-    return (
-      <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
-        <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
-          <PaneHeader icon={AlignVerticalSpaceBetween} label="Aligned B-Scan" active={alignedDisplayData && alignedDisplayData.length > 0} color="cyan" />
-          <div className="flex-1 min-h-0 relative overflow-hidden">
-            {alignedDisplayData && alignedDisplayData.length > 0 && (
-              <div className="absolute inset-0 pointer-events-none">
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#6B9BD2]/4 blur-[80px] rounded-full" />
-              </div>
-            )}
-            <BscanDisplay
-              scanData={alignedDisplayData || []}
-              params={bscanParams}
-              capturing={bscanCapturing}
-              sfcwProgress={sfcwProgress}
-            />
-            {(!alignedDisplayData || alignedDisplayData.length === 0) && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No scan data — capture B-scan positions first</span>
               </div>
             )}
           </div>

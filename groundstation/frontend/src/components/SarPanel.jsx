@@ -3,7 +3,7 @@ import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
 
 export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarResult, sarProgress, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, wallStandoff, wallThickness, wallPermittivity, onWallParamsChange }) {
-  const { pixelsX, pixelsZ, window: windowType } = sarParams;
+  const { pixelsX, pixelsZ, window: windowType, coherent, useAligned } = sarParams;
 
   const update = (key, value) => {
     onSarParamsChange({ ...sarParams, [key]: value });
@@ -40,6 +40,60 @@ export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarR
         )}
         <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
           Uses B-scan panel settings: dist range, wall model, SVD filter.
+        </div>
+      </Section>
+
+      <Section label="Source">
+        <div className="flex gap-2">
+          <button
+            onClick={() => update('useAligned', false)}
+            className={cn(
+              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              !useAligned
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            B-Scan
+          </button>
+          <button
+            onClick={() => update('useAligned', true)}
+            className={cn(
+              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              useAligned
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            Aligned
+          </button>
+        </div>
+      </Section>
+
+      <Section label="Mode">
+        <div className="flex gap-2">
+          <button
+            onClick={() => update('coherent', false)}
+            className={cn(
+              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              !coherent
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            Incoherent
+          </button>
+          <button
+            onClick={() => update('coherent', true)}
+            className={cn(
+              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              coherent
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            Coherent
+          </button>
         </div>
       </Section>
 
