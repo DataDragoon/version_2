@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
 
-export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarResult, sarProgress }) {
-  const { pixelsX, pixelsZ, lateralMin, lateralMax, window: windowType } = sarParams;
+export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarResult, sarProgress, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, wallStandoff, wallThickness, wallPermittivity, onWallParamsChange }) {
+  const { pixelsX, pixelsZ, window: windowType } = sarParams;
 
   const update = (key, value) => {
     onSarParamsChange({ ...sarParams, [key]: value });
@@ -91,23 +91,73 @@ export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarR
         </div>
       </Section>
 
-      <Section label="Lateral Range">
+
+      <Section label="Wall">
         <div className="grid grid-cols-2 gap-2">
           <EditableField
-            label="Lat Min"
-            value={lateralMin !== undefined && lateralMin !== null ? lateralMin : 0}
-            unit="m"
-            onChange={(v) => update('lateralMin', v)}
-            min={-5}
-            max={5}
+            label="Standoff"
+            value={wallStandoff}
+            unit="cm"
+            onChange={(v) => onWallParamsChange('wallStandoff', v)}
+            min={0}
+            max={100}
           />
           <EditableField
-            label="Lat Max"
-            value={lateralMax !== undefined && lateralMax !== null ? lateralMax : (numPositions > 1 ? ((numPositions - 1) * 5 / 100) : 1)}
-            unit="m"
-            onChange={(v) => update('lateralMax', v)}
-            min={-5}
-            max={5}
+            label="Thickness"
+            value={wallThickness}
+            unit="cm"
+            onChange={(v) => onWallParamsChange('wallThickness', v)}
+            min={1}
+            max={100}
+          />
+        </div>
+        <div className="grid grid-cols-1 gap-2">
+          <EditableField
+            label="Permittivity εr"
+            value={wallPermittivity}
+            unit=""
+            onChange={(v) => onWallParamsChange('wallPermittivity', v)}
+            min={1}
+            max={20}
+          />
+        </div>
+        <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
+          v_wall = c/√εr = {(299792458 / Math.sqrt(wallPermittivity) / 1e6).toFixed(1)} m/ms.
+          {' '}Depth: {wallStandoff + wallThickness} cm.
+        </div>
+      </Section>
+
+      <Section label="SVD Filter">
+        <button
+          onClick={() => onSvdEnabledChange(!svdEnabled)}
+          disabled={numPositions < 2}
+          className={cn(
+            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+            numPositions < 2
+              ? 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
+              : svdEnabled
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+          )}
+        >
+          {svdEnabled ? '● SVD ON' : 'SVD OFF'}
+        </button>
+        <div className="grid grid-cols-2 gap-2">
+          <EditableField
+            label="k (remove)"
+            value={svdK}
+            unit=""
+            onChange={(v) => onSvdKChange(Math.round(v))}
+            min={1}
+            max={Math.max(1, numPositions - 1)}
+          />
+          <EditableField
+            label="Strength"
+            value={svdStrength}
+            unit=""
+            onChange={(v) => onSvdStrengthChange(v)}
+            min={0.01}
+            max={1}
           />
         </div>
       </Section>

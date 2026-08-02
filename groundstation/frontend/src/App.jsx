@@ -57,10 +57,7 @@ export default function App() {
   const [bscanParams, setBscanParams] = useState({
     stepSize: 5,
     numPositions: 20,
-    distMin: 0,
-    distMax: null,
-    wallEnabled: true,
-    wallStandoff: 5,
+    wallStandoff: 0,
     wallThickness: 15,
     wallPermittivity: 4.5,
   });
@@ -79,8 +76,6 @@ export default function App() {
   const [sarParams, setSarParams] = useState({
     pixelsX: 100,
     pixelsZ: 100,
-    lateralMin: undefined,
-    lateralMax: undefined,
     window: 'blackman-harris',
   });
 
@@ -204,7 +199,15 @@ export default function App() {
             if (imported.data && Array.isArray(imported.data)) {
               setBscanData(imported.data);
               if (imported.params) {
-                setBscanParams(prev => ({ ...prev, ...imported.params }));
+                const { stepSize, numPositions, wallStandoff, wallThickness, wallPermittivity } = imported.params;
+                setBscanParams(prev => ({
+                  ...prev,
+                  ...(stepSize != null && { stepSize }),
+                  ...(numPositions != null && { numPositions }),
+                  ...(wallStandoff != null && { wallStandoff }),
+                  ...(wallThickness != null && { wallThickness }),
+                  ...(wallPermittivity != null && { wallPermittivity }),
+                }));
               }
             }
           } catch (err) {

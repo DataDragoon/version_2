@@ -19,6 +19,7 @@ function correctDistancesForWall(distances, wallStandoff, wallThickness, wallPer
   const wallApparentThickness = thicknessM * sqrtEr;
   const wallFrontApparent = standoffM;
   const wallBackApparent = standoffM + wallApparentThickness;
+  const maxCorrected = standoffM + thicknessM;
 
   return distances.map(d => {
     if (d <= wallFrontApparent) {
@@ -26,7 +27,7 @@ function correctDistancesForWall(distances, wallStandoff, wallThickness, wallPer
     } else if (d <= wallBackApparent) {
       return standoffM + (d - wallFrontApparent) / sqrtEr;
     } else {
-      return standoffM + thicknessM + (d - wallBackApparent);
+      return maxCorrected;
     }
   });
 }
@@ -59,23 +60,22 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear) {
 
   const numPos = scanData.length;
   const rawDistances = scanData[0].distances;
-  const { stepSize, distMin, distMax, wallEnabled, wallStandoff, wallThickness, wallPermittivity } = params;
-  const allDistances = wallEnabled
-    ? correctDistancesForWall(rawDistances, wallStandoff, wallThickness, wallPermittivity)
-    : rawDistances;
+  const { stepSize, wallStandoff, wallThickness, wallPermittivity } = params;
+  const standoffM = wallStandoff / 100;
+  const thicknessM = wallThickness / 100;
+  const sqrtEr = Math.sqrt(wallPermittivity);
+  const wallBackApparent = standoffM + thicknessM * sqrtEr;
   const apertureLen = (numPos - 1) * stepSize;
 
-  // Distance range filtering
-  const dMin = distMin || 0;
-  const dMax = distMax || allDistances[allDistances.length - 1];
+  // Clip at the apparent wall back in raw distance space
   let startBin = 0;
-  let endBin = allDistances.length - 1;
-  for (let i = 0; i < allDistances.length; i++) {
-    if (allDistances[i] >= dMin) { startBin = i; break; }
+  let endBin = rawDistances.length - 1;
+  for (let i = rawDistances.length - 1; i >= 0; i--) {
+    if (rawDistances[i] <= wallBackApparent) { endBin = i; break; }
   }
-  for (let i = allDistances.length - 1; i >= 0; i--) {
-    if (allDistances[i] <= dMax) { endBin = i; break; }
-  }
+
+  // Correct only the clipped range for display
+  const allDistances = correctDistancesForWall(rawDistances, wallStandoff, wallThickness, wallPermittivity);
   const numBins = endBin - startBin + 1;
   const distances = allDistances.slice(startBin, endBin + 1);
   const maxDist = distances[distances.length - 1];
@@ -179,7 +179,7 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear) {
   ctx.fillStyle = '#444444';
   ctx.font = '9px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('Range (m)', 0, 0);
+  ctx.fillText('Depth (m)', 0, 0);
   ctx.restore();
 
   // Title
@@ -216,15 +216,13 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear) {
     ctx.fillText(`${dbMin} dB`, barX, barY + barH + 10);
   }
 
-  // Wall boundary indicators
-  if (wallEnabled) {
+  // Wall boundary indicator (wall front = where wall begins)
+  {
     const wallFrontM = wallStandoff / 100;
-    const wallBackM = wallFrontM + wallThickness / 100;
     const distRange = maxDist - minDist;
 
-    const drawWallLine = (distM, label) => {
-      if (distM < minDist || distM > maxDist) return;
-      const yFrac = (distM - minDist) / distRange;
+    if (wallFrontM > minDist && wallFrontM < maxDist) {
+      const yFrac = (wallFrontM - minDist) / distRange;
       const y = pad.top + yFrac * plotH;
       ctx.setLineDash([4, 4]);
       ctx.strokeStyle = '#f59e0b88';
@@ -237,11 +235,8 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear) {
       ctx.fillStyle = '#f59e0b';
       ctx.font = '8px monospace';
       ctx.textAlign = 'left';
-      ctx.fillText(label, pad.left + 4, y - 3);
-    };
-
-    drawWallLine(wallFrontM, 'wall front');
-    drawWallLine(wallBackM, 'wall back');
+      ctx.fillText('wall front', pad.left + 4, y - 3);
+    }
   }
 
   // Crosshair

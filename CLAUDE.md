@@ -2,7 +2,8 @@
 
 ## Project Overview
 
-SFCW radar for through-wall imaging. See CONTEXT.md for full system description.
+SFCW radar for within-wall imaging (rebar, pipes, voids, studs — not beyond the wall).
+See CONTEXT.md for full system description.
 
 ## Key Facts
 

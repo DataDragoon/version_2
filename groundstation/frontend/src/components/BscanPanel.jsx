@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import { Section, InfoTile, ToggleButton } from './Sidebar';
+import { Section, InfoTile } from './Sidebar';
 
 export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange }) {
-  const { stepSize, numPositions, distMin, distMax, wallEnabled, wallStandoff, wallThickness, wallPermittivity } = params;
+  const { stepSize, numPositions, wallStandoff, wallThickness, wallPermittivity } = params;
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
@@ -197,73 +197,37 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
       </Section>
 
       <Section label="Wall">
-        <button
-          onClick={() => update('wallEnabled', !wallEnabled)}
-          className={cn(
-            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-            wallEnabled
-              ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
-              : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-          )}
-        >
-          {wallEnabled ? '● Wall Correction ON' : 'Wall Correction OFF'}
-        </button>
-        {wallEnabled && (
-          <>
-            <div className="grid grid-cols-2 gap-2">
-              <EditableField
-                label="Standoff"
-                value={wallStandoff}
-                unit="cm"
-                onChange={(v) => update('wallStandoff', v)}
-                min={0}
-                max={100}
-              />
-              <EditableField
-                label="Thickness"
-                value={wallThickness}
-                unit="cm"
-                onChange={(v) => update('wallThickness', v)}
-                min={1}
-                max={100}
-              />
-            </div>
-            <div className="grid grid-cols-1 gap-2">
-              <EditableField
-                label="Permittivity εr"
-                value={wallPermittivity}
-                unit=""
-                onChange={(v) => update('wallPermittivity', v)}
-                min={1}
-                max={20}
-              />
-            </div>
-            <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
-              v_wall = c/√εr = {(299792458 / Math.sqrt(wallPermittivity) / 1e6).toFixed(1)} m/ms.
-              {' '}Apparent range is corrected for slower propagation inside wall.
-            </div>
-          </>
-        )}
-      </Section>
-
-      <Section label="Display">
         <div className="grid grid-cols-2 gap-2">
           <EditableField
-            label="Dist Min"
-            value={distMin}
-            unit="m"
-            onChange={(v) => update('distMin', v)}
+            label="Standoff"
+            value={wallStandoff}
+            unit="cm"
+            onChange={(v) => update('wallStandoff', v)}
             min={0}
-            max={20}
+            max={100}
           />
           <EditableField
-            label="Dist Max"
-            value={distMax || (scanData.length > 0 ? scanData[0].distances[scanData[0].distances.length - 1] : 3)}
-            unit="m"
-            onChange={(v) => update('distMax', v)}
-            min={0.01}
+            label="Thickness"
+            value={wallThickness}
+            unit="cm"
+            onChange={(v) => update('wallThickness', v)}
+            min={1}
+            max={100}
+          />
+        </div>
+        <div className="grid grid-cols-1 gap-2">
+          <EditableField
+            label="Permittivity εr"
+            value={wallPermittivity}
+            unit=""
+            onChange={(v) => update('wallPermittivity', v)}
+            min={1}
             max={20}
           />
+        </div>
+        <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
+          v_wall = c/√εr = {(299792458 / Math.sqrt(wallPermittivity) / 1e6).toFixed(1)} m/ms.
+          {' '}Display: {wallStandoff} cm standoff + {wallThickness} cm wall = {wallStandoff + wallThickness} cm total depth.
         </div>
       </Section>
     </>

@@ -2,8 +2,10 @@
 
 ## Mission
 
-Through-wall imaging using a Stepped-Frequency Continuous Wave (SFCW) radar,
+Within-wall imaging using a Stepped-Frequency Continuous Wave (SFCW) radar,
 with OptiFlow-based positioning for coherent aperture synthesis.
+The goal is to image what is inside the wall (rebar, pipes, voids, studs),
+not what is beyond it.
 
 ---
 

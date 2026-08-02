@@ -106,11 +106,8 @@ function buildWindow(numFreqs, type) {
   return win;
 }
 
-function computeOpticalPath(lateral, depth, antennaX, wallEnabled, wallStandoffM, wallThicknessM, sqrtEr) {
+function computeOpticalPath(lateral, depth, antennaX, wallStandoffM, wallThicknessM, sqrtEr) {
   const dx = lateral - antennaX;
-  if (!wallEnabled) {
-    return 2 * Math.sqrt(dx * dx + depth * depth);
-  }
 
   const wallFront = wallStandoffM;
   const wallBack = wallStandoffM + wallThicknessM;
@@ -120,6 +117,43 @@ function computeOpticalPath(lateral, depth, antennaX, wallEnabled, wallStandoffM
   }
 
   const absDx = Math.abs(dx);
+
+  // No air layer — ray travels entirely through wall material
+  if (wallFront < 1e-9) {
+    if (depth <= wallBack) {
+      return 2 * sqrtEr * Math.sqrt(absDx * absDx + depth * depth);
+    }
+    const dBehind = depth - wallBack;
+    if (absDx < 1e-9) {
+      return 2 * (wallThicknessM * sqrtEr + dBehind);
+    }
+    // Snell's law: find refraction point at wall back
+    let sinT2 = absDx / Math.sqrt(absDx * absDx + depth * depth);
+    if (sinT2 > 0.999) sinT2 = 0.999;
+    for (let iter = 0; iter < 12; iter++) {
+      const cosT2 = Math.sqrt(1 - sinT2 * sinT2);
+      const tanT2 = sinT2 / cosT2;
+      const sinT1 = sinT2 * sqrtEr;
+      if (sinT1 >= 1) { sinT2 *= 0.9; continue; }
+      const cosT1 = Math.sqrt(1 - sinT1 * sinT1);
+      const tanT1 = sinT1 / cosT1;
+      const lateralUsed = wallThicknessM * tanT2 + dBehind * tanT1;
+      const residual = lateralUsed - absDx;
+      const dTanT2_dSin = 1 / (cosT2 * cosT2 * cosT2);
+      const dSinT1_dSin = sqrtEr;
+      const dTanT1_dSin = dSinT1_dSin / (cosT1 * cosT1 * cosT1);
+      const dLateral = wallThicknessM * dTanT2_dSin + dBehind * dTanT1_dSin;
+      sinT2 -= residual / dLateral;
+      if (sinT2 < 0) sinT2 = 0;
+      if (sinT2 > 0.999) sinT2 = 0.999;
+    }
+    const cosT2 = Math.sqrt(1 - sinT2 * sinT2);
+    const sinT1 = sinT2 * sqrtEr;
+    const cosT1 = Math.sqrt(1 - sinT1 * sinT1);
+    const wallPath = wallThicknessM / cosT2;
+    const airPath = dBehind / cosT1;
+    return 2 * (sqrtEr * wallPath + airPath);
+  }
 
   if (absDx < 1e-9) {
     if (depth <= wallBack) {
@@ -186,8 +220,8 @@ self.onmessage = function (e) {
   const { bscanData, bscanParams, sarParams, svdEnabled, svdK } = e.data;
   const t0 = performance.now();
 
-  const { stepSize, distMin, distMax, wallEnabled, wallStandoff, wallThickness, wallPermittivity } = bscanParams;
-  const { pixelsX, pixelsZ, lateralMin, lateralMax, window: windowType } = sarParams;
+  const { stepSize, wallStandoff, wallThickness, wallPermittivity } = bscanParams;
+  const { pixelsX, pixelsZ, window: windowType } = sarParams;
 
   const numPositions = bscanData.length;
   if (numPositions < 2) {
@@ -195,10 +229,9 @@ self.onmessage = function (e) {
     return;
   }
 
-  // Depth range from bscan distMin/distMax
-  const rawDistances = bscanData[0].distances;
-  const depthMin = distMin || 0;
-  const depthMax = distMax || rawDistances[rawDistances.length - 1];
+  // Depth range: 0 to standoff + thickness (within-wall imaging only)
+  const depthMin = 0;
+  const depthMax = (wallStandoff + wallThickness) / 100;
 
   const hasComplex = bscanData[0].h_cal_real && bscanData[0].h_cal_imag && bscanData[0].freqs;
 
@@ -208,10 +241,10 @@ self.onmessage = function (e) {
   }
   const apertureLength = (numPositions - 1) * stepSize / 100;
 
-  const latMin = lateralMin !== undefined && lateralMin !== null ? lateralMin : 0;
-  const latMax = lateralMax !== undefined && lateralMax !== null ? lateralMax : apertureLength;
+  const latMin = 0;
+  const latMax = apertureLength;
 
-  const wallStandoffM = (wallStandoff || 5) / 100;
+  const wallStandoffM = (wallStandoff || 0) / 100;
   const wallThicknessM = (wallThickness || 15) / 100;
   const sqrtEr = Math.sqrt(wallPermittivity || 4.5);
 
@@ -274,7 +307,7 @@ self.onmessage = function (e) {
         let sumIm = 0;
 
         for (let p = 0; p < numPositions; p++) {
-          const roundTrip = computeOpticalPath(lateral, depth, antennaX[p], wallEnabled, wallStandoffM, wallThicknessM, sqrtEr);
+          const roundTrip = computeOpticalPath(lateral, depth, antennaX[p], wallStandoffM, wallThicknessM, sqrtEr);
 
           for (let f = 0; f < numFreqs; f++) {
             const phase = k[f] * roundTrip;
@@ -292,7 +325,7 @@ self.onmessage = function (e) {
         image[zi * pixelsX + xi] = 20 * Math.log10(mag / (numPositions * numFreqs) + 1e-12);
       }
 
-      if (zi % 5 === 0 || zi === pixelsZ - 1) {
+      if (zi % 20 === 0 || zi === pixelsZ - 1) {
         self.postMessage({ type: 'progress', progress: (zi + 1) / pixelsZ });
       }
     }
@@ -330,7 +363,7 @@ self.onmessage = function (e) {
 
         let sum = 0;
         for (let p = 0; p < numPositions; p++) {
-          const roundTrip = computeOpticalPath(lateral, depth, antennaX[p], wallEnabled, wallStandoffM, wallThicknessM, sqrtEr) / 2;
+          const roundTrip = computeOpticalPath(lateral, depth, antennaX[p], wallStandoffM, wallThicknessM, sqrtEr) / 2;
 
           const binFloat = (roundTrip - distStart) / distStep;
           const binIdx = Math.floor(binFloat);
@@ -344,7 +377,7 @@ self.onmessage = function (e) {
         image[zi * pixelsX + xi] = 20 * Math.log10(sum / numPositions + 1e-12);
       }
 
-      if (zi % 5 === 0 || zi === pixelsZ - 1) {
+      if (zi % 20 === 0 || zi === pixelsZ - 1) {
         self.postMessage({ type: 'progress', progress: (zi + 1) / pixelsZ });
       }
     }

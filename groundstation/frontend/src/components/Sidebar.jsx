@@ -236,6 +236,16 @@ export default function Sidebar({
                   onSarParamsChange={onSarParamsChange}
                   sarResult={sarResult}
                   sarProgress={sarProgress}
+                  svdEnabled={svdEnabled}
+                  svdK={svdK}
+                  svdStrength={svdStrength}
+                  onSvdEnabledChange={onSvdEnabledChange}
+                  onSvdKChange={onSvdKChange}
+                  onSvdStrengthChange={onSvdStrengthChange}
+                  wallStandoff={bscanParams.wallStandoff}
+                  wallThickness={bscanParams.wallThickness}
+                  wallPermittivity={bscanParams.wallPermittivity}
+                  onWallParamsChange={(key, value) => onBscanParamsChange({ ...bscanParams, [key]: value })}
                 />
               )}
             </div>

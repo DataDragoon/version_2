@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import SarWorker from '../lib/sar.worker.js?worker';
 
 export function useSarWorker(bscanData, bscanParams, sarParams, svdEnabled, svdK) {
@@ -6,21 +6,7 @@ export function useSarWorker(bscanData, bscanParams, sarParams, svdEnabled, svdK
   const [sarProgress, setSarProgress] = useState(null);
   const workerRef = useRef(null);
   const debounceRef = useRef(null);
-
-  const getWorker = useCallback(() => {
-    if (!workerRef.current) {
-      workerRef.current = new SarWorker();
-      workerRef.current.onmessage = (e) => {
-        if (e.data.type === 'progress') {
-          setSarProgress(e.data.progress);
-        } else if (e.data.type === 'result') {
-          setSarResult(e.data.result);
-          setSarProgress(null);
-        }
-      };
-    }
-    return workerRef.current;
-  }, []);
+  const jobIdRef = useRef(0);
 
   useEffect(() => {
     return () => {
@@ -42,15 +28,29 @@ export function useSarWorker(bscanData, bscanParams, sarParams, svdEnabled, svdK
     }
 
     debounceRef.current = setTimeout(() => {
+      // Terminate stale worker and start fresh
       if (workerRef.current) {
         workerRef.current.terminate();
         workerRef.current = null;
       }
+
+      const jobId = ++jobIdRef.current;
       setSarProgress(0);
-      const worker = getWorker();
+
+      const worker = new SarWorker();
+      workerRef.current = worker;
+      worker.onmessage = (e) => {
+        if (jobIdRef.current !== jobId) return;
+        if (e.data.type === 'progress') {
+          setSarProgress(e.data.progress);
+        } else if (e.data.type === 'result') {
+          setSarResult(e.data.result);
+          setSarProgress(null);
+        }
+      };
       worker.postMessage({ bscanData, bscanParams, sarParams, svdEnabled, svdK });
-    }, 150);
-  }, [bscanData, bscanParams, sarParams, svdEnabled, svdK, getWorker]);
+    }, 300);
+  }, [bscanData, bscanParams, sarParams, svdEnabled, svdK]);
 
   return { sarResult, sarProgress };
 }
