@@ -160,7 +160,7 @@ export default function App() {
   // B-Scan state
   const [bscanData, setBscanData] = useState([]);
   const [bscanCapturing, setBscanCapturing] = useState(false);
-  const [bscanBgRef, setBscanBgRef] = useState(null);
+  const [bscanBgCaptured, setBscanBgCaptured] = useState(false);
   const bscanPendingRef = useRef(null);
   const [bscanParams, setBscanParams] = useState({
     stepSize: 5,
@@ -170,77 +170,15 @@ export default function App() {
     wallPermittivity: 4.5,
   });
 
-  // Peak alignment state
-  const [peakAlignEnabled, setPeakAlignEnabled] = useState(false);
-
-  // SVD filter state
+  // B-scan SVD filter state (used by bscan panel + sar)
   const [svdEnabled, setSvdEnabled] = useState(false);
   const [svdK, setSvdK] = useState(1);
   const [svdStrength, setSvdStrength] = useState(0.5);
 
-  // Frontend processing pipeline: IFFT → peak align → BG subtract (range domain) → SVD
-  const rangeProfileBscanData = useMemo(() => {
-    if (bscanData.length === 0) return bscanData;
-    const startHz = sfcwParams.startFreq * 1e6;
-    const stopHz = sfcwParams.stopFreq * 1e6;
-    return bscanData.map(pos => {
-      if (!pos.h_cal_real || !pos.h_cal_imag) return pos;
-      const numSteps = pos.h_cal_real.length;
-      const rp = computeRangeProfile(pos.h_cal_real, pos.h_cal_imag, numSteps, pos.step_size, pos.range_offset);
-      const freqs = [];
-      for (let i = 0; i < numSteps; i++) {
-        freqs.push(startHz + (i / (numSteps - 1)) * (stopHz - startHz));
-      }
-      return { ...pos, magnitudes: rp.magnitudes, distances: rp.distances, freqs };
-    });
-  }, [bscanData, sfcwParams.startFreq, sfcwParams.stopFreq]);
-
-  const alignedBscanData = useMemo(() => {
-    if (!peakAlignEnabled || rangeProfileBscanData.length < 2) return rangeProfileBscanData;
-    return peakAlign(rangeProfileBscanData);
-  }, [rangeProfileBscanData, peakAlignEnabled]);
-
-  const bgSubtractedBscanData = useMemo(() => {
-    if (!bscanBgRef || !bscanBgRef.h_cal_real || alignedBscanData.length === 0) return alignedBscanData;
-    const bgNumSteps = bscanBgRef.h_cal_real.length;
-    const bgRp = computeRangeProfile(bscanBgRef.h_cal_real, bscanBgRef.h_cal_imag, bgNumSteps, bscanBgRef.step_size, bscanBgRef.range_offset);
-    const bgNumBins = bgRp.magnitudes.length;
-
-    let bgPeakIdx = 0;
-    let bgPeakVal = -Infinity;
-    for (let i = 0; i < bgNumBins; i++) {
-      if (bgRp.magnitudes[i] > bgPeakVal) { bgPeakVal = bgRp.magnitudes[i]; bgPeakIdx = i; }
-    }
-
-    return alignedBscanData.map(pos => {
-      if (!pos.magnitudes) return pos;
-      const numBins = pos.magnitudes.length;
-
-      // Find this scan's peak to align BG against it
-      let scanPeakIdx = 0;
-      let scanPeakVal = -Infinity;
-      for (let i = 0; i < numBins; i++) {
-        if (pos.magnitudes[i] > scanPeakVal) { scanPeakVal = pos.magnitudes[i]; scanPeakIdx = i; }
-      }
-
-      const bgShift = scanPeakIdx - bgPeakIdx;
-      const newMags = new Array(numBins);
-      for (let i = 0; i < numBins; i++) {
-        const scanLin = Math.pow(10, pos.magnitudes[i] / 20);
-        const bgSrcIdx = i - bgShift;
-        const bgDb = (bgSrcIdx >= 0 && bgSrcIdx < bgNumBins) ? bgRp.magnitudes[bgSrcIdx] : bgRp.magnitudes[0];
-        const bgLin = Math.pow(10, bgDb / 20);
-        const diff = Math.max(scanLin - bgLin, 1e-12);
-        newMags[i] = 20 * Math.log10(diff);
-      }
-      return { ...pos, magnitudes: newMags };
-    });
-  }, [alignedBscanData, bscanBgRef]);
-
   const filteredBscanData = useMemo(() => {
-    if (!svdEnabled || bgSubtractedBscanData.length < 2) return bgSubtractedBscanData;
-    return svdFilter(bgSubtractedBscanData, svdK, svdStrength);
-  }, [bgSubtractedBscanData, svdEnabled, svdK, svdStrength]);
+    if (!svdEnabled || bscanData.length < 2) return bscanData;
+    return svdFilter(bscanData, svdK, svdStrength);
+  }, [bscanData, svdEnabled, svdK, svdStrength]);
 
   // SAR state (only SAR-specific params; depth/wall/svd come from bscan)
   const [sarParams, setSarParams] = useState({
@@ -250,6 +188,84 @@ export default function App() {
   });
 
   const { sarResult, sarProgress } = useSarWorker(filteredBscanData, bscanParams, sarParams, svdEnabled, svdK);
+
+  // Aligned panel state — independent processing pipeline
+  const [alignEnabled, setAlignEnabled] = useState(true);
+  const [alignBgRef, setAlignBgRef] = useState(null);
+  const [alignSvdEnabled, setAlignSvdEnabled] = useState(false);
+  const [alignSvdK, setAlignSvdK] = useState(1);
+  const [alignSvdStrength, setAlignSvdStrength] = useState(0.5);
+
+  // Aligned pipeline: IFFT → peak align → normalized BG subtract → SVD
+  const alignedDisplayData = useMemo(() => {
+    if (bscanData.length === 0) return [];
+    const startHz = sfcwParams.startFreq * 1e6;
+    const stopHz = sfcwParams.stopFreq * 1e6;
+
+    // Step 1: compute range profiles from raw complex
+    let processed = bscanData.map(pos => {
+      if (!pos.h_cal_real || !pos.h_cal_imag) return pos;
+      const numSteps = pos.h_cal_real.length;
+      const rp = computeRangeProfile(pos.h_cal_real, pos.h_cal_imag, numSteps, pos.step_size, pos.range_offset);
+      const freqs = [];
+      for (let i = 0; i < numSteps; i++) {
+        freqs.push(startHz + (i / (numSteps - 1)) * (stopHz - startHz));
+      }
+      return { ...pos, magnitudes: rp.magnitudes, distances: rp.distances, freqs };
+    });
+
+    // Step 2: peak align across scans
+    if (alignEnabled && processed.length >= 2) {
+      processed = peakAlign(processed);
+    }
+
+    // Step 3: normalized BG subtract (align BG peak to each scan's peak, normalize, subtract)
+    if (alignBgRef && alignBgRef.h_cal_real && alignBgRef.h_cal_imag) {
+      const bgNumSteps = alignBgRef.h_cal_real.length;
+      const bgRp = computeRangeProfile(alignBgRef.h_cal_real, alignBgRef.h_cal_imag, bgNumSteps, alignBgRef.step_size, alignBgRef.range_offset);
+      const bgNumBins = bgRp.magnitudes.length;
+
+      let bgPeakIdx = 0;
+      let bgPeakVal = -Infinity;
+      for (let i = 0; i < bgNumBins; i++) {
+        if (bgRp.magnitudes[i] > bgPeakVal) { bgPeakVal = bgRp.magnitudes[i]; bgPeakIdx = i; }
+      }
+      const bgPeakLin = Math.pow(10, bgPeakVal / 20);
+
+      processed = processed.map(pos => {
+        if (!pos.magnitudes) return pos;
+        const numBins = pos.magnitudes.length;
+
+        let scanPeakIdx = 0;
+        let scanPeakVal = -Infinity;
+        for (let i = 0; i < numBins; i++) {
+          if (pos.magnitudes[i] > scanPeakVal) { scanPeakVal = pos.magnitudes[i]; scanPeakIdx = i; }
+        }
+        const scanPeakLin = Math.pow(10, scanPeakVal / 20);
+
+        const bgShift = scanPeakIdx - bgPeakIdx;
+        const normFactor = scanPeakLin / bgPeakLin;
+
+        const newMags = new Array(numBins);
+        for (let i = 0; i < numBins; i++) {
+          const scanLin = Math.pow(10, pos.magnitudes[i] / 20);
+          const bgSrcIdx = i - bgShift;
+          const bgDb = (bgSrcIdx >= 0 && bgSrcIdx < bgNumBins) ? bgRp.magnitudes[bgSrcIdx] : bgRp.magnitudes[0];
+          const bgLin = Math.pow(10, bgDb / 20) * normFactor;
+          const diff = Math.max(scanLin - bgLin, 1e-12);
+          newMags[i] = 20 * Math.log10(diff);
+        }
+        return { ...pos, magnitudes: newMags };
+      });
+    }
+
+    // Step 4: SVD
+    if (alignSvdEnabled && processed.length >= 2) {
+      processed = svdFilter(processed, alignSvdK, alignSvdStrength);
+    }
+
+    return processed;
+  }, [bscanData, sfcwParams.startFreq, sfcwParams.stopFreq, alignEnabled, alignBgRef, alignSvdEnabled, alignSvdK, alignSvdStrength]);
 
   // IMU WebSocket
   const handleImuMessage = useCallback((msg) => {
@@ -289,6 +305,9 @@ export default function App() {
     } else if (msg.type === 'sfcw_status') {
       setSfcwRunning(msg.running);
       setSfcwStatus(msg);
+      if (msg.background_active !== undefined) {
+        setBscanBgCaptured(msg.background_active);
+      }
     } else if (msg.type === 'sfcw_result') {
       if (bscanPendingRef.current === 'capture') {
         const posData = {
@@ -304,11 +323,13 @@ export default function App() {
         bscanPendingRef.current = null;
         setBscanCapturing(false);
       } else if (bscanPendingRef.current === 'capture_bg') {
-        setBscanBgRef({
+        setBscanBgCaptured(true);
+        bscanPendingRef.current = null;
+        setBscanCapturing(false);
+      } else if (bscanPendingRef.current === 'capture_align_bg') {
+        setAlignBgRef({
           h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
           h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
-          magnitudes: [...msg.magnitudes],
-          distances: [...msg.distances],
           num_steps: msg.num_steps,
           step_size: msg.step_size,
           range_offset: msg.range_offset,
@@ -345,9 +366,10 @@ export default function App() {
     } else if (action === 'capture_bg') {
       bscanPendingRef.current = 'capture_bg';
       setBscanCapturing(true);
-      sendSdr({ cmd: 'sweep_capture' });
+      sendSdr({ cmd: 'sweep_capture_bg' });
     } else if (action === 'clear_bg') {
-      setBscanBgRef(null);
+      sendSdr({ cmd: 'bscan_clear_bg' });
+      setBscanBgCaptured(false);
     } else if (action === 'new') {
       setBscanData([]);
     } else if (action === 'undo') {
@@ -480,18 +502,32 @@ export default function App() {
         onSfcwRangeScaleChange={setSfcwRangeScale}
         bscanData={bscanData}
         bscanCapturing={bscanCapturing}
-        bscanBgCaptured={bscanBgRef !== null}
+        bscanBgCaptured={bscanBgCaptured}
         bscanParams={bscanParams}
         onBscanParamsChange={setBscanParams}
         onBscanAction={handleBscanAction}
-        peakAlignEnabled={peakAlignEnabled}
-        onPeakAlignEnabledChange={setPeakAlignEnabled}
         svdEnabled={svdEnabled}
         svdK={svdK}
         svdStrength={svdStrength}
         onSvdEnabledChange={setSvdEnabled}
         onSvdKChange={setSvdK}
         onSvdStrengthChange={setSvdStrength}
+        alignEnabled={alignEnabled}
+        onAlignEnabledChange={setAlignEnabled}
+        alignBgCaptured={alignBgRef !== null}
+        onAlignBgCapture={() => {
+          bscanPendingRef.current = 'capture_align_bg';
+          setBscanCapturing(true);
+          sendSdr({ cmd: 'sweep_capture' });
+        }}
+        onAlignBgClear={() => setAlignBgRef(null)}
+        alignSvdEnabled={alignSvdEnabled}
+        alignSvdK={alignSvdK}
+        alignSvdStrength={alignSvdStrength}
+        onAlignSvdEnabledChange={setAlignSvdEnabled}
+        onAlignSvdKChange={setAlignSvdK}
+        onAlignSvdStrengthChange={setAlignSvdStrength}
+        alignedDisplayData={alignedDisplayData}
         sarBscanData={bscanData}
         sarParams={sarParams}
         onSarParamsChange={setSarParams}
@@ -517,6 +553,7 @@ export default function App() {
         bscanData={filteredBscanData}
         bscanParams={bscanParams}
         bscanCapturing={bscanCapturing}
+        alignedDisplayData={alignedDisplayData}
         sarResult={sarResult}
         sarProgress={sarProgress}
       />

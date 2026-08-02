@@ -1,10 +1,11 @@
-import { Activity, Eye, Radio, Radar, ScanLine, Grid3x3, ChevronLeft, Wifi, WifiOff } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ScanLine, AlignVerticalSpaceBetween, Grid3x3, ChevronLeft, Wifi, WifiOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ImuPanel from './ImuPanel';
 import OptiFlowPanel from './OptiFlowPanel';
 import RfCalibPanel from './RfCalibPanel';
 import SfcwPanel from './SfcwPanel';
 import BscanPanel from './BscanPanel';
+import AlignedPanel from './AlignedPanel';
 import SarPanel from './SarPanel';
 
 const PANELS = [
@@ -13,6 +14,7 @@ const PANELS = [
   { id: 'rfcalib',   label: 'RF Calibrate', icon: Radio },
   { id: 'sfcw',      label: 'SFCW',      icon: Radar },
   { id: 'bscan',     label: 'B-Scan',    icon: ScanLine },
+  { id: 'aligned',   label: 'Aligned',   icon: AlignVerticalSpaceBetween },
   { id: 'sar',       label: 'SAR',       icon: Grid3x3 },
 ];
 
@@ -54,14 +56,24 @@ export default function Sidebar({
   bscanParams,
   onBscanParamsChange,
   onBscanAction,
-  peakAlignEnabled,
-  onPeakAlignEnabledChange,
   svdEnabled,
   svdK,
   svdStrength,
   onSvdEnabledChange,
   onSvdKChange,
   onSvdStrengthChange,
+  alignEnabled,
+  onAlignEnabledChange,
+  alignBgCaptured,
+  onAlignBgCapture,
+  onAlignBgClear,
+  alignSvdEnabled,
+  alignSvdK,
+  alignSvdStrength,
+  onAlignSvdEnabledChange,
+  onAlignSvdKChange,
+  onAlignSvdStrengthChange,
+  alignedDisplayData,
   sarBscanData,
   sarParams,
   onSarParamsChange,
@@ -227,14 +239,30 @@ export default function Sidebar({
                   params={bscanParams}
                   onParamsChange={onBscanParamsChange}
                   sfcwParams={sfcwParams}
-                  peakAlignEnabled={peakAlignEnabled}
-                  onPeakAlignEnabledChange={onPeakAlignEnabledChange}
                   svdEnabled={svdEnabled}
                   svdK={svdK}
                   svdStrength={svdStrength}
                   onSvdEnabledChange={onSvdEnabledChange}
                   onSvdKChange={onSvdKChange}
                   onSvdStrengthChange={onSvdStrengthChange}
+                />
+              )}
+              {activePanel === 'aligned' && (
+                <AlignedPanel
+                  scanData={bscanData}
+                  alignEnabled={alignEnabled}
+                  onAlignEnabledChange={onAlignEnabledChange}
+                  bgCaptured={alignBgCaptured}
+                  onBgCapture={onAlignBgCapture}
+                  onBgClear={onAlignBgClear}
+                  svdEnabled={alignSvdEnabled}
+                  svdK={alignSvdK}
+                  svdStrength={alignSvdStrength}
+                  onSvdEnabledChange={onAlignSvdEnabledChange}
+                  onSvdKChange={onAlignSvdKChange}
+                  onSvdStrengthChange={onAlignSvdStrengthChange}
+                  isConnected={isConnected}
+                  sdrConnected={sdrConnected}
                 />
               )}
               {activePanel === 'sar' && (
@@ -244,8 +272,6 @@ export default function Sidebar({
                   onSarParamsChange={onSarParamsChange}
                   sarResult={sarResult}
                   sarProgress={sarProgress}
-                  peakAlignEnabled={peakAlignEnabled}
-                  onPeakAlignEnabledChange={onPeakAlignEnabledChange}
                   svdEnabled={svdEnabled}
                   svdK={svdK}
                   svdStrength={svdStrength}

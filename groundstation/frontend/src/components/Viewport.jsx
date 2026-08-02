@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { Activity, Eye, Radio, Radar, ScanLine, Grid3x3, Zap } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ScanLine, AlignVerticalSpaceBetween, Grid3x3, Zap } from 'lucide-react';
 import ImuDisplay from './ImuDisplay';
 import OptiFlowDisplay from './OptiFlowDisplay';
 import WaveformDisplay from './WaveformDisplay';
@@ -28,6 +28,7 @@ export default function Viewport({
   bscanData,
   bscanParams,
   bscanCapturing,
+  alignedDisplayData,
   sarResult,
   sarProgress,
 }) {
@@ -184,6 +185,34 @@ export default function Viewport({
             {bscanData.length === 0 && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No scan data</span>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (activePanel === 'aligned') {
+    return (
+      <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
+        <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
+          <PaneHeader icon={AlignVerticalSpaceBetween} label="Aligned B-Scan" active={alignedDisplayData && alignedDisplayData.length > 0} color="cyan" />
+          <div className="flex-1 min-h-0 relative overflow-hidden">
+            {alignedDisplayData && alignedDisplayData.length > 0 && (
+              <div className="absolute inset-0 pointer-events-none">
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#6B9BD2]/4 blur-[80px] rounded-full" />
+              </div>
+            )}
+            <BscanDisplay
+              scanData={alignedDisplayData || []}
+              params={bscanParams}
+              capturing={bscanCapturing}
+              sfcwProgress={sfcwProgress}
+            />
+            {(!alignedDisplayData || alignedDisplayData.length === 0) && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No scan data — capture B-scan positions first</span>
               </div>
             )}
           </div>

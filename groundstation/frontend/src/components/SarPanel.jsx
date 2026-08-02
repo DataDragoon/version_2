@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
 
-export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarResult, sarProgress, peakAlignEnabled, onPeakAlignEnabledChange, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, wallStandoff, wallThickness, wallPermittivity, onWallParamsChange }) {
+export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarResult, sarProgress, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, wallStandoff, wallThickness, wallPermittivity, onWallParamsChange }) {
   const { pixelsX, pixelsZ, window: windowType } = sarParams;
 
   const update = (key, value) => {
@@ -125,23 +125,6 @@ export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarR
           v_wall = c/√εr = {(299792458 / Math.sqrt(wallPermittivity) / 1e6).toFixed(1)} m/ms.
           {' '}Depth: {wallStandoff + wallThickness} cm.
         </div>
-      </Section>
-
-      <Section label="Peak Align">
-        <button
-          onClick={() => onPeakAlignEnabledChange(!peakAlignEnabled)}
-          disabled={numPositions < 2}
-          className={cn(
-            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-            numPositions < 2
-              ? 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
-              : peakAlignEnabled
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-          )}
-        >
-          {peakAlignEnabled ? '● ALIGN ON' : 'ALIGN OFF'}
-        </button>
       </Section>
 
       <Section label="SVD Filter">

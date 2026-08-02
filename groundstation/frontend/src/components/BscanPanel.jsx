@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
 
-export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, onScanAction, params, onParamsChange, sfcwParams, peakAlignEnabled, onPeakAlignEnabledChange, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange }) {
+export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange }) {
   const { stepSize, numPositions, wallStandoff, wallThickness, wallPermittivity } = params;
 
   const update = (key, value) => {
@@ -158,26 +158,6 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
           >
             Import
           </button>
-        </div>
-      </Section>
-
-      <Section label="Peak Align">
-        <button
-          onClick={() => onPeakAlignEnabledChange(!peakAlignEnabled)}
-          disabled={scanData.length < 2}
-          className={cn(
-            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-            scanData.length < 2
-              ? 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
-              : peakAlignEnabled
-                ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-          )}
-        >
-          {peakAlignEnabled ? '● ALIGN ON' : 'ALIGN OFF'}
-        </button>
-        <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
-          Aligns all scans to the farthest first peak (wall reflection), compensating for standoff variation.
         </div>
       </Section>
 
