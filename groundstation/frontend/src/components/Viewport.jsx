@@ -24,6 +24,7 @@ export default function Viewport({
   sfcwResult,
   sfcwProgress,
   sfcwRunning,
+  sfcwRangeScale,
   bscanData,
   bscanParams,
   bscanCapturing,
@@ -150,6 +151,7 @@ export default function Viewport({
               sfcwResult={sfcwResult}
               sfcwProgress={sfcwProgress}
               sfcwRunning={sfcwRunning}
+              rangeScale={sfcwRangeScale}
             />
             {!sfcwResult && !sfcwRunning && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

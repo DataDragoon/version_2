@@ -224,9 +224,13 @@ class SDRServer:
                     'type': 'sfcw_result',
                     'distances': [round(d, 4) for d in data['distances']],
                     'magnitudes': [round(m, 2) for m in data['magnitudes']],
+                    'h_cal_real': data.get('h_cal_real', []),
+                    'h_cal_imag': data.get('h_cal_imag', []),
                     'range_resolution': round(data['range_resolution'], 4),
                     'max_range': round(data['max_range'], 4),
                     'num_steps': data['num_steps'],
+                    'step_size': data.get('step_size', 0),
+                    'range_offset': data.get('range_offset', 0),
                     'timestamp': data['timestamp'],
                 }
                 if 'phase_coherence' in data:

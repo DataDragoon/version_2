@@ -46,12 +46,16 @@ export default function Sidebar({
   onSfcwParamsChange,
   sfcwResult,
   coherenceResult,
+  sfcwRangeScale,
+  onSfcwRangeScaleChange,
   bscanData,
   bscanCapturing,
   bscanBgCaptured,
   bscanParams,
   onBscanParamsChange,
   onBscanAction,
+  peakAlignEnabled,
+  onPeakAlignEnabledChange,
   svdEnabled,
   svdK,
   svdStrength,
@@ -207,6 +211,8 @@ export default function Sidebar({
                   onParamsChange={onSfcwParamsChange}
                   coherenceResult={coherenceResult}
                   bgSubtractMode={sfcwStatus?.bg_subtract_mode || 'complex'}
+                  rangeScale={sfcwRangeScale}
+                  onRangeScaleChange={onSfcwRangeScaleChange}
                 />
               )}
               {activePanel === 'bscan' && (
@@ -221,6 +227,8 @@ export default function Sidebar({
                   params={bscanParams}
                   onParamsChange={onBscanParamsChange}
                   sfcwParams={sfcwParams}
+                  peakAlignEnabled={peakAlignEnabled}
+                  onPeakAlignEnabledChange={onPeakAlignEnabledChange}
                   svdEnabled={svdEnabled}
                   svdK={svdK}
                   svdStrength={svdStrength}
@@ -236,6 +244,8 @@ export default function Sidebar({
                   onSarParamsChange={onSarParamsChange}
                   sarResult={sarResult}
                   sarProgress={sarProgress}
+                  peakAlignEnabled={peakAlignEnabled}
+                  onPeakAlignEnabledChange={onPeakAlignEnabledChange}
                   svdEnabled={svdEnabled}
                   svdK={svdK}
                   svdStrength={svdStrength}

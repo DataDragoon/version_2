@@ -6,7 +6,7 @@ const BUFFER_SAMPLES = 1024;
 const SAMPLE_RATE = 2_000_000;
 const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
-export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, bgSubtractMode }) {
+export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, bgSubtractMode, rangeScale, onRangeScaleChange }) {
   const { startFreq, stopFreq, stepSize, settleTime, numBuffers, tx1Gain, rx1Gain, rangeOffset } = params;
   const [coherenceRunning, setCoherenceRunning] = useState(false);
 
@@ -237,6 +237,20 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             </div>
           </div>
         )}
+      </Section>
+
+      <Section label="Display Range">
+        <button
+          onClick={() => onRangeScaleChange(rangeScale && rangeScale.max === 0.3 ? { min: 0, max: 3 } : { min: 0, max: 0.3 })}
+          className={cn(
+            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+            rangeScale && rangeScale.max === 0.3
+              ? 'bg-[#D1855C]/10 border-[#D1855C]/30 text-[#D1855C]'
+              : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+          )}
+        >
+          {rangeScale && rangeScale.max === 0.3 ? '● 0 – 0.3 m' : '0 – 3 m'}
+        </button>
       </Section>
     </>
   );

@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
 import { cn } from '@/lib/utils';
 
 const BG = '#000000';
@@ -8,6 +8,15 @@ const CFAR_COLOR = 'rgba(78, 205, 196, 0.6)';
 const CFAR_FILL = 'rgba(78, 205, 196, 0.06)';
 const NOISE_FILL = 'rgba(255, 255, 255, 0.02)';
 const LINEAR_TRACE = '#6B9BD2';
+
+function jet(t) {
+  t = Math.max(0, Math.min(1, t));
+  return [
+    Math.round(255 * Math.min(1, Math.max(0, 1.5 - Math.abs(4 * t - 3)))),
+    Math.round(255 * Math.min(1, Math.max(0, 1.5 - Math.abs(4 * t - 2)))),
+    Math.round(255 * Math.min(1, Math.max(0, 1.5 - Math.abs(4 * t - 1)))),
+  ];
+}
 
 const CFAR_GUARD = 4;
 const CFAR_TRAIN = 16;
@@ -141,13 +150,16 @@ function computeRangeProfile(hCalReal, hCalImag, windowFn, zeroPadFactor) {
   return { magnitudeDb, nfft };
 }
 
-export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
+export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, rangeScale }) {
   const rangeCanvasRef = useRef(null);
-  const linearCanvasRef = useRef(null);
+  const waterfallCanvasRef = useRef(null);
   const animRef = useRef(null);
   const latestResult = useRef(null);
-  const [crosshairDb, setCrosshairDb] = useState(null);
-  const [crosshairLin, setCrosshairLin] = useState(null);
+  const [crosshairTrace, setCrosshairTrace] = useState(null);
+  const [crosshairWaterfall, setCrosshairWaterfall] = useState(null);
+
+  // Scale mode: 'db' or 'linear'
+  const [scaleMode, setScaleMode] = useState('db');
 
   // Windowing state
   const [windowType, setWindowType] = useState('kaiser');
@@ -159,13 +171,13 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
   const [avgCount, setAvgCount] = useState(1);
   const [averaged, setAveraged] = useState(null);
 
-  // Zoom/pan state for dB chart
-  const [dbView, setDbView] = useState({ xMin: 0, xMax: 1, yMin: -60, yMax: 40, autoY: true });
-  const dbDrag = useRef(null);
+  // Waterfall history buffer
+  const waterfallHistory = useRef([]);
+  const WATERFALL_MAX_ROWS = 100;
 
-  // Zoom/pan state for linear chart
-  const [linView, setLinView] = useState({ xMin: 0, xMax: 1, yMin: 0, yMax: 1, autoY: true });
-  const linDrag = useRef(null);
+  // Zoom/pan state for trace chart
+  const [traceView, setTraceView] = useState({ xMin: 0, xMax: 1, yMin: -60, yMax: 40, autoY: true });
+  const traceDrag = useRef(null);
 
   // CFAR params
   const [cfarGuard, setCfarGuard] = useState(CFAR_GUARD);
@@ -177,8 +189,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
   const [recomputed, setRecomputed] = useState(null);
 
   // Session-wide Y-axis tracking (only expands, never shrinks within a session)
-  const sessionYDb = useRef({ min: Infinity, max: -Infinity });
-  const sessionYLin = useRef({ min: Infinity, max: -Infinity });
+  const sessionY = useRef({ min: Infinity, max: -Infinity });
 
   // Store raw h_cal when it arrives
   useEffect(() => {
@@ -491,33 +502,202 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
     return { pad, plotW, plotH, yMin, yMax };
   }, [cfarGuard, cfarTrain, cfarAlpha, cfarEnabled]);
 
+  const drawWaterfall = useCallback((canvas, dists, view, crosshair, isDb) => {
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+    const w = rect.width;
+    const h = rect.height;
+
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, w, h);
+
+    const history = waterfallHistory.current;
+    if (history.length === 0) {
+      ctx.fillStyle = '#333333';
+      ctx.font = '11px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('Waterfall — waiting for sweeps', w / 2, h / 2);
+      return;
+    }
+
+    const pad = { top: 24, bottom: 36, left: 52, right: 20 };
+    const plotW = w - pad.left - pad.right;
+    const plotH = h - pad.top - pad.bottom;
+
+    const n = history[0].length;
+    const numRows = history.length;
+
+    // Find visible bin range from view
+    const startBin = Math.max(0, Math.floor(view.xMin * (n - 1)));
+    const endBin = Math.min(n - 1, Math.ceil(view.xMax * (n - 1)));
+    const visibleBins = endBin - startBin + 1;
+
+    // Dynamic color range from all visible history
+    let vMin = Infinity, vMax = -Infinity;
+    for (let row = 0; row < numRows; row++) {
+      for (let bin = startBin; bin <= endBin; bin++) {
+        const v = history[row][bin];
+        if (v < vMin) vMin = v;
+        if (v > vMax) vMax = v;
+      }
+    }
+    if (!isFinite(vMin)) vMin = 0;
+    if (!isFinite(vMax)) vMax = 1;
+    if (vMax - vMin < 1e-6) { vMin -= 0.5; vMax += 0.5; }
+
+    // Draw colormap
+    const cellW = plotW / visibleBins;
+    const cellH = plotH / WATERFALL_MAX_ROWS;
+
+    for (let row = 0; row < numRows; row++) {
+      for (let bin = startBin; bin <= endBin; bin++) {
+        const t = (history[row][bin] - vMin) / (vMax - vMin);
+        const [r, g, b] = jet(t);
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        const x = pad.left + (bin - startBin) * cellW;
+        const y = pad.top + (numRows - 1 - row) * cellH;
+        ctx.fillRect(x, y, Math.ceil(cellW) + 1, Math.ceil(cellH) + 1);
+      }
+    }
+
+    // X-axis labels (distance)
+    const maxDist = dists[dists.length - 1];
+    const minDist = dists[0];
+    const distRange = maxDist - minDist;
+    const xTicks = 6;
+    for (let i = 0; i <= xTicks; i++) {
+      const frac = view.xMin + (i / xTicks) * (view.xMax - view.xMin);
+      const x = pad.left + (i / xTicks) * plotW;
+      ctx.fillStyle = '#555555';
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${(minDist + frac * distRange).toFixed(2)} m`, x, h - pad.bottom + 14);
+    }
+
+    // Y-axis label
+    ctx.save();
+    ctx.translate(12, pad.top + plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillStyle = '#444444';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Sweep #', 0, 0);
+    ctx.restore();
+
+    // Title
+    ctx.fillStyle = '#D1855C';
+    ctx.font = 'bold 10px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(isDb ? 'WATERFALL (dB)' : 'WATERFALL (LINEAR)', pad.left, 14);
+
+    ctx.fillStyle = '#444444';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${numRows} sweeps`, w - pad.right, 14);
+
+    // Color bar
+    const barW = 12;
+    const barH = plotH;
+    const barX = w - pad.right + 6;
+    const barY = pad.top;
+    for (let i = 0; i < barH; i++) {
+      const t = 1 - i / barH;
+      const [r, g, b] = jet(t);
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(barX, barY + i, barW, 1);
+    }
+    ctx.fillStyle = '#555555';
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'left';
+    if (isDb) {
+      ctx.fillText(`${vMax.toFixed(0)} dB`, barX, barY - 4);
+      ctx.fillText(`${vMin.toFixed(0)} dB`, barX, barY + barH + 10);
+    } else {
+      ctx.fillText(vMax.toExponential(1), barX, barY - 4);
+      ctx.fillText(vMin.toExponential(1), barX, barY + barH + 10);
+    }
+
+    // Crosshair
+    if (crosshair) {
+      const relX = (crosshair.x - pad.left) / plotW;
+      if (relX >= 0 && relX <= 1) {
+        const frac = view.xMin + relX * (view.xMax - view.xMin);
+        const dist = minDist + frac * distRange;
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = '#ffffff44';
+        ctx.lineWidth = 0.5;
+        ctx.beginPath();
+        ctx.moveTo(crosshair.x, pad.top);
+        ctx.lineTo(crosshair.x, h - pad.bottom);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(`${dist.toFixed(2)} m`, crosshair.x + 8, crosshair.y - 4);
+      }
+    }
+  }, []);
+
+  // Push new data into waterfall history
+  useEffect(() => {
+    const dbMags = averaged || (recomputed ? recomputed.magnitudes : (sfcwResult && sfcwResult.magnitudes));
+    if (!dbMags) return;
+    const row = scaleMode === 'db' ? Array.from(dbMags) : Array.from(dbMags).map(db => Math.pow(10, db / 20));
+    waterfallHistory.current.push(row);
+    if (waterfallHistory.current.length > WATERFALL_MAX_ROWS) {
+      waterfallHistory.current.shift();
+    }
+  }, [averaged, recomputed, sfcwResult]);
+
+  // Clear waterfall when scale mode changes
+  useEffect(() => {
+    waterfallHistory.current = [];
+  }, [scaleMode]);
+
   useEffect(() => {
     const render = () => {
       const result = latestResult.current;
       if (result && (recomputed || result.magnitudes)) {
         const dists = recomputed ? Array.from(recomputed.distances) : result.distances;
         const dbMags = averaged || (recomputed ? recomputed.magnitudes : result.magnitudes);
-        const linMags = Array.from(dbMags).map(db => Math.pow(10, db / 20));
+        const isDb = scaleMode === 'db';
+        const mags = isDb ? dbMags : Array.from(dbMags).map(db => Math.pow(10, db / 20));
+        const traceColor = isDb ? TRACE_COLOR : LINEAR_TRACE;
+        const title = isDb ? 'RANGE PROFILE (dB)' : 'RANGE PROFILE (LINEAR)';
+
+        // Apply range scale to view
+        let view = traceView;
+        if (rangeScale && dists.length > 0) {
+          const maxDist = dists[dists.length - 1];
+          const minDist = dists[0];
+          const distRange = maxDist - minDist;
+          const xMin = Math.max(0, (rangeScale.min - minDist) / distRange);
+          const xMax = Math.min(1, (rangeScale.max - minDist) / distRange);
+          view = { ...traceView, xMin, xMax };
+        }
 
         drawChart(rangeCanvasRef.current, {
-          mags: dbMags, dists, view: dbView, traceColor: TRACE_COLOR,
-          title: 'RANGE PROFILE (dB)', crosshair: crosshairDb,
-          showCFAR: cfarEnabled, isDb: true, sessionY: sessionYDb,
+          mags, dists, view, traceColor,
+          title, crosshair: crosshairTrace,
+          showCFAR: cfarEnabled && isDb, isDb, sessionY,
         });
-        drawChart(linearCanvasRef.current, {
-          mags: linMags, dists, view: linView, traceColor: LINEAR_TRACE,
-          title: 'LINEAR SCALE', crosshair: crosshairLin,
-          showCFAR: false, isDb: false, sessionY: sessionYLin,
-        });
+        drawWaterfall(waterfallCanvasRef.current, dists, view, crosshairWaterfall, isDb);
       }
       animRef.current = requestAnimationFrame(render);
     };
     animRef.current = requestAnimationFrame(render);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [drawChart, dbView, linView, crosshairDb, crosshairLin, cfarEnabled, averaged, recomputed]);
+  }, [drawChart, traceView, crosshairTrace, crosshairWaterfall, cfarEnabled, averaged, recomputed, scaleMode, rangeScale]);
 
-  // Zoom handler factory
-  const makeWheelHandler = (view, setView) => (e) => {
+  // Zoom handler
+  const handleWheel = (e) => {
+    if (rangeScale) return; // disable manual zoom when range scale is active
     e.preventDefault();
     const canvas = e.currentTarget;
     const rect = canvas.getBoundingClientRect();
@@ -525,51 +705,48 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
     const plotW = rect.width - pad.left - pad.right;
     const mx = e.clientX - rect.left;
     const relX = (mx - pad.left) / plotW;
-    const frac = view.xMin + relX * (view.xMax - view.xMin);
+    const frac = traceView.xMin + relX * (traceView.xMax - traceView.xMin);
 
     const zoomFactor = e.deltaY > 0 ? 1.2 : 0.8;
-    const newXMin = frac - (frac - view.xMin) * zoomFactor;
-    const newXMax = frac + (view.xMax - frac) * zoomFactor;
+    const newXMin = frac - (frac - traceView.xMin) * zoomFactor;
+    const newXMax = frac + (traceView.xMax - frac) * zoomFactor;
 
-    setView(v => ({
+    setTraceView(v => ({
       ...v,
       xMin: Math.max(0, newXMin),
       xMax: Math.min(1, newXMax),
     }));
   };
 
-  // Pan handler factory
-  const makeMouseDown = (view, setView, dragRef) => (e) => {
+  // Pan handler
+  const handleMouseDown = (e) => {
+    if (rangeScale) return;
     if (e.button !== 0) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const pad = { left: 52, right: 16 };
     const plotW = rect.width - pad.left - pad.right;
     const mx = e.clientX - rect.left;
     if (mx < pad.left || mx > rect.width - pad.right) return;
-    dragRef.current = { startX: e.clientX, startView: { ...view } };
+    traceDrag.current = { startX: e.clientX, startView: { ...traceView } };
 
     const onMove = (me) => {
-      if (!dragRef.current) return;
-      const dx = me.clientX - dragRef.current.startX;
-      const xRange = dragRef.current.startView.xMax - dragRef.current.startView.xMin;
+      if (!traceDrag.current) return;
+      const dx = me.clientX - traceDrag.current.startX;
+      const xRange = traceDrag.current.startView.xMax - traceDrag.current.startView.xMin;
       const shift = -(dx / plotW) * xRange;
-      const newMin = Math.max(0, dragRef.current.startView.xMin + shift);
-      const newMax = Math.min(1, dragRef.current.startView.xMax + shift);
+      const newMin = Math.max(0, traceDrag.current.startView.xMin + shift);
+      const newMax = Math.min(1, traceDrag.current.startView.xMax + shift);
       if (newMax - newMin > 0.001) {
-        setView(v => ({ ...v, xMin: newMin, xMax: newMax }));
+        setTraceView(v => ({ ...v, xMin: newMin, xMax: newMax }));
       }
     };
     const onUp = () => {
-      dragRef.current = null;
+      traceDrag.current = null;
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
-  };
-
-  const resetZoom = (setView) => () => {
-    setView({ xMin: 0, xMax: 1, yMin: 0, yMax: 1, autoY: true });
   };
 
   return (
@@ -675,7 +852,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
 
         {/* Reset scale */}
         <button
-          onClick={() => { sessionYDb.current = { min: Infinity, max: -Infinity }; sessionYLin.current = { min: Infinity, max: -Infinity }; }}
+          onClick={() => { sessionY.current = { min: Infinity, max: -Infinity }; }}
           className="px-2 py-0.5 rounded text-[9px] text-white/40 border border-white/10 hover:text-white/70 hover:border-white/20 transition-all"
         >
           Reset Scale
@@ -683,40 +860,50 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning }) {
 
         {/* Reset zoom */}
         <button
-          onClick={() => { resetZoom(setDbView)(); resetZoom(setLinView)(); }}
+          onClick={() => setTraceView({ xMin: 0, xMax: 1, yMin: 0, yMax: 1, autoY: true })}
           className="px-2 py-0.5 rounded text-[9px] text-white/40 border border-white/10 hover:text-white/70 hover:border-white/20 transition-all"
         >
           Reset Zoom
         </button>
       </div>
 
-      {/* Range Profile (dB) */}
+      {/* Range Profile (trace) */}
       <div className="relative flex-1 min-h-0">
         <canvas
           ref={rangeCanvasRef}
           className="absolute inset-0 w-full h-full cursor-crosshair"
           onMouseMove={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
-            setCrosshairDb({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+            setCrosshairTrace({ x: e.clientX - rect.left, y: e.clientY - rect.top });
           }}
-          onMouseLeave={() => setCrosshairDb(null)}
-          onWheel={makeWheelHandler(dbView, setDbView)}
-          onMouseDown={makeMouseDown(dbView, setDbView, dbDrag)}
+          onMouseLeave={() => setCrosshairTrace(null)}
+          onWheel={handleWheel}
+          onMouseDown={handleMouseDown}
         />
+        {/* Scale toggle button */}
+        <button
+          onClick={() => { setScaleMode(m => m === 'db' ? 'linear' : 'db'); sessionY.current = { min: Infinity, max: -Infinity }; }}
+          className={cn(
+            'absolute bottom-10 left-14 px-2 py-1 rounded text-[9px] font-medium uppercase tracking-wider transition-all border z-10',
+            scaleMode === 'db'
+              ? 'bg-[#D1855C]/20 text-[#D1855C] border-[#D1855C]/30'
+              : 'bg-[#6B9BD2]/20 text-[#6B9BD2] border-[#6B9BD2]/30'
+          )}
+        >
+          {scaleMode === 'db' ? 'dB' : 'LIN'}
+        </button>
       </div>
 
-      {/* Linear Scale */}
+      {/* Waterfall */}
       <div className="relative border-t border-white/5" style={{ flex: '0 0 45%' }}>
         <canvas
-          ref={linearCanvasRef}
+          ref={waterfallCanvasRef}
           className="absolute inset-0 w-full h-full cursor-crosshair"
           onMouseMove={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
-            setCrosshairLin({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+            setCrosshairWaterfall({ x: e.clientX - rect.left, y: e.clientY - rect.top });
           }}
-          onMouseLeave={() => setCrosshairLin(null)}
-          onWheel={makeWheelHandler(linView, setLinView)}
-          onMouseDown={makeMouseDown(linView, setLinView, linDrag)}
+          onMouseLeave={() => setCrosshairWaterfall(null)}
         />
       </div>
     </div>
