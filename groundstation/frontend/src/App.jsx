@@ -160,7 +160,7 @@ export default function App() {
   // B-Scan state
   const [bscanData, setBscanData] = useState([]);
   const [bscanCapturing, setBscanCapturing] = useState(false);
-  const [bscanBgCaptured, setBscanBgCaptured] = useState(false);
+  const [bscanBgRef, setBscanBgRef] = useState(null);
   const bscanPendingRef = useRef(null);
   const [bscanParams, setBscanParams] = useState({
     stepSize: 5,
@@ -175,10 +175,31 @@ export default function App() {
   const [svdK, setSvdK] = useState(1);
   const [svdStrength, setSvdStrength] = useState(0.5);
 
+  // B-scan frontend processing: complex BG subtract → IFFT → SVD
+  const processedBscanData = useMemo(() => {
+    if (bscanData.length === 0) return bscanData;
+    return bscanData.map(pos => {
+      if (!pos.h_cal_real || !pos.h_cal_imag) return pos;
+      const numSteps = pos.h_cal_real.length;
+      let real = pos.h_cal_real;
+      let imag = pos.h_cal_imag;
+      if (bscanBgRef && bscanBgRef.h_cal_real && bscanBgRef.h_cal_imag) {
+        real = new Array(numSteps);
+        imag = new Array(numSteps);
+        for (let i = 0; i < numSteps; i++) {
+          real[i] = pos.h_cal_real[i] - bscanBgRef.h_cal_real[i];
+          imag[i] = pos.h_cal_imag[i] - bscanBgRef.h_cal_imag[i];
+        }
+      }
+      const rp = computeRangeProfile(real, imag, numSteps, pos.step_size, pos.range_offset);
+      return { ...pos, magnitudes: rp.magnitudes, distances: rp.distances };
+    });
+  }, [bscanData, bscanBgRef]);
+
   const filteredBscanData = useMemo(() => {
-    if (!svdEnabled || bscanData.length < 2) return bscanData;
-    return svdFilter(bscanData, svdK, svdStrength);
-  }, [bscanData, svdEnabled, svdK, svdStrength]);
+    if (!svdEnabled || processedBscanData.length < 2) return processedBscanData;
+    return svdFilter(processedBscanData, svdK, svdStrength);
+  }, [processedBscanData, svdEnabled, svdK, svdStrength]);
 
   // SAR state (only SAR-specific params; depth/wall/svd come from bscan)
   const [sarParams, setSarParams] = useState({
@@ -305,9 +326,6 @@ export default function App() {
     } else if (msg.type === 'sfcw_status') {
       setSfcwRunning(msg.running);
       setSfcwStatus(msg);
-      if (msg.background_active !== undefined) {
-        setBscanBgCaptured(msg.background_active);
-      }
     } else if (msg.type === 'sfcw_result') {
       if (bscanPendingRef.current === 'capture') {
         const posData = {
@@ -323,7 +341,13 @@ export default function App() {
         bscanPendingRef.current = null;
         setBscanCapturing(false);
       } else if (bscanPendingRef.current === 'capture_bg') {
-        setBscanBgCaptured(true);
+        setBscanBgRef({
+          h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
+          h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
+          num_steps: msg.num_steps,
+          step_size: msg.step_size,
+          range_offset: msg.range_offset,
+        });
         bscanPendingRef.current = null;
         setBscanCapturing(false);
       } else if (bscanPendingRef.current === 'capture_align_bg') {
@@ -366,21 +390,21 @@ export default function App() {
     } else if (action === 'capture_bg') {
       bscanPendingRef.current = 'capture_bg';
       setBscanCapturing(true);
-      sendSdr({ cmd: 'sweep_capture_bg' });
+      sendSdr({ cmd: 'sweep_capture' });
     } else if (action === 'clear_bg') {
-      sendSdr({ cmd: 'bscan_clear_bg' });
-      setBscanBgCaptured(false);
+      setBscanBgRef(null);
     } else if (action === 'new') {
       setBscanData([]);
     } else if (action === 'undo') {
       setBscanData(prev => prev.slice(0, -1));
     } else if (action === 'export') {
       const exportData = {
-        version: 1,
+        version: 2,
         timestamp: new Date().toISOString(),
         params: bscanParams,
         sfcwParams: sfcwParams,
         data: bscanData,
+        bgRef: bscanBgRef,
       };
       const blob = new Blob([JSON.stringify(exportData)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -402,6 +426,9 @@ export default function App() {
             const imported = JSON.parse(ev.target.result);
             if (imported.data && Array.isArray(imported.data)) {
               setBscanData(imported.data);
+              if (imported.bgRef) {
+                setBscanBgRef(imported.bgRef);
+              }
               if (imported.params) {
                 const { stepSize, numPositions, wallStandoff, wallThickness, wallPermittivity } = imported.params;
                 setBscanParams(prev => ({
@@ -502,7 +529,7 @@ export default function App() {
         onSfcwRangeScaleChange={setSfcwRangeScale}
         bscanData={bscanData}
         bscanCapturing={bscanCapturing}
-        bscanBgCaptured={bscanBgCaptured}
+        bscanBgCaptured={bscanBgRef !== null}
         bscanParams={bscanParams}
         onBscanParamsChange={setBscanParams}
         onBscanAction={handleBscanAction}
