@@ -8,7 +8,6 @@ phase reference (short cable loopback). Dividing signal by reference
 eliminates random PLL phase offsets between TX and RX synthesizers.
 """
 
-import queue
 import threading
 import time
 import numpy as np
@@ -46,6 +45,7 @@ class SFCWEngine:
         self._last_h_cal = None
         self._fpga_tuning = False
         self._gains_dirty = False
+        self._tracking_cal_reg = None
 
     @property
     def num_steps(self):
@@ -280,9 +280,14 @@ class SFCWEngine:
         self.driver._configure_channels_dual()
         self.driver.set_tuning_mode_fpga()
         self._fpga_tuning = True
+        # Disable AD9361 tracking calibrations — they cause intermittent amplitude
+        # drops during rapid retuning (DC offset tracking briefly attenuates signal).
+        self._disable_tracking_cals()
 
     def _start_tx_rx(self):
-        self._rx_queue = queue.Queue(maxsize=16)
+        self._rx_lock = threading.Lock()
+        self._rx_latest = None
+        self._rx_seq = 0
         n = 1024
         t = np.arange(n, dtype=np.float64) / self.driver.sample_rate
         self._ref_tone = np.exp(-1j * 2 * np.pi * self.driver.cw_offset * t)
@@ -310,14 +315,36 @@ class SFCWEngine:
     def _stop_tx_rx(self):
         self.driver.stop_rx_dual()
         self.driver.stop_tx_dual()
+        self._restore_tracking_cals()
         # Restore single-channel config so calib panel works after SFCW
         self.driver._configure_channels()
 
+    def _disable_tracking_cals(self):
+        """Disable AD9361 tracking calibrations (reg 0x137) during sweeps."""
+        dev_ptr = self.driver.device.dev[0]
+        val = ffi.new('uint8_t *')
+        rc = libbladeRF.bladerf_get_rfic_register(dev_ptr, 0x137, val)
+        if rc == 0:
+            self._tracking_cal_reg = val[0]
+            # Clear bits 4-6: RX DC track, TX Quad track, RX Quad track
+            new_val = val[0] & 0x0F
+            libbladeRF.bladerf_set_rfic_register(dev_ptr, 0x137, new_val)
+            print(f"[sfcw] Tracking cals disabled (0x137: 0x{val[0]:02x} → 0x{new_val:02x})")
+        else:
+            self._tracking_cal_reg = None
+            print(f"[sfcw] WARNING: Could not read tracking cal register (rc={rc})")
+
+    def _restore_tracking_cals(self):
+        """Restore AD9361 tracking calibrations after sweep."""
+        if self._tracking_cal_reg is not None:
+            dev_ptr = self.driver.device.dev[0]
+            libbladeRF.bladerf_set_rfic_register(dev_ptr, 0x137, self._tracking_cal_reg)
+            print(f"[sfcw] Tracking cals restored (0x137: 0x{self._tracking_cal_reg:02x})")
+
     def _rx_capture(self, rx1_iq, rx2_iq):
-        try:
-            self._rx_queue.put_nowait((rx1_iq, rx2_iq))
-        except queue.Full:
-            pass
+        with self._rx_lock:
+            self._rx_latest = (rx1_iq, rx2_iq)
+            self._rx_seq += 1
 
     def _perform_sweep(self):
         with self._lock:
@@ -341,13 +368,6 @@ class SFCWEngine:
         # non-deterministic phase offsets between RX1/RX2 that break coherence.
         # Frequency-dependent power rolloff is compensated in post-processing instead.
 
-        # Drain any stale buffers from before this sweep
-        while not self._rx_queue.empty():
-            try:
-                self._rx_queue.get_nowait()
-            except queue.Empty:
-                break
-
         dropped_steps = 0
 
         for i in range(num_steps):
@@ -359,28 +379,40 @@ class SFCWEngine:
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
 
-            # Drain pre-retune buffers so settle only sees post-retune data
-            while not self._rx_queue.empty():
-                try:
-                    self._rx_queue.get_nowait()
-                except queue.Empty:
+            # Wait for settle: skip buffers that arrived before/during retune.
+            # Read the current seq, then wait for 2 new buffers past that point.
+            with self._rx_lock:
+                seq_after_retune = self._rx_seq
+            target_seq = seq_after_retune + 2
+            deadline = time.monotonic() + 1.0
+            while True:
+                with self._rx_lock:
+                    if self._rx_seq >= target_seq:
+                        break
+                if time.monotonic() > deadline:
                     break
+                time.sleep(0.0002)
 
-            # Settle via buffer discards — each buffer is exactly 0.512ms (1024/2MHz).
-            for _ in range(2):
-                try:
-                    self._rx_queue.get(timeout=1.0)
-                except queue.Empty:
-                    pass
-
+            # Capture num_buffers fresh samples, each waiting for a new seq tick
             sig_accum = 0j
             ref_accum = 0j
             captured = 0
+            with self._rx_lock:
+                last_seq = self._rx_seq
+
             for _ in range(num_buffers):
-                try:
-                    rx1, rx2 = self._rx_queue.get(timeout=1.0)
-                except queue.Empty:
-                    break
+                # Wait for the next fresh buffer
+                deadline = time.monotonic() + 1.0
+                while True:
+                    with self._rx_lock:
+                        if self._rx_seq > last_seq:
+                            rx1, rx2 = self._rx_latest
+                            last_seq = self._rx_seq
+                            break
+                    if time.monotonic() > deadline:
+                        rx1, rx2 = None, None
+                        break
+                    time.sleep(0.0002)
 
                 if rx1 is None or rx2 is None:
                     continue
