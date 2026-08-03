@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
 
-export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange }) {
+export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, bgApplied, onBgAppliedChange, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange }) {
   const { stepSize, numPositions, wallStandoff, wallThickness, wallPermittivity } = params;
 
   const update = (key, value) => {
@@ -48,56 +48,19 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
         )}
       </Section>
 
-      <Section label="Scale">
-        <div className="flex gap-2">
-          <button
-            onClick={() => onScaleModeChange('linear')}
-            className={cn(
-              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              scaleMode === 'linear'
-                ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-            )}
-          >
-            Linear
-          </button>
-          <button
-            onClick={() => onScaleModeChange('db')}
-            className={cn(
-              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              scaleMode === 'db'
-                ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-            )}
-          >
-            dB
-          </button>
-        </div>
-      </Section>
-
       <Section label="Display">
         <div className="flex gap-2">
           <button
-            onClick={() => onDisplayModeChange('color')}
-            className={cn(
-              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              displayMode === 'color'
-                ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-            )}
+            onClick={() => onScaleModeChange(scaleMode === 'linear' ? 'db' : 'linear')}
+            className="flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]"
           >
-            Color
+            {scaleMode === 'linear' ? 'Linear' : 'dB'}
           </button>
           <button
-            onClick={() => onDisplayModeChange('profile')}
-            className={cn(
-              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              displayMode === 'profile'
-                ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-            )}
+            onClick={() => onDisplayModeChange(displayMode === 'color' ? 'profile' : 'color')}
+            className="flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]"
           >
-            Range Profile
+            {displayMode === 'color' ? 'Color' : 'Profile'}
           </button>
         </div>
       </Section>
@@ -124,10 +87,17 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
           </button>
         </div>
         {bgCaptured && (
-          <div className="flex items-center gap-2 px-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-            <span className="text-[10px] text-emerald-400/80 uppercase tracking-wider font-medium">Background active</span>
-          </div>
+          <button
+            onClick={() => onBgAppliedChange(!bgApplied)}
+            className={cn(
+              'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              bgApplied
+                ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            {bgApplied ? '● BG Applied' : 'BG Not Applied'}
+          </button>
         )}
       </Section>
 

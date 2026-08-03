@@ -53,6 +53,8 @@ export default function Sidebar({
   bscanData,
   bscanCapturing,
   bscanBgCaptured,
+  bgApplied,
+  onBgAppliedChange,
   bscanParams,
   onBscanParamsChange,
   onBscanAction,
@@ -68,6 +70,8 @@ export default function Sidebar({
   onBscanDisplayModeChange,
   alignEnabled,
   onAlignEnabledChange,
+  alignMethod,
+  onAlignMethodChange,
   alignNormEnabled,
   onAlignNormEnabledChange,
   alignBgCaptured,
@@ -241,6 +245,8 @@ export default function Sidebar({
                   scanData={bscanData}
                   scanCapturing={bscanCapturing}
                   bgCaptured={bscanBgCaptured}
+                  bgApplied={bgApplied}
+                  onBgAppliedChange={onBgAppliedChange}
                   onScanAction={onBscanAction}
                   params={bscanParams}
                   onParamsChange={onBscanParamsChange}
@@ -262,6 +268,8 @@ export default function Sidebar({
                   scanData={bscanData}
                   alignEnabled={alignEnabled}
                   onAlignEnabledChange={onAlignEnabledChange}
+                  alignMethod={alignMethod}
+                  onAlignMethodChange={onAlignMethodChange}
                   normEnabled={alignNormEnabled}
                   onNormEnabledChange={onAlignNormEnabledChange}
                   bgCaptured={alignBgCaptured}
@@ -284,12 +292,6 @@ export default function Sidebar({
                   onSarParamsChange={onSarParamsChange}
                   sarResult={sarResult}
                   sarProgress={sarProgress}
-                  svdEnabled={svdEnabled}
-                  svdK={svdK}
-                  svdStrength={svdStrength}
-                  onSvdEnabledChange={onSvdEnabledChange}
-                  onSvdKChange={onSvdKChange}
-                  onSvdStrengthChange={onSvdStrengthChange}
                   wallStandoff={bscanParams.wallStandoff}
                   wallThickness={bscanParams.wallThickness}
                   wallPermittivity={bscanParams.wallPermittivity}

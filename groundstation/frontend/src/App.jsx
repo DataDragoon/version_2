@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
-import { svdFilter } from './lib/svd';
+import { svdFilter, powerIteration } from './lib/svd';
 import { useSarWorker } from './hooks/useSarWorker';
 
 const SPEED_OF_LIGHT = 299792458;
@@ -161,6 +161,7 @@ export default function App() {
   const [bscanData, setBscanData] = useState([]);
   const [bscanCapturing, setBscanCapturing] = useState(false);
   const [bscanBgRef, setBscanBgRef] = useState(null);
+  const [bgApplied, setBgApplied] = useState(true);
   const bscanPendingRef = useRef(null);
 
   // Lidar accumulator for averaging during SFCW sweeps
@@ -191,24 +192,75 @@ export default function App() {
     return { magnitudes: rp.magnitudes, distances: rp.distances };
   }, [bscanBgRef]);
 
-  // B-scan frontend processing: complex BG subtract → IFFT → SVD
+  // Raw range profiles (no BG subtraction, no SVD) — used for wall reflection alignment
+  const rawBscanProfiles = useMemo(() => {
+    if (bscanData.length === 0) return [];
+    return bscanData.map(pos => {
+      if (!pos.h_cal_real || !pos.h_cal_imag) return pos;
+      const numSteps = pos.h_cal_real.length;
+      const rp = computeRangeProfile(pos.h_cal_real, pos.h_cal_imag, numSteps, pos.step_size, pos.range_offset);
+      return { ...pos, magnitudes: rp.magnitudes, distances: rp.distances };
+    });
+  }, [bscanData]);
+
+  // B-scan frontend processing: align BG to each scan via first-peak offset → complex subtract → IFFT
   const processedBscanData = useMemo(() => {
     if (bscanData.length === 0) return bscanData;
     const startHz = sfcwParams.startFreq * 1e6;
     const stopHz = sfcwParams.stopFreq * 1e6;
-    return bscanData.map(pos => {
+
+    // Find BG's first peak distance from raw profile
+    let bgFirstPeakDist = 0;
+    if (bgApplied && bscanBgRef && bscanBgRef.h_cal_real && bscanBgRef.h_cal_imag) {
+      const bgRp = computeRangeProfile(bscanBgRef.h_cal_real, bscanBgRef.h_cal_imag,
+        bscanBgRef.h_cal_real.length, bscanBgRef.step_size, bscanBgRef.range_offset);
+      const bgMags = bgRp.magnitudes;
+      const bgDist = bgRp.distances;
+      for (let i = 1; i < bgMags.length - 1; i++) {
+        if (bgMags[i] > bgMags[i - 1] && bgMags[i] >= bgMags[i + 1]) {
+          bgFirstPeakDist = bgDist[i];
+          break;
+        }
+      }
+    }
+
+    return bscanData.map((pos, posIdx) => {
       if (!pos.h_cal_real || !pos.h_cal_imag) return pos;
       const numSteps = pos.h_cal_real.length;
       let real = pos.h_cal_real;
       let imag = pos.h_cal_imag;
-      if (bscanBgRef && bscanBgRef.h_cal_real && bscanBgRef.h_cal_imag) {
+
+      if (bgApplied && bscanBgRef && bscanBgRef.h_cal_real && bscanBgRef.h_cal_imag) {
+        // Use first-peak distance difference for phase alignment
+        let scanFirstPeakDist = 0;
+        const rawProf = rawBscanProfiles[posIdx];
+        if (rawProf && rawProf.magnitudes && rawProf.distances) {
+          for (let i = 1; i < rawProf.magnitudes.length - 1; i++) {
+            if (rawProf.magnitudes[i] > rawProf.magnitudes[i - 1] && rawProf.magnitudes[i] >= rawProf.magnitudes[i + 1]) {
+              scanFirstPeakDist = rawProf.distances[i];
+              break;
+            }
+          }
+        }
+        const deltaD = scanFirstPeakDist - bgFirstPeakDist;
+        const deltaPhasePerHz = 2 * Math.PI * 2 * deltaD / SPEED_OF_LIGHT;
+
         real = new Array(numSteps);
         imag = new Array(numSteps);
         for (let i = 0; i < numSteps; i++) {
-          real[i] = pos.h_cal_real[i] - bscanBgRef.h_cal_real[i];
-          imag[i] = pos.h_cal_imag[i] - bscanBgRef.h_cal_imag[i];
+          const freq = startHz + (i / (numSteps - 1)) * (stopHz - startHz);
+          const phase = deltaPhasePerHz * freq;
+          const cosP = Math.cos(phase);
+          const sinP = Math.sin(phase);
+          const bgR = bscanBgRef.h_cal_real[i];
+          const bgI = bscanBgRef.h_cal_imag[i];
+          const alignedBgR = bgR * cosP - bgI * sinP;
+          const alignedBgI = bgR * sinP + bgI * cosP;
+          real[i] = pos.h_cal_real[i] - alignedBgR;
+          imag[i] = pos.h_cal_imag[i] - alignedBgI;
         }
       }
+
       const rp = computeRangeProfile(real, imag, numSteps, pos.step_size, pos.range_offset);
       const freqs = [];
       for (let i = 0; i < numSteps; i++) {
@@ -216,12 +268,15 @@ export default function App() {
       }
       return { ...pos, magnitudes: rp.magnitudes, distances: rp.distances, h_cal_real: real, h_cal_imag: imag, freqs };
     });
-  }, [bscanData, bscanBgRef, sfcwParams.startFreq, sfcwParams.stopFreq]);
+  }, [bscanData, bscanBgRef, bgApplied, rawBscanProfiles, sfcwParams.startFreq, sfcwParams.stopFreq]);
 
   const filteredBscanData = useMemo(() => {
     if (!svdEnabled || processedBscanData.length < 2) return processedBscanData;
     return svdFilter(processedBscanData, svdK, svdStrength);
   }, [processedBscanData, svdEnabled, svdK, svdStrength]);
+
+  // Alignment method state (must be before alignShifts memo)
+  const [alignMethod, setAlignMethod] = useState('wall');
 
   // Compute spatial alignment bin shifts (for animated transition in BscanDisplay)
   // Uses lidar standoff data if available, falls back to peak-finding
@@ -231,39 +286,31 @@ export default function App() {
       return { scanShifts: filteredBscanData.map(() => 0), bgShift: 0 };
     }
 
+    const distances = filteredBscanData[0].distances;
+    if (!distances || distances.length < 2) {
+      return { scanShifts: filteredBscanData.map(() => 0), bgShift: 0 };
+    }
+    const binSpacingM = distances[1] - distances[0];
+
     // Check if lidar data is available on all scans
     const hasLidar = filteredBscanData.every(pos => pos.lidar_standoff_mm != null);
+    const useLidar = alignMethod === 'lidar' && hasLidar;
 
-    if (hasLidar) {
-      // Lidar-based alignment: convert standoff differences to bin offsets
-      // Standoff difference → distance difference → bin offset
-      // Each bin spans: binWidth = maxRange / (nfft/2), where nfft is the FFT size
-      // But we can compute bin spacing from the distances array directly
-      const distances = filteredBscanData[0].distances;
-      if (!distances || distances.length < 2) {
-        return { scanShifts: filteredBscanData.map(() => 0), bgShift: 0 };
-      }
-      const binSpacingM = distances[1] - distances[0];
-
+    if (useLidar) {
       const standoffs = filteredBscanData.map(pos => pos.lidar_standoff_mm / 1000);
       const maxStandoff = Math.max(...standoffs);
 
-      // Each scan shifts right by (maxStandoff - thisStandoff) / binSpacing bins
-      // (scan with smallest standoff has wall-front appearing earliest → needs most shift)
       const scanShifts = standoffs.map(s => (maxStandoff - s) / binSpacingM);
 
-      // BG shift
       let bgShift = 0;
       if (bscanBgRef && bscanBgRef.lidar_standoff_mm != null) {
         const bgStandoff = bscanBgRef.lidar_standoff_mm / 1000;
         bgShift = (maxStandoff - bgStandoff) / binSpacingM;
       } else if (bscanBgDisplay && bscanBgDisplay.magnitudes) {
-        // Fallback: peak-find BG
         let bgPeakIdx = 0, maxVal = -Infinity;
         for (let i = 0; i < bscanBgDisplay.magnitudes.length; i++) {
           if (bscanBgDisplay.magnitudes[i] > maxVal) { maxVal = bscanBgDisplay.magnitudes[i]; bgPeakIdx = i; }
         }
-        // Approximate: use peak of closest-standoff scan as reference
         const maxStandoffScanPeak = (() => {
           const idx = standoffs.indexOf(maxStandoff);
           const mags = filteredBscanData[idx].magnitudes;
@@ -278,33 +325,91 @@ export default function App() {
       return { scanShifts, bgShift };
     }
 
-    // Fallback: peak-based alignment
-    const peakIndices = filteredBscanData.map(pos => {
-      if (!pos.magnitudes) return 0;
-      let maxVal = -Infinity;
-      let maxIdx = 0;
-      for (let i = 0; i < pos.magnitudes.length; i++) {
-        if (pos.magnitudes[i] > maxVal) { maxVal = pos.magnitudes[i]; maxIdx = i; }
+    // Wall reflection alignment: find first peak (first local max) in each raw range profile
+    const findFirstPeak = (magnitudes) => {
+      if (!magnitudes || magnitudes.length < 3) return 0;
+      for (let i = 1; i < magnitudes.length - 1; i++) {
+        if (magnitudes[i] > magnitudes[i - 1] && magnitudes[i] >= magnitudes[i + 1]) {
+          return i;
+        }
       }
-      return maxIdx;
-    });
+      return 0;
+    };
 
-    let bgPeakIdx = 0;
+    const peakIndices = rawBscanProfiles.map(pos => findFirstPeak(pos.magnitudes));
+
+    // Reference: the scan whose first peak is furthest
+    const maxPeakIdx = Math.max(...peakIndices);
+
+    let bgShift = 0;
     if (bscanBgDisplay && bscanBgDisplay.magnitudes) {
-      let maxVal = -Infinity;
-      for (let i = 0; i < bscanBgDisplay.magnitudes.length; i++) {
-        if (bscanBgDisplay.magnitudes[i] > maxVal) { maxVal = bscanBgDisplay.magnitudes[i]; bgPeakIdx = i; }
-      }
+      bgShift = maxPeakIdx - findFirstPeak(bscanBgDisplay.magnitudes);
     }
-
-    const allPeaks = [...peakIndices, ...(bscanBgDisplay ? [bgPeakIdx] : [])];
-    const maxPeakIdx = Math.max(...allPeaks);
 
     return {
       scanShifts: peakIndices.map(idx => maxPeakIdx - idx),
-      bgShift: bscanBgDisplay ? maxPeakIdx - bgPeakIdx : 0,
+      bgShift,
     };
-  }, [filteredBscanData, bscanBgDisplay, bscanBgRef]);
+  }, [rawBscanProfiles, filteredBscanData, bscanBgDisplay, bscanBgRef, alignMethod, bscanParams]);
+
+  // Aligned panel state
+  const [alignEnabled, setAlignEnabled] = useState(true);
+  const [alignBgRef, setAlignBgRef] = useState(null);
+  const [alignNormEnabled, setAlignNormEnabled] = useState(false);
+  const [alignSvdEnabled, setAlignSvdEnabled] = useState(false);
+  const [alignSvdK, setAlignSvdK] = useState(1);
+  const [alignSvdStrength, setAlignSvdStrength] = useState(0.5);
+
+  // Aligned SVD: shift data by alignment, apply SVD on overlapping region, return shifted data
+  const alignedSvdData = useMemo(() => {
+    if (!alignSvdEnabled || filteredBscanData.length < 2) return null;
+    const shifts = alignShifts.scanShifts;
+    if (!shifts || shifts.length !== filteredBscanData.length) return null;
+
+    const intShifts = shifts.map(s => Math.round(s));
+    const maxShift = Math.max(...intShifts);
+    const numBins = filteredBscanData[0].magnitudes.length;
+    const overlapStart = maxShift;
+    const overlapEnd = numBins;
+    const overlapLen = overlapEnd - overlapStart;
+    if (overlapLen < 2) return null;
+
+    const numPos = filteredBscanData.length;
+    const flat = new Float64Array(numPos * overlapLen);
+    for (let p = 0; p < numPos; p++) {
+      const mags = filteredBscanData[p].magnitudes;
+      const shift = intShifts[p];
+      for (let b = 0; b < overlapLen; b++) {
+        const srcBin = (overlapStart - shift) + b;
+        flat[p * overlapLen + b] = (srcBin >= 0 && srcBin < numBins) ? mags[srcBin] : mags[0];
+      }
+    }
+
+    const s = Math.max(0, Math.min(1, alignSvdStrength));
+    for (let i = 0; i < alignSvdK; i++) {
+      const { u, sigma, v } = powerIteration(flat, numPos, overlapLen);
+      if (sigma < 1e-10) break;
+      for (let p = 0; p < numPos; p++) {
+        for (let b = 0; b < overlapLen; b++) {
+          flat[p * overlapLen + b] -= s * sigma * u[p] * v[b];
+        }
+      }
+    }
+
+    return filteredBscanData.map((pos, p) => {
+      const newMags = new Array(numBins);
+      const shift = intShifts[p];
+      for (let b = 0; b < numBins; b++) {
+        const overlapB = (b + shift) - overlapStart;
+        if (overlapB >= 0 && overlapB < overlapLen) {
+          newMags[b] = flat[p * overlapLen + overlapB];
+        } else {
+          newMags[b] = pos.magnitudes[b];
+        }
+      }
+      return { ...pos, magnitudes: newMags };
+    });
+  }, [filteredBscanData, alignShifts, alignSvdEnabled, alignSvdK, alignSvdStrength]);
 
   // SAR state (only SAR-specific params; depth/wall/svd come from bscan)
   const [sarParams, setSarParams] = useState({
@@ -314,15 +419,6 @@ export default function App() {
     coherent: false,
     useAligned: false,
   });
-
-
-  // Aligned panel state — independent processing pipeline
-  const [alignEnabled, setAlignEnabled] = useState(true);
-  const [alignBgRef, setAlignBgRef] = useState(null);
-  const [alignNormEnabled, setAlignNormEnabled] = useState(false);
-  const [alignSvdEnabled, setAlignSvdEnabled] = useState(false);
-  const [alignSvdK, setAlignSvdK] = useState(1);
-  const [alignSvdStrength, setAlignSvdStrength] = useState(0.5);
 
   // Aligned pipeline: IFFT → peak align → normalized BG subtract → SVD
   const alignedDisplayData = useMemo(() => {
@@ -347,12 +443,15 @@ export default function App() {
       processed = peakAlign(processed);
     }
 
-    // Step 3: peak-aligned BG subtract (optionally with amplitude normalization)
+    // Step 3: aligned BG subtract (BG aligned to each scan via lidar or peak-finding)
     if (alignBgRef && alignBgRef.h_cal_real && alignBgRef.h_cal_imag) {
       const bgNumSteps = alignBgRef.h_cal_real.length;
       const bgRp = computeRangeProfile(alignBgRef.h_cal_real, alignBgRef.h_cal_imag, bgNumSteps, alignBgRef.step_size, alignBgRef.range_offset);
       const bgNumBins = bgRp.magnitudes.length;
+      const bgDistances = bgRp.distances;
+      const binSpacingM = bgDistances.length >= 2 ? bgDistances[1] - bgDistances[0] : 0.001;
 
+      // Find BG peak (fallback for peak-based alignment)
       let bgPeakIdx = 0;
       let bgPeakVal = -Infinity;
       for (let i = 0; i < bgNumBins; i++) {
@@ -364,24 +463,45 @@ export default function App() {
         if (!pos.magnitudes) return pos;
         const numBins = pos.magnitudes.length;
 
-        let scanPeakIdx = 0;
-        let scanPeakVal = -Infinity;
-        for (let i = 0; i < numBins; i++) {
-          if (pos.magnitudes[i] > scanPeakVal) { scanPeakVal = pos.magnitudes[i]; scanPeakIdx = i; }
+        // Compute BG shift: lidar-based if available, else peak-based
+        let bgShift;
+        if (pos.lidar_standoff_mm != null && alignBgRef.lidar_standoff_mm != null) {
+          const deltaM = (pos.lidar_standoff_mm - alignBgRef.lidar_standoff_mm) / 1000;
+          bgShift = deltaM / binSpacingM;
+        } else {
+          let scanPeakIdx = 0;
+          let scanPeakVal = -Infinity;
+          for (let i = 0; i < numBins; i++) {
+            if (pos.magnitudes[i] > scanPeakVal) { scanPeakVal = pos.magnitudes[i]; scanPeakIdx = i; }
+          }
+          bgShift = scanPeakIdx - bgPeakIdx;
         }
 
-        const bgShift = scanPeakIdx - bgPeakIdx;
         let normFactor = 1.0;
         if (alignNormEnabled) {
+          let scanPeakVal = -Infinity;
+          for (let i = 0; i < numBins; i++) {
+            if (pos.magnitudes[i] > scanPeakVal) scanPeakVal = pos.magnitudes[i];
+          }
           const scanPeakLin = Math.pow(10, scanPeakVal / 20);
           normFactor = scanPeakLin / bgPeakLin;
         }
 
         const newMags = new Array(numBins);
+        const bgShiftFloor = Math.floor(bgShift);
+        const bgShiftFrac = bgShift - bgShiftFloor;
         for (let i = 0; i < numBins; i++) {
           const scanLin = Math.pow(10, pos.magnitudes[i] / 20);
-          const bgSrcIdx = i - bgShift;
-          const bgDb = (bgSrcIdx >= 0 && bgSrcIdx < bgNumBins) ? bgRp.magnitudes[bgSrcIdx] : bgRp.magnitudes[0];
+          // Interpolate BG at fractional shift
+          const bgSrcIdx = i - bgShiftFloor;
+          let bgDb;
+          if (bgSrcIdx >= 0 && bgSrcIdx < bgNumBins - 1) {
+            bgDb = bgRp.magnitudes[bgSrcIdx] * (1 - bgShiftFrac) + bgRp.magnitudes[bgSrcIdx + 1] * bgShiftFrac;
+          } else if (bgSrcIdx >= 0 && bgSrcIdx < bgNumBins) {
+            bgDb = bgRp.magnitudes[bgSrcIdx];
+          } else {
+            bgDb = bgRp.magnitudes[0];
+          }
           const bgLin = Math.pow(10, bgDb / 20) * normFactor;
           const diff = Math.max(scanLin - bgLin, 1e-12);
           newMags[i] = 20 * Math.log10(diff);
@@ -398,8 +518,37 @@ export default function App() {
     return processed;
   }, [bscanData, sfcwParams.startFreq, sfcwParams.stopFreq, alignEnabled, alignBgRef, alignNormEnabled, alignSvdEnabled, alignSvdK, alignSvdStrength]);
 
-  const sarInputData = sarParams.useAligned ? alignedDisplayData : filteredBscanData;
-  const { sarResult, sarProgress } = useSarWorker(sarInputData, bscanParams, sarParams, svdEnabled, svdK);
+  // SAR uses exactly what's displayed: aligned+shifted data when useAligned, else bscan data
+  const sarInputData = useMemo(() => {
+    if (!sarParams.useAligned) return filteredBscanData;
+    const sourceData = alignedSvdData || filteredBscanData;
+    const shifts = alignShifts.scanShifts;
+    if (!shifts || shifts.length !== sourceData.length) return sourceData;
+    // Bake alignment shifts into the data (shift magnitudes + distances)
+    const binSpacing = sourceData[0].distances && sourceData[0].distances.length >= 2
+      ? sourceData[0].distances[1] - sourceData[0].distances[0] : 0;
+    if (binSpacing === 0) return sourceData;
+    return sourceData.map((pos, i) => {
+      const intShift = Math.round(shifts[i]);
+      if (intShift === 0) return pos;
+      const numBins = pos.magnitudes.length;
+      const newMags = new Array(numBins);
+      const newDist = new Array(numBins);
+      for (let b = 0; b < numBins; b++) {
+        const srcBin = b - intShift;
+        if (srcBin >= 0 && srcBin < numBins) {
+          newMags[b] = pos.magnitudes[srcBin];
+          newDist[b] = pos.distances[srcBin] + intShift * binSpacing;
+        } else {
+          newMags[b] = pos.magnitudes[0];
+          newDist[b] = (pos.distances[0] || 0) + b * binSpacing;
+        }
+      }
+      return { ...pos, magnitudes: newMags, distances: newDist };
+    });
+  }, [sarParams.useAligned, filteredBscanData, alignedSvdData, alignShifts]);
+
+  const { sarResult, sarProgress } = useSarWorker(sarInputData, bscanParams, sarParams);
 
   // IMU WebSocket
   const handleImuMessage = useCallback((msg) => {
@@ -661,6 +810,8 @@ export default function App() {
         bscanData={bscanData}
         bscanCapturing={bscanCapturing}
         bscanBgCaptured={bscanBgRef !== null}
+        bgApplied={bgApplied}
+        onBgAppliedChange={setBgApplied}
         bscanParams={bscanParams}
         onBscanParamsChange={setBscanParams}
         onBscanAction={handleBscanAction}
@@ -676,6 +827,8 @@ export default function App() {
         onBscanDisplayModeChange={setBscanDisplayMode}
         alignEnabled={alignEnabled}
         onAlignEnabledChange={setAlignEnabled}
+        alignMethod={alignMethod}
+        onAlignMethodChange={setAlignMethod}
         alignNormEnabled={alignNormEnabled}
         onAlignNormEnabledChange={setAlignNormEnabled}
         alignBgCaptured={alignBgRef !== null}
@@ -693,7 +846,7 @@ export default function App() {
         onAlignSvdKChange={setAlignSvdK}
         onAlignSvdStrengthChange={setAlignSvdStrength}
         alignedDisplayData={alignedDisplayData}
-        sarBscanData={bscanData}
+        sarBscanData={sarInputData}
         sarParams={sarParams}
         onSarParamsChange={setSarParams}
         sarResult={sarResult}
@@ -716,6 +869,7 @@ export default function App() {
         sfcwRunning={sfcwRunning}
         sfcwRangeScale={sfcwRangeScale}
         bscanData={filteredBscanData}
+        bscanAlignedSvdData={alignedSvdData}
         bscanBgDisplay={bscanBgDisplay}
         bscanAlignShifts={alignShifts}
         bscanParams={bscanParams}

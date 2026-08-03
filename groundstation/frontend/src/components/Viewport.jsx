@@ -26,6 +26,7 @@ export default function Viewport({
   sfcwRunning,
   sfcwRangeScale,
   bscanData,
+  bscanAlignedSvdData,
   bscanBgDisplay,
   bscanAlignShifts,
   bscanParams,
@@ -175,6 +176,7 @@ export default function Viewport({
     const icon = isAligned ? AlignVerticalSpaceBetween : ScanLine;
     const targetScanShifts = isAligned ? bscanAlignShifts.scanShifts : bscanData.map(() => 0);
     const targetBgShift = isAligned ? bscanAlignShifts.bgShift : 0;
+    const displayData = (isAligned && bscanAlignedSvdData) ? bscanAlignedSvdData : bscanData;
 
     return (
       <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
@@ -187,7 +189,7 @@ export default function Viewport({
               </div>
             )}
             <BscanDisplay
-              scanData={bscanData}
+              scanData={displayData}
               bgDisplay={bscanBgDisplay}
               params={bscanParams}
               capturing={bscanCapturing}

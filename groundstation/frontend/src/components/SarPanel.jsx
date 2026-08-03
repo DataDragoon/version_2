@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
 
-export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarResult, sarProgress, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, wallStandoff, wallThickness, wallPermittivity, onWallParamsChange }) {
+export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarResult, sarProgress, wallStandoff, wallThickness, wallPermittivity, onWallParamsChange }) {
   const { pixelsX, pixelsZ, window: windowType, coherent, useAligned } = sarParams;
 
   const update = (key, value) => {
@@ -39,35 +39,17 @@ export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarR
           </div>
         )}
         <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
-          Uses B-scan panel settings: dist range, wall model, SVD filter.
+          Reconstructs from {useAligned ? 'aligned' : 'B-scan'} data with its current settings.
         </div>
       </Section>
 
       <Section label="Source">
-        <div className="flex gap-2">
-          <button
-            onClick={() => update('useAligned', false)}
-            className={cn(
-              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              !useAligned
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-            )}
-          >
-            B-Scan
-          </button>
-          <button
-            onClick={() => update('useAligned', true)}
-            className={cn(
-              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              useAligned
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-            )}
-          >
-            Aligned
-          </button>
-        </div>
+        <button
+          onClick={() => update('useAligned', !useAligned)}
+          className="w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+        >
+          {useAligned ? 'Aligned' : 'B-Scan'}
+        </button>
       </Section>
 
       <Section label="Mode">
@@ -181,40 +163,6 @@ export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarR
         </div>
       </Section>
 
-      <Section label="SVD Filter">
-        <button
-          onClick={() => onSvdEnabledChange(!svdEnabled)}
-          disabled={numPositions < 2}
-          className={cn(
-            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-            numPositions < 2
-              ? 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
-              : svdEnabled
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-          )}
-        >
-          {svdEnabled ? '● SVD ON' : 'SVD OFF'}
-        </button>
-        <div className="grid grid-cols-2 gap-2">
-          <EditableField
-            label="k (remove)"
-            value={svdK}
-            unit=""
-            onChange={(v) => onSvdKChange(Math.round(v))}
-            min={1}
-            max={Math.max(1, numPositions - 1)}
-          />
-          <EditableField
-            label="Strength"
-            value={svdStrength}
-            unit=""
-            onChange={(v) => onSvdStrengthChange(v)}
-            min={0.01}
-            max={1}
-          />
-        </div>
-      </Section>
     </>
   );
 }

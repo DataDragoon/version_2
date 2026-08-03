@@ -217,7 +217,7 @@ function computeOpticalPath(lateral, depth, antennaX, wallStandoffM, wallThickne
 }
 
 self.onmessage = function (e) {
-  const { bscanData, bscanParams, sarParams, svdEnabled, svdK } = e.data;
+  const { bscanData, bscanParams, sarParams } = e.data;
   const t0 = performance.now();
 
   const { stepSize, wallStandoff, wallThickness, wallPermittivity } = bscanParams;
@@ -261,26 +261,21 @@ self.onmessage = function (e) {
       hImag.push([...bscanData[p].h_cal_imag]);
     }
 
-    if (svdEnabled && svdK > 0) {
-      applySvd(hReal, hImag, numPositions, numFreqs, svdK);
-    }
-
-    if (!svdEnabled || svdK <= 0) {
-      const meanRe = new Array(numFreqs).fill(0);
-      const meanIm = new Array(numFreqs).fill(0);
-      for (let f = 0; f < numFreqs; f++) {
-        for (let p = 0; p < numPositions; p++) {
-          meanRe[f] += hReal[p][f];
-          meanIm[f] += hImag[p][f];
-        }
-        meanRe[f] /= numPositions;
-        meanIm[f] /= numPositions;
-      }
+    // Mean subtraction (background removal in frequency domain)
+    const meanRe = new Array(numFreqs).fill(0);
+    const meanIm = new Array(numFreqs).fill(0);
+    for (let f = 0; f < numFreqs; f++) {
       for (let p = 0; p < numPositions; p++) {
-        for (let f = 0; f < numFreqs; f++) {
-          hReal[p][f] -= meanRe[f];
-          hImag[p][f] -= meanIm[f];
-        }
+        meanRe[f] += hReal[p][f];
+        meanIm[f] += hImag[p][f];
+      }
+      meanRe[f] /= numPositions;
+      meanIm[f] /= numPositions;
+    }
+    for (let p = 0; p < numPositions; p++) {
+      for (let f = 0; f < numFreqs; f++) {
+        hReal[p][f] -= meanRe[f];
+        hImag[p][f] -= meanIm[f];
       }
     }
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import SarWorker from '../lib/sar.worker.js?worker';
 
-export function useSarWorker(bscanData, bscanParams, sarParams, svdEnabled, svdK) {
+export function useSarWorker(bscanData, bscanParams, sarParams) {
   const [sarResult, setSarResult] = useState(null);
   const [sarProgress, setSarProgress] = useState(null);
   const workerRef = useRef(null);
@@ -28,7 +28,6 @@ export function useSarWorker(bscanData, bscanParams, sarParams, svdEnabled, svdK
     }
 
     debounceRef.current = setTimeout(() => {
-      // Terminate stale worker and start fresh
       if (workerRef.current) {
         workerRef.current.terminate();
         workerRef.current = null;
@@ -48,9 +47,9 @@ export function useSarWorker(bscanData, bscanParams, sarParams, svdEnabled, svdK
           setSarProgress(null);
         }
       };
-      worker.postMessage({ bscanData, bscanParams, sarParams, svdEnabled, svdK });
+      worker.postMessage({ bscanData, bscanParams, sarParams });
     }, 300);
-  }, [bscanData, bscanParams, sarParams, svdEnabled, svdK]);
+  }, [bscanData, bscanParams, sarParams]);
 
   return { sarResult, sarProgress };
 }

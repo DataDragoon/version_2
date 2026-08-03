@@ -1,4 +1,4 @@
-function powerIteration(matrix, rows, cols, maxIter = 100, tol = 1e-10) {
+export function powerIteration(matrix, rows, cols, maxIter = 100, tol = 1e-10) {
   let v = new Float64Array(cols);
   for (let i = 0; i < cols; i++) v[i] = Math.random() - 0.5;
 

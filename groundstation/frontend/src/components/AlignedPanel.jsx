@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
 
-export default function AlignedPanel({ scanData, alignEnabled, onAlignEnabledChange, normEnabled, onNormEnabledChange, bgCaptured, onBgCapture, onBgClear, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, isConnected, sdrConnected }) {
+export default function AlignedPanel({ scanData, alignEnabled, onAlignEnabledChange, alignMethod, onAlignMethodChange, normEnabled, onNormEnabledChange, bgCaptured, onBgCapture, onBgClear, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, isConnected, sdrConnected }) {
   const numPositions = scanData ? scanData.length : 0;
   const canCapture = isConnected && sdrConnected;
 
@@ -17,71 +17,26 @@ export default function AlignedPanel({ scanData, alignEnabled, onAlignEnabledCha
         </div>
       </Section>
 
-      <Section label="Peak Align">
+      <Section label="Alignment">
         <button
-          onClick={() => onAlignEnabledChange(!alignEnabled)}
+          onClick={() => onAlignMethodChange(alignMethod === 'lidar' ? 'wall' : 'lidar')}
           disabled={numPositions < 2}
           className={cn(
             'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
             numPositions < 2
               ? 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
-              : alignEnabled
-                ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+              : 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
           )}
         >
-          {alignEnabled ? '● ALIGN ON' : 'ALIGN OFF'}
+          {alignMethod === 'lidar' ? 'LiDAR' : 'Wall Reflection'}
         </button>
         <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
-          Aligns all scans to the farthest first peak (wall reflection), compensating for standoff variation.
+          {alignMethod === 'lidar'
+            ? 'Aligns using LiDAR-measured standoff per scan.'
+            : 'Aligns to first strongest reflection (wall front).'}
         </div>
       </Section>
 
-      <Section label="Background">
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            onClick={onBgCapture}
-            disabled={!canCapture}
-            className={cn(
-              'px-3 py-2.5 rounded-lg text-xs font-medium transition-all',
-              canCapture
-                ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
-            )}
-          >
-            Capture BG
-          </button>
-          <button
-            onClick={onBgClear}
-            className="px-3 py-2.5 rounded-lg text-xs font-medium bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
-          >
-            Clear BG
-          </button>
-        </div>
-        {bgCaptured && (
-          <div className="flex items-center gap-2 px-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-            <span className="text-[10px] text-emerald-400/80 uppercase tracking-wider font-medium">Background active</span>
-          </div>
-        )}
-        <button
-          onClick={() => onNormEnabledChange(!normEnabled)}
-          disabled={!bgCaptured}
-          className={cn(
-            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-            !bgCaptured
-              ? 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
-              : normEnabled
-                ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-          )}
-        >
-          {normEnabled ? '● NORM ON' : 'NORM OFF'}
-        </button>
-        <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
-          BG is peak-aligned before subtraction.{normEnabled ? ' Amplitude normalized per-scan.' : ''}
-        </div>
-      </Section>
 
       <Section label="SVD Filter">
         <button
