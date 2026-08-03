@@ -185,7 +185,6 @@ class BladeRFDriver:
         self._tx_buffer = self._generate(int(self.sample_rate * 0.01))
         self._tx_stop.clear()
         self.tx_running = True
-        self.device.enable_module(bladerf.CHANNEL_TX(0), True)
         self.device.sync_config(
             layout=ChannelLayout.TX_X1,
             fmt=Format.SC16_Q11,
@@ -194,6 +193,7 @@ class BladeRFDriver:
             num_transfers=8,
             stream_timeout=3500
         )
+        self.device.enable_module(bladerf.CHANNEL_TX(0), True)
         self._tx_thread = threading.Thread(target=self._tx_loop, daemon=True)
         self._tx_thread.start()
 
@@ -226,7 +226,6 @@ class BladeRFDriver:
             return
         self._rx_stop.clear()
         self.rx_running = True
-        self.device.enable_module(bladerf.CHANNEL_RX(0), True)
         self.device.sync_config(
             layout=ChannelLayout.RX_X1,
             fmt=Format.SC16_Q11,
@@ -235,6 +234,7 @@ class BladeRFDriver:
             num_transfers=8,
             stream_timeout=3500
         )
+        self.device.enable_module(bladerf.CHANNEL_RX(0), True)
         self._rx_thread = threading.Thread(target=self._rx_loop, args=(callback, num_samples), daemon=True)
         self._rx_thread.start()
 
@@ -273,6 +273,16 @@ class BladeRFDriver:
         self._tx_stop.clear()
         self.tx_running = True
         self._dual_channel = True
+        # Pre-allocate the interleaved dual-channel buffer once
+        buf = self._tx_buffer
+        n_samples = len(buf) // 2
+        self._tx_dual_buf = np.empty(len(buf) * 2, dtype=np.int16)
+        self._tx_dual_buf[0::4] = buf[0::2]  # TX1 I
+        self._tx_dual_buf[1::4] = buf[1::2]  # TX1 Q
+        self._tx_dual_buf[2::4] = buf[0::2]  # TX2 I
+        self._tx_dual_buf[3::4] = buf[1::2]  # TX2 Q
+        self._tx_dual_bytes = self._tx_dual_buf.tobytes()
+        self._tx_dual_n_samples = n_samples
         self.device.sync_config(
             layout=ChannelLayout.TX_X2,
             fmt=Format.SC16_Q11,
@@ -287,18 +297,12 @@ class BladeRFDriver:
         self._tx_thread.start()
 
     def _tx_loop_dual(self):
-        """TX loop for dual channel — interleaved TX1+TX2 samples."""
+        """TX loop for dual channel — replays pre-built interleaved buffer."""
         try:
+            tx_bytes = self._tx_dual_bytes
+            n_samples = self._tx_dual_n_samples
             while not self._tx_stop.is_set():
-                with self._lock:
-                    buf = self._tx_buffer
-                n_samples = len(buf) // 2
-                dual_buf = np.empty(len(buf) * 2, dtype=np.int16)
-                dual_buf[0::4] = buf[0::2]  # TX1 I
-                dual_buf[1::4] = buf[1::2]  # TX1 Q
-                dual_buf[2::4] = buf[0::2]  # TX2 I
-                dual_buf[3::4] = buf[1::2]  # TX2 Q
-                self.device.sync_tx(dual_buf.tobytes(), n_samples)
+                self.device.sync_tx(tx_bytes, n_samples)
         except Exception as e:
             print(f"[bladerf] TX dual error: {e}")
         finally:

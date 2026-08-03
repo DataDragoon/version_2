@@ -8,6 +8,7 @@ phase reference (short cable loopback). Dividing signal by reference
 eliminates random PLL phase offsets between TX and RX synthesizers.
 """
 
+import queue
 import threading
 import time
 import numpy as np
@@ -248,6 +249,12 @@ class SFCWEngine:
             self._start_tx_rx()
 
             while not self._stop_event.is_set():
+                if not self.driver.tx_running or not self.driver.rx_running:
+                    print("[sfcw] TX/RX thread died — restarting streams")
+                    self._stop_tx_rx()
+                    time.sleep(0.1)
+                    self._configure_hardware()
+                    self._start_tx_rx()
                 if self._gains_dirty:
                     self._apply_gains()
                 range_profile = self._perform_sweep()
@@ -275,8 +282,7 @@ class SFCWEngine:
         self._fpga_tuning = True
 
     def _start_tx_rx(self):
-        self._rx_latest = (None, None)
-        self._rx_event = threading.Event()
+        self._rx_queue = queue.Queue(maxsize=16)
         n = 1024
         t = np.arange(n, dtype=np.float64) / self.driver.sample_rate
         self._ref_tone = np.exp(-1j * 2 * np.pi * self.driver.cw_offset * t)
@@ -304,10 +310,14 @@ class SFCWEngine:
     def _stop_tx_rx(self):
         self.driver.stop_rx_dual()
         self.driver.stop_tx_dual()
+        # Restore single-channel config so calib panel works after SFCW
+        self.driver._configure_channels()
 
     def _rx_capture(self, rx1_iq, rx2_iq):
-        self._rx_latest = (rx1_iq, rx2_iq)
-        self._rx_event.set()
+        try:
+            self._rx_queue.put_nowait((rx1_iq, rx2_iq))
+        except queue.Full:
+            pass
 
     def _perform_sweep(self):
         with self._lock:
@@ -331,6 +341,15 @@ class SFCWEngine:
         # non-deterministic phase offsets between RX1/RX2 that break coherence.
         # Frequency-dependent power rolloff is compensated in post-processing instead.
 
+        # Drain any stale buffers from before this sweep
+        while not self._rx_queue.empty():
+            try:
+                self._rx_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        dropped_steps = 0
+
         for i in range(num_steps):
             if self._stop_event.is_set():
                 return None
@@ -340,20 +359,29 @@ class SFCWEngine:
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
 
+            # Drain pre-retune buffers so settle only sees post-retune data
+            while not self._rx_queue.empty():
+                try:
+                    self._rx_queue.get_nowait()
+                except queue.Empty:
+                    break
+
             # Settle via buffer discards — each buffer is exactly 0.512ms (1024/2MHz).
             for _ in range(2):
-                self._rx_event.clear()
-                self._rx_event.wait(timeout=1.0)
+                try:
+                    self._rx_queue.get(timeout=1.0)
+                except queue.Empty:
+                    pass
 
             sig_accum = 0j
             ref_accum = 0j
             captured = 0
             for _ in range(num_buffers):
-                self._rx_event.clear()
-                if not self._rx_event.wait(timeout=1.0):
+                try:
+                    rx1, rx2 = self._rx_queue.get(timeout=1.0)
+                except queue.Empty:
                     break
 
-                rx1, rx2 = self._rx_latest
                 if rx1 is None or rx2 is None:
                     continue
 
@@ -367,6 +395,9 @@ class SFCWEngine:
 
                 captured += 1
 
+            if captured < num_buffers:
+                dropped_steps += 1
+
             h_signal[i] = sig_accum / max(captured, 1)
             h_reference[i] = ref_accum / max(captured, 1)
 
@@ -377,6 +408,9 @@ class SFCWEngine:
                     'total': num_steps,
                     'freq_mhz': freqs[i] / 1e6,
                 })
+
+        if dropped_steps > 0:
+            print(f"[sfcw] WARNING: {dropped_steps}/{num_steps} steps had incomplete captures")
 
         # Phase-reference division: cancels TX and RX PLL phase offsets
         ref_mag = np.abs(h_reference)
