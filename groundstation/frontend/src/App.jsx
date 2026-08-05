@@ -78,37 +78,7 @@ function fft(re, im, inverse) {
   return { re: outRe, im: outIm };
 }
 
-function peakAlign(scanData) {
-  const numBins = scanData[0].magnitudes.length;
-  const peakIndices = scanData.map(pos => {
-    let maxVal = -Infinity;
-    let maxIdx = 0;
-    for (let i = 0; i < pos.magnitudes.length; i++) {
-      if (pos.magnitudes[i] > maxVal) {
-        maxVal = pos.magnitudes[i];
-        maxIdx = i;
-      }
-    }
-    return maxIdx;
-  });
 
-  const maxPeakIdx = Math.max(...peakIndices);
-  const distances = scanData[0].distances;
-
-  return scanData.map((pos, i) => {
-    const shift = maxPeakIdx - peakIndices[i];
-    if (shift === 0) return pos;
-    const fillVal = pos.magnitudes[0];
-    const newMags = new Array(numBins).fill(fillVal);
-    for (let j = 0; j < numBins; j++) {
-      const srcIdx = j - shift;
-      if (srcIdx >= 0 && srcIdx < numBins) {
-        newMags[j] = pos.magnitudes[srcIdx];
-      }
-    }
-    return { ...pos, magnitudes: newMags, distances };
-  });
-}
 
 export default function App() {
   const [activePanel, setActivePanel] = useState(null);
@@ -277,7 +247,7 @@ export default function App() {
   }, [processedBscanData, svdEnabled, svdK, svdStrength]);
 
   // Alignment method state (must be before alignShifts memo)
-  const [alignMethod, setAlignMethod] = useState('wall');
+  const [alignMethod, setAlignMethod] = useState('lidar');
 
   // Compute spatial alignment bin shifts (for animated transition in BscanDisplay)
   // Uses lidar standoff data if available, falls back to peak-finding
@@ -421,7 +391,7 @@ export default function App() {
     useAligned: false,
   });
 
-  // Aligned pipeline: IFFT → peak align → normalized BG subtract → SVD
+  // Aligned pipeline: IFFT → align all (scans + BG) to common frame → BG subtract → SVD
   const alignedDisplayData = useMemo(() => {
     if (bscanData.length === 0) return [];
     const startHz = sfcwParams.startFreq * 1e6;
@@ -439,44 +409,113 @@ export default function App() {
       return { ...pos, magnitudes: rp.magnitudes, distances: rp.distances, freqs };
     });
 
-    // Step 2: peak align across scans
-    if (alignEnabled && processed.length >= 2) {
-      processed = peakAlign(processed);
-    }
-
-    // Step 3: aligned BG subtract (BG aligned to each scan via lidar or peak-finding)
+    // Compute BG range profile (needed for alignment and subtraction)
+    let bgRp = null;
+    let bgPeakIdx = 0;
+    let bgPeakLin = 1;
     if (alignBgRef && alignBgRef.h_cal_real && alignBgRef.h_cal_imag) {
       const bgNumSteps = alignBgRef.h_cal_real.length;
-      const bgRp = computeRangeProfile(alignBgRef.h_cal_real, alignBgRef.h_cal_imag, bgNumSteps, alignBgRef.step_size, alignBgRef.range_offset);
-      const bgNumBins = bgRp.magnitudes.length;
-      const bgDistances = bgRp.distances;
-      const binSpacingM = bgDistances.length >= 2 ? bgDistances[1] - bgDistances[0] : 0.001;
-
-      // Find BG peak (fallback for peak-based alignment)
-      let bgPeakIdx = 0;
+      bgRp = computeRangeProfile(alignBgRef.h_cal_real, alignBgRef.h_cal_imag, bgNumSteps, alignBgRef.step_size, alignBgRef.range_offset);
       let bgPeakVal = -Infinity;
-      for (let i = 0; i < bgNumBins; i++) {
+      for (let i = 0; i < bgRp.magnitudes.length; i++) {
         if (bgRp.magnitudes[i] > bgPeakVal) { bgPeakVal = bgRp.magnitudes[i]; bgPeakIdx = i; }
       }
-      const bgPeakLin = Math.pow(10, bgPeakVal / 20);
+      bgPeakLin = Math.pow(10, bgPeakVal / 20);
+    }
 
+    // Step 2: align everything (scans + BG) to a common reference frame
+    if (alignEnabled && processed.length >= 2) {
+      const numBins = processed[0].magnitudes.length;
+      const distances = processed[0].distances;
+      const binSpacingM = distances.length >= 2 ? distances[1] - distances[0] : 0.001;
+
+      const hasLidar = processed.every(p => p.lidar_standoff_mm != null);
+      const hasBgLidar = alignBgRef && alignBgRef.lidar_standoff_mm != null;
+
+      if (hasLidar) {
+        // Lidar-based alignment: shift all to the max standoff position
+        const standoffs = processed.map(p => p.lidar_standoff_mm / 1000);
+        const allStandoffs = [...standoffs];
+        if (hasBgLidar) allStandoffs.push(alignBgRef.lidar_standoff_mm / 1000);
+        const maxStandoff = Math.max(...allStandoffs);
+
+        processed = processed.map((pos, i) => {
+          const shift = (maxStandoff - standoffs[i]) / binSpacingM;
+          const intShift = Math.round(shift);
+          if (intShift === 0) return pos;
+          const fillVal = pos.magnitudes[0];
+          const newMags = new Array(numBins).fill(fillVal);
+          for (let j = 0; j < numBins; j++) {
+            const srcIdx = j - intShift;
+            if (srcIdx >= 0 && srcIdx < numBins) newMags[j] = pos.magnitudes[srcIdx];
+          }
+          return { ...pos, magnitudes: newMags, distances };
+        });
+
+        // Align BG to same reference
+        if (bgRp && hasBgLidar) {
+          const bgShift = Math.round((maxStandoff - alignBgRef.lidar_standoff_mm / 1000) / binSpacingM);
+          if (bgShift !== 0) {
+            const bgNumBins = bgRp.magnitudes.length;
+            const fillVal = bgRp.magnitudes[0];
+            const newBgMags = new Array(bgNumBins).fill(fillVal);
+            for (let j = 0; j < bgNumBins; j++) {
+              const srcIdx = j - bgShift;
+              if (srcIdx >= 0 && srcIdx < bgNumBins) newBgMags[j] = bgRp.magnitudes[srcIdx];
+            }
+            bgRp = { ...bgRp, magnitudes: newBgMags };
+          }
+        }
+      } else {
+        // Peak-based alignment: align all peaks to the maximum
+        const peakIndices = processed.map(pos => {
+          let maxVal = -Infinity, maxIdx = 0;
+          for (let i = 0; i < pos.magnitudes.length; i++) {
+            if (pos.magnitudes[i] > maxVal) { maxVal = pos.magnitudes[i]; maxIdx = i; }
+          }
+          return maxIdx;
+        });
+
+        const allPeaks = [...peakIndices];
+        if (bgRp) allPeaks.push(bgPeakIdx);
+        const maxPeakIdx = Math.max(...allPeaks);
+
+        processed = processed.map((pos, i) => {
+          const shift = maxPeakIdx - peakIndices[i];
+          if (shift === 0) return pos;
+          const fillVal = pos.magnitudes[0];
+          const newMags = new Array(numBins).fill(fillVal);
+          for (let j = 0; j < numBins; j++) {
+            const srcIdx = j - shift;
+            if (srcIdx >= 0 && srcIdx < numBins) newMags[j] = pos.magnitudes[srcIdx];
+          }
+          return { ...pos, magnitudes: newMags, distances };
+        });
+
+        // Align BG to same reference
+        if (bgRp) {
+          const bgShift = maxPeakIdx - bgPeakIdx;
+          if (bgShift !== 0) {
+            const bgNumBins = bgRp.magnitudes.length;
+            const fillVal = bgRp.magnitudes[0];
+            const newBgMags = new Array(bgNumBins).fill(fillVal);
+            for (let j = 0; j < bgNumBins; j++) {
+              const srcIdx = j - bgShift;
+              if (srcIdx >= 0 && srcIdx < bgNumBins) newBgMags[j] = bgRp.magnitudes[srcIdx];
+            }
+            bgRp = { ...bgRp, magnitudes: newBgMags };
+            bgPeakIdx = maxPeakIdx;
+          }
+        }
+      }
+    }
+
+    // Step 3: BG subtract (BG is now in the same spatial frame as the scans)
+    if (bgRp) {
+      const bgNumBins = bgRp.magnitudes.length;
       processed = processed.map(pos => {
         if (!pos.magnitudes) return pos;
         const numBins = pos.magnitudes.length;
-
-        // Compute BG shift: lidar-based if available, else peak-based
-        let bgShift;
-        if (pos.lidar_standoff_mm != null && alignBgRef.lidar_standoff_mm != null) {
-          const deltaM = (pos.lidar_standoff_mm - alignBgRef.lidar_standoff_mm) / 1000;
-          bgShift = deltaM / binSpacingM;
-        } else {
-          let scanPeakIdx = 0;
-          let scanPeakVal = -Infinity;
-          for (let i = 0; i < numBins; i++) {
-            if (pos.magnitudes[i] > scanPeakVal) { scanPeakVal = pos.magnitudes[i]; scanPeakIdx = i; }
-          }
-          bgShift = scanPeakIdx - bgPeakIdx;
-        }
 
         let normFactor = 1.0;
         if (alignNormEnabled) {
@@ -489,20 +528,9 @@ export default function App() {
         }
 
         const newMags = new Array(numBins);
-        const bgShiftFloor = Math.floor(bgShift);
-        const bgShiftFrac = bgShift - bgShiftFloor;
         for (let i = 0; i < numBins; i++) {
           const scanLin = Math.pow(10, pos.magnitudes[i] / 20);
-          // Interpolate BG at fractional shift
-          const bgSrcIdx = i - bgShiftFloor;
-          let bgDb;
-          if (bgSrcIdx >= 0 && bgSrcIdx < bgNumBins - 1) {
-            bgDb = bgRp.magnitudes[bgSrcIdx] * (1 - bgShiftFrac) + bgRp.magnitudes[bgSrcIdx + 1] * bgShiftFrac;
-          } else if (bgSrcIdx >= 0 && bgSrcIdx < bgNumBins) {
-            bgDb = bgRp.magnitudes[bgSrcIdx];
-          } else {
-            bgDb = bgRp.magnitudes[0];
-          }
+          const bgDb = (i < bgNumBins) ? bgRp.magnitudes[i] : bgRp.magnitudes[0];
           const bgLin = Math.pow(10, bgDb / 20) * normFactor;
           const diff = Math.max(scanLin - bgLin, 1e-12);
           newMags[i] = 20 * Math.log10(diff);
