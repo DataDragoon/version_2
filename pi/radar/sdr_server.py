@@ -155,11 +155,24 @@ class SDRServer:
                 await ws.send(json.dumps({'type': 'sfcw_status', **self._get_sfcw_status()}))
 
             elif action == 'sweep_capture':
+                if self.sfcw.running and not self.sfcw._warm:
+                    self.sfcw.stop()
+                if not self.sfcw._warm:
+                    self._stop_all_streams()
+                    await self._broadcast_status()
+                self.sfcw.run_single(self._sfcw_callback)
+                await self._broadcast_sfcw_status()
+
+            elif action == 'bscan_warm_up':
                 if self.sfcw.running:
                     self.sfcw.stop()
                 self._stop_all_streams()
                 await self._broadcast_status()
-                self.sfcw.run_single(self._sfcw_callback)
+                self.sfcw.warm_up()
+                await self._broadcast_sfcw_status()
+
+            elif action == 'bscan_cool_down':
+                self.sfcw.cool_down()
                 await self._broadcast_sfcw_status()
 
             elif action == 'sweep_capture_bg':

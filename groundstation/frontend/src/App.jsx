@@ -163,6 +163,7 @@ export default function App() {
   const [bscanBgRef, setBscanBgRef] = useState(null);
   const [bgApplied, setBgApplied] = useState(true);
   const bscanPendingRef = useRef(null);
+  const bscanWarmRef = useRef(false);
 
   // Lidar accumulator for averaging during SFCW sweeps
   const LIDAR_ANTENNA_OFFSET_MM = 315;
@@ -661,11 +662,19 @@ export default function App() {
 
   const handleBscanAction = useCallback((action) => {
     if (action === 'capture') {
+      if (!bscanWarmRef.current) {
+        sendSdr({ cmd: 'bscan_warm_up' });
+        bscanWarmRef.current = true;
+      }
       lidarAccumRef.current = [];
       bscanPendingRef.current = 'capture';
       setBscanCapturing(true);
       sendSdr({ cmd: 'sweep_capture' });
     } else if (action === 'capture_bg') {
+      if (!bscanWarmRef.current) {
+        sendSdr({ cmd: 'bscan_warm_up' });
+        bscanWarmRef.current = true;
+      }
       lidarAccumRef.current = [];
       bscanPendingRef.current = 'capture_bg';
       setBscanCapturing(true);
@@ -673,6 +682,10 @@ export default function App() {
     } else if (action === 'clear_bg') {
       setBscanBgRef(null);
     } else if (action === 'new') {
+      if (bscanWarmRef.current) {
+        sendSdr({ cmd: 'bscan_cool_down' });
+        bscanWarmRef.current = false;
+      }
       setBscanData([]);
     } else if (action === 'undo') {
       setBscanData(prev => prev.slice(0, -1));
@@ -761,6 +774,19 @@ export default function App() {
 
   const isConnected = imuStatus === 'connected';
 
+  // Cool down B-scan hardware when leaving B-scan panel
+  const prevPanelRef = useRef(activePanel);
+  useEffect(() => {
+    const prev = prevPanelRef.current;
+    prevPanelRef.current = activePanel;
+    if ((prev === 'bscan' || prev === 'aligned') && prev !== activePanel) {
+      if (bscanWarmRef.current) {
+        sendSdr({ cmd: 'bscan_cool_down' });
+        bscanWarmRef.current = false;
+      }
+    }
+  }, [activePanel, sendSdr]);
+
   // Auto-connect on mount if a saved IP exists
   const autoConnectedRef = useRef(false);
   useEffect(() => {
@@ -833,6 +859,10 @@ export default function App() {
         onAlignNormEnabledChange={setAlignNormEnabled}
         alignBgCaptured={alignBgRef !== null}
         onAlignBgCapture={() => {
+          if (!bscanWarmRef.current) {
+            sendSdr({ cmd: 'bscan_warm_up' });
+            bscanWarmRef.current = true;
+          }
           lidarAccumRef.current = [];
           bscanPendingRef.current = 'capture_align_bg';
           setBscanCapturing(true);

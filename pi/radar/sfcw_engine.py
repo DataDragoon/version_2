@@ -13,7 +13,7 @@ import time
 import numpy as np
 
 from bladerf_driver import BladeRFDriver
-from bladerf._bladerf import libbladeRF, ffi
+from bladerf._bladerf import libbladeRF
 import bladerf
 
 SPEED_OF_LIGHT = 299_792_458
@@ -45,7 +45,8 @@ class SFCWEngine:
         self._last_h_cal = None
         self._fpga_tuning = False
         self._gains_dirty = False
-        self._tracking_cal_reg = None
+        self._warm = False
+        self._sweep_lock = threading.Lock()
 
     @property
     def num_steps(self):
@@ -202,6 +203,11 @@ class SFCWEngine:
 
     def run_single(self, callback):
         """Run a single sweep and stop. Used for B-scan position captures."""
+        if self._warm:
+            self._callback = callback
+            t = threading.Thread(target=self._warm_sweep_worker, args=(callback,), daemon=True)
+            t.start()
+            return
         if self.running:
             return
         self._callback = callback
@@ -210,10 +216,23 @@ class SFCWEngine:
         self._thread = threading.Thread(target=self._single_sweep_worker, daemon=True)
         self._thread.start()
 
+    def _warm_sweep_worker(self, callback):
+        """Perform a single sweep with hardware already running (warm B-scan mode)."""
+        with self._sweep_lock:
+            try:
+                result = self._perform_sweep()
+                if result is not None and callback:
+                    callback(result)
+            except Exception as e:
+                print(f"[sfcw] Warm sweep error: {e}")
+                if callback:
+                    callback({'error': str(e)})
+
     def _single_sweep_worker(self):
         try:
             self._configure_hardware()
             self._start_tx_rx()
+            time.sleep(0.1)
             result = self._perform_sweep()
             if result is not None and self._callback:
                 self._callback(result)
@@ -224,6 +243,25 @@ class SFCWEngine:
         finally:
             self._stop_tx_rx()
             self.running = False
+
+    def warm_up(self):
+        """Start hardware and keep it running for multiple on-demand sweeps (B-scan mode)."""
+        if self._warm or self.running:
+            return
+        self._stop_event.clear()
+        self._configure_hardware()
+        self._start_tx_rx()
+        time.sleep(0.1)
+        self._warm = True
+        self.running = True
+
+    def cool_down(self):
+        """Stop hardware after warm B-scan session."""
+        if not self._warm:
+            return
+        self._stop_tx_rx()
+        self._warm = False
+        self.running = False
 
     def start(self, callback):
         if self.running:
@@ -236,6 +274,9 @@ class SFCWEngine:
 
     def stop(self):
         if not self.running:
+            return
+        if self._warm:
+            self.cool_down()
             return
         self._stop_event.set()
         if self._thread:
@@ -250,11 +291,10 @@ class SFCWEngine:
 
             while not self._stop_event.is_set():
                 if not self.driver.tx_running or not self.driver.rx_running:
-                    print("[sfcw] TX/RX thread died — restarting streams")
-                    self._stop_tx_rx()
-                    time.sleep(0.1)
-                    self._configure_hardware()
-                    self._start_tx_rx()
+                    print("[sfcw] ERROR: TX/RX stream died unexpectedly")
+                    if self._callback:
+                        self._callback({'error': 'USB stream died — restart sweep'})
+                    break
                 if self._gains_dirty:
                     self._apply_gains()
                 range_profile = self._perform_sweep()
@@ -280,9 +320,6 @@ class SFCWEngine:
         self.driver._configure_channels_dual()
         self.driver.set_tuning_mode_fpga()
         self._fpga_tuning = True
-        # Disable AD9361 tracking calibrations — they cause intermittent amplitude
-        # drops during rapid retuning (DC offset tracking briefly attenuates signal).
-        self._disable_tracking_cals()
 
     def _start_tx_rx(self):
         self._rx_lock = threading.Lock()
@@ -315,31 +352,10 @@ class SFCWEngine:
     def _stop_tx_rx(self):
         self.driver.stop_rx_dual()
         self.driver.stop_tx_dual()
-        self._restore_tracking_cals()
         # Restore single-channel config so calib panel works after SFCW
         self.driver._configure_channels()
 
-    def _disable_tracking_cals(self):
-        """Disable AD9361 tracking calibrations (reg 0x137) during sweeps."""
-        dev_ptr = self.driver.device.dev[0]
-        val = ffi.new('uint8_t *')
-        rc = libbladeRF.bladerf_get_rfic_register(dev_ptr, 0x137, val)
-        if rc == 0:
-            self._tracking_cal_reg = val[0]
-            # Clear bits 4-6: RX DC track, TX Quad track, RX Quad track
-            new_val = val[0] & 0x0F
-            libbladeRF.bladerf_set_rfic_register(dev_ptr, 0x137, new_val)
-            print(f"[sfcw] Tracking cals disabled (0x137: 0x{val[0]:02x} → 0x{new_val:02x})")
-        else:
-            self._tracking_cal_reg = None
-            print(f"[sfcw] WARNING: Could not read tracking cal register (rc={rc})")
 
-    def _restore_tracking_cals(self):
-        """Restore AD9361 tracking calibrations after sweep."""
-        if self._tracking_cal_reg is not None:
-            dev_ptr = self.driver.device.dev[0]
-            libbladeRF.bladerf_set_rfic_register(dev_ptr, 0x137, self._tracking_cal_reg)
-            print(f"[sfcw] Tracking cals restored (0x137: 0x{self._tracking_cal_reg:02x})")
 
     def _rx_capture(self, rx1_iq, rx2_iq):
         with self._rx_lock:
