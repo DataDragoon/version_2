@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
 
-export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, bgApplied, onBgAppliedChange, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange }) {
+export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, bgApplied, onBgAppliedChange, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange, bscanAvgCount, onBscanAvgCountChange }) {
   const { stepSize, numPositions, wallStandoff, wallThickness, wallPermittivity } = params;
 
   const update = (key, value) => {
@@ -32,6 +32,16 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
             onChange={(v) => update('numPositions', Math.round(v))}
             min={2}
             max={200}
+          />
+        </div>
+        <div className="grid grid-cols-1 gap-2">
+          <EditableField
+            label="Avg Sweeps"
+            value={bscanAvgCount}
+            unit="ct"
+            onChange={(v) => onBscanAvgCountChange(Math.round(v))}
+            min={1}
+            max={16}
           />
         </div>
       </Section>
@@ -129,7 +139,7 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
               {scanCapturing ? 'Sweeping...' : `Capture Position ${captured + 1}`}
             </span>
             <span className="text-xs text-[#555555] leading-relaxed">
-              {scanCapturing ? 'Single sweep in progress' :
+              {scanCapturing ? `Averaging ${bscanAvgCount} sweep${bscanAvgCount > 1 ? 's' : ''}...` :
                captured >= numPositions ? 'Scan complete' :
                `At ${(captured * stepSize).toFixed(1)} cm`}
             </span>

@@ -122,6 +122,8 @@ class SDRServer:
                     params['rx2_gain'] = int(cmd['rx2_gain'])
                 if 'range_offset' in cmd:
                     params['range_offset'] = float(cmd['range_offset'])
+                if 'bscan_avg_count' in cmd:
+                    params['bscan_avg_count'] = int(cmd['bscan_avg_count'])
                 self.sfcw.set_params(**params)
                 await self._broadcast_sfcw_status()
 
@@ -170,11 +172,14 @@ class SDRServer:
                 await self._broadcast_sfcw_status()
 
             elif action == 'bscan_warm_up':
-                if self.sfcw.running:
-                    self.sfcw.stop()
-                self._stop_all_streams()
-                await self._broadcast_status()
-                self.sfcw.warm_up()
+                if self.sfcw._warm:
+                    pass
+                else:
+                    if self.sfcw.running:
+                        self.sfcw.stop()
+                    self._stop_all_streams()
+                    await self._broadcast_status()
+                    self.sfcw.warm_up()
                 await self._broadcast_sfcw_status()
 
             elif action == 'bscan_cool_down':

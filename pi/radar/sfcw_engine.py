@@ -34,6 +34,7 @@ class SFCWEngine:
         self.rx_gain_min = 5
         self.rx_gain_max = 38
         self.range_offset = 0.5
+        self.bscan_avg_count = 1
         self.running = False
         self._stop_event = threading.Event()
         self._thread = None
@@ -98,6 +99,8 @@ class SFCWEngine:
                 self.rx_gain_max = int(kwargs['rx_gain_max'])
             if 'range_offset' in kwargs:
                 self.range_offset = float(kwargs['range_offset'])
+            if 'bscan_avg_count' in kwargs:
+                self.bscan_avg_count = max(1, int(kwargs['bscan_avg_count']))
 
     def get_params(self):
         return {
@@ -117,6 +120,7 @@ class SFCWEngine:
             'bandwidth': self.bandwidth,
             'range_resolution': self.range_resolution,
             'max_range': self.max_range,
+            'bscan_avg_count': self.bscan_avg_count,
             'background_active': self._background is not None,
             'bg_subtract_mode': self._bg_subtract_mode,
         }
@@ -217,10 +221,30 @@ class SFCWEngine:
         self._thread.start()
 
     def _warm_sweep_worker(self, callback):
-        """Perform a single sweep with hardware already running (warm B-scan mode)."""
+        """Perform averaged sweeps with hardware already running (warm B-scan mode)."""
         with self._sweep_lock:
             try:
-                result = self._perform_sweep()
+                avg_count = self.bscan_avg_count
+                if avg_count <= 1:
+                    result = self._perform_sweep()
+                else:
+                    h_cal_accum = None
+                    completed = 0
+                    for i in range(avg_count):
+                        raw = self._perform_sweep_raw()
+                        if raw is None:
+                            continue
+                        if h_cal_accum is None:
+                            h_cal_accum = raw.copy()
+                        else:
+                            h_cal_accum += raw
+                        completed += 1
+                    if completed == 0:
+                        result = None
+                    else:
+                        h_cal_avg = h_cal_accum / completed
+                        self._last_h_cal = h_cal_avg.copy()
+                        result = self._process_h_cal(h_cal_avg)
                 if result is not None and callback:
                     callback(result)
             except Exception as e:
@@ -254,6 +278,7 @@ class SFCWEngine:
         self._configure_hardware()
         self._start_tx_rx()
         time.sleep(0.1)
+        self._perform_sweep_raw()
         self._warm = True
         self.running = True
 
@@ -476,6 +501,92 @@ class SFCWEngine:
         self._last_h_cal = h_cal.copy()
 
         return self._process_h_cal(h_cal)
+
+    def _perform_sweep_raw(self):
+        """Like _perform_sweep but returns raw h_cal array for averaging."""
+        with self._lock:
+            start = self.start_freq
+            stop = self.stop_freq
+            step = self.step_size
+            settle = self.settle_time
+            num_buffers = self.num_buffers
+
+        num_steps = int((stop - start) / step) + 1
+        freqs = np.linspace(start, stop, num_steps).astype(np.int64)
+        h_signal = np.zeros(num_steps, dtype=np.complex128)
+        h_reference = np.zeros(num_steps, dtype=np.complex128)
+
+        dev_ptr = self.driver.device.dev[0]
+        tx_ch = bladerf.CHANNEL_TX(0)
+        rx_ch = bladerf.CHANNEL_RX(0)
+
+        dropped_steps = 0
+
+        for i in range(num_steps):
+            if self._stop_event.is_set():
+                return None
+
+            f = int(freqs[i])
+
+            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+
+            with self._rx_lock:
+                seq_after_retune = self._rx_seq
+            target_seq = seq_after_retune + 2
+            deadline = time.monotonic() + 1.0
+            while True:
+                with self._rx_lock:
+                    if self._rx_seq >= target_seq:
+                        break
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(0.0002)
+
+            sig_accum = 0j
+            ref_accum = 0j
+            captured = 0
+            with self._rx_lock:
+                last_seq = self._rx_seq
+
+            for _ in range(num_buffers):
+                deadline = time.monotonic() + 1.0
+                while True:
+                    with self._rx_lock:
+                        if self._rx_seq > last_seq:
+                            rx1, rx2 = self._rx_latest
+                            last_seq = self._rx_seq
+                            break
+                    if time.monotonic() > deadline:
+                        rx1, rx2 = None, None
+                        break
+                    time.sleep(0.0002)
+
+                if rx1 is None or rx2 is None:
+                    continue
+
+                i1 = rx1[0::2].astype(np.float64) / 2047.0
+                q1 = rx1[1::2].astype(np.float64) / 2047.0
+                sig_accum += np.mean((i1 + 1j * q1) * self._ref_tone)
+
+                i2 = rx2[0::2].astype(np.float64) / 2047.0
+                q2 = rx2[1::2].astype(np.float64) / 2047.0
+                ref_accum += np.mean((i2 + 1j * q2) * self._ref_tone)
+
+                captured += 1
+
+            if captured < num_buffers:
+                dropped_steps += 1
+
+            h_signal[i] = sig_accum / max(captured, 1)
+            h_reference[i] = ref_accum / max(captured, 1)
+
+        ref_mag = np.abs(h_reference)
+        valid = ref_mag > 1e-10
+        h_cal = np.zeros(num_steps, dtype=np.complex128)
+        h_cal[valid] = h_signal[valid] / h_reference[valid]
+
+        return h_cal
 
     def _process_h_cal(self, h_cal):
         num_steps = len(h_cal)

@@ -148,6 +148,7 @@ export default function App() {
   // B-scan display toggles
   const [bscanScaleMode, setBscanScaleMode] = useState('linear');
   const [bscanDisplayMode, setBscanDisplayMode] = useState('color');
+  const [bscanAvgCount, setBscanAvgCount] = useState(1);
 
   // B-scan SVD filter state (used by bscan panel + sar)
   const [svdEnabled, setSvdEnabled] = useState(false);
@@ -665,6 +666,11 @@ export default function App() {
   const sdrUrl = piIp ? `ws://${piIp}:9003` : null;
   const { status: sdrConnectionStatus, send: sendSdr, connect: connectSdr, disconnect: disconnectSdr } = useWebSocket(sdrUrl, handleSdrMessage);
 
+  const handleBscanAvgCountChange = useCallback((count) => {
+    setBscanAvgCount(count);
+    sendSdr({ cmd: 'sfcw_set_params', bscan_avg_count: count });
+  }, [sendSdr]);
+
   const handleBscanAction = useCallback((action) => {
     if (action === 'capture') {
       sendSdr({ cmd: 'bscan_warm_up' });
@@ -833,6 +839,8 @@ export default function App() {
         onBscanScaleModeChange={setBscanScaleMode}
         bscanDisplayMode={bscanDisplayMode}
         onBscanDisplayModeChange={setBscanDisplayMode}
+        bscanAvgCount={bscanAvgCount}
+        onBscanAvgCountChange={handleBscanAvgCountChange}
         alignEnabled={alignEnabled}
         onAlignEnabledChange={setAlignEnabled}
         alignMethod={alignMethod}
