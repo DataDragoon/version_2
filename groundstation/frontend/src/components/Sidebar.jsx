@@ -70,6 +70,8 @@ export default function Sidebar({
   onBscanDisplayModeChange,
   bscanAvgCount,
   onBscanAvgCountChange,
+  bscanPrimer,
+  onBscanPrimerChange,
   alignEnabled,
   onAlignEnabledChange,
   alignMethod,
@@ -265,6 +267,8 @@ export default function Sidebar({
                   onDisplayModeChange={onBscanDisplayModeChange}
                   bscanAvgCount={bscanAvgCount}
                   onBscanAvgCountChange={onBscanAvgCountChange}
+                  bscanPrimer={bscanPrimer}
+                  onBscanPrimerChange={onBscanPrimerChange}
                 />
               )}
               {activePanel === 'aligned' && (

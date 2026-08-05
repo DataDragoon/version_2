@@ -149,6 +149,7 @@ export default function App() {
   const [bscanScaleMode, setBscanScaleMode] = useState('linear');
   const [bscanDisplayMode, setBscanDisplayMode] = useState('color');
   const [bscanAvgCount, setBscanAvgCount] = useState(1);
+  const [bscanPrimer, setBscanPrimer] = useState(false);
 
   // B-scan SVD filter state (used by bscan panel + sar)
   const [svdEnabled, setSvdEnabled] = useState(false);
@@ -671,6 +672,11 @@ export default function App() {
     sendSdr({ cmd: 'sfcw_set_params', bscan_avg_count: count });
   }, [sendSdr]);
 
+  const handleBscanPrimerChange = useCallback((enabled) => {
+    setBscanPrimer(enabled);
+    sendSdr({ cmd: 'sfcw_set_params', bscan_primer: enabled });
+  }, [sendSdr]);
+
   const handleBscanAction = useCallback((action) => {
     if (action === 'capture') {
       sendSdr({ cmd: 'bscan_warm_up' });
@@ -841,6 +847,8 @@ export default function App() {
         onBscanDisplayModeChange={setBscanDisplayMode}
         bscanAvgCount={bscanAvgCount}
         onBscanAvgCountChange={handleBscanAvgCountChange}
+        bscanPrimer={bscanPrimer}
+        onBscanPrimerChange={handleBscanPrimerChange}
         alignEnabled={alignEnabled}
         onAlignEnabledChange={setAlignEnabled}
         alignMethod={alignMethod}

@@ -35,6 +35,7 @@ class SFCWEngine:
         self.rx_gain_max = 38
         self.range_offset = 0.5
         self.bscan_avg_count = 1
+        self.bscan_primer = False
         self.running = False
         self._stop_event = threading.Event()
         self._thread = None
@@ -101,6 +102,8 @@ class SFCWEngine:
                 self.range_offset = float(kwargs['range_offset'])
             if 'bscan_avg_count' in kwargs:
                 self.bscan_avg_count = max(1, int(kwargs['bscan_avg_count']))
+            if 'bscan_primer' in kwargs:
+                self.bscan_primer = bool(kwargs['bscan_primer'])
 
     def get_params(self):
         return {
@@ -121,6 +124,7 @@ class SFCWEngine:
             'range_resolution': self.range_resolution,
             'max_range': self.max_range,
             'bscan_avg_count': self.bscan_avg_count,
+            'bscan_primer': self.bscan_primer,
             'background_active': self._background is not None,
             'bg_subtract_mode': self._bg_subtract_mode,
         }
@@ -224,6 +228,9 @@ class SFCWEngine:
         """Perform averaged sweeps with hardware already running (warm B-scan mode)."""
         with self._sweep_lock:
             try:
+                if self.bscan_primer:
+                    self._perform_sweep_raw()
+
                 avg_count = self.bscan_avg_count
                 if avg_count <= 1:
                     result = self._perform_sweep()

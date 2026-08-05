@@ -124,6 +124,8 @@ class SDRServer:
                     params['range_offset'] = float(cmd['range_offset'])
                 if 'bscan_avg_count' in cmd:
                     params['bscan_avg_count'] = int(cmd['bscan_avg_count'])
+                if 'bscan_primer' in cmd:
+                    params['bscan_primer'] = bool(cmd['bscan_primer'])
                 self.sfcw.set_params(**params)
                 await self._broadcast_sfcw_status()
 
