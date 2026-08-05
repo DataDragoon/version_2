@@ -4,7 +4,7 @@ import { Section, InfoTile } from './Sidebar';
 
 const LIDAR_AVG_WINDOW = 20;
 
-export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, bgApplied, onBgAppliedChange, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange, bscanAvgCount, onBscanAvgCountChange, bscanPrimer, onBscanPrimerChange, lidarMm }) {
+export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, bgApplied, onBgAppliedChange, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange, bscanAvgCount, onBscanAvgCountChange, bscanPrimer, onBscanPrimerChange, lidarMm, bgStandoffMm, onBgStandoffMmChange }) {
   const { stepSize, numPositions, wallStandoff, wallThickness, wallPermittivity } = params;
 
   const update = (key, value) => {
@@ -13,7 +13,6 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
 
   const lidarBuf = useRef([]);
   const [lidarAvg, setLidarAvg] = useState(null);
-  const [bgStandoffMm, setBgStandoffMm] = useState(null);
 
   useEffect(() => {
     if (lidarMm == null) return;
@@ -24,17 +23,11 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
     setLidarAvg(avg);
   }, [lidarMm]);
 
-  useEffect(() => {
-    if (!bgCaptured) {
-      setBgStandoffMm(null);
-    }
-  }, [bgCaptured]);
-
   const handleAction = (action) => {
     if (action === 'capture_bg' && lidarAvg != null) {
-      setBgStandoffMm(lidarAvg);
+      onBgStandoffMmChange(lidarAvg);
     } else if (action === 'clear_bg') {
-      setBgStandoffMm(null);
+      onBgStandoffMmChange(null);
     }
     onScanAction(action);
   };

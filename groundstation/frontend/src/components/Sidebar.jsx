@@ -72,6 +72,8 @@ export default function Sidebar({
   onBscanAvgCountChange,
   bscanPrimer,
   onBscanPrimerChange,
+  bgStandoffMm,
+  onBgStandoffMmChange,
   alignEnabled,
   onAlignEnabledChange,
   alignMethod,
@@ -270,6 +272,8 @@ export default function Sidebar({
                   bscanPrimer={bscanPrimer}
                   onBscanPrimerChange={onBscanPrimerChange}
                   lidarMm={lidarMm}
+                  bgStandoffMm={bgStandoffMm}
+                  onBgStandoffMmChange={onBgStandoffMmChange}
                 />
               )}
               {activePanel === 'aligned' && (
