@@ -174,8 +174,8 @@ export default function Viewport({
     const isAligned = activePanel === 'aligned';
     const label = isAligned ? 'Aligned B-Scan' : 'B-Scan Imaging';
     const icon = isAligned ? AlignVerticalSpaceBetween : ScanLine;
-    const targetScanShifts = isAligned ? bscanAlignShifts.scanShifts : bscanData.map(() => 0);
-    const targetBgShift = isAligned ? bscanAlignShifts.bgShift : 0;
+    const targetScanShifts = bscanData.map(() => 0);
+    const targetBgShift = 0;
     const displayData = (isAligned && bscanAlignedSvdData) ? bscanAlignedSvdData : bscanData;
 
     return (

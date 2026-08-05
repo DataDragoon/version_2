@@ -311,56 +311,69 @@ export default function App() {
   const [alignSvdK, setAlignSvdK] = useState(1);
   const [alignSvdStrength, setAlignSvdStrength] = useState(0.5);
 
-  // Aligned SVD: shift data by alignment, apply SVD on overlapping region, return shifted data
+  // Aligned panel pipeline: align scans to common reference in freq domain → BG subtract → IFFT → SVD
+  // This ensures background subtraction happens AFTER spatial alignment, so reflections
+  // from the same physical location subtract correctly across all scan positions.
   const alignedSvdData = useMemo(() => {
-    if (!alignSvdEnabled || filteredBscanData.length < 2) return null;
-    const shifts = alignShifts.scanShifts;
-    if (!shifts || shifts.length !== filteredBscanData.length) return null;
+    if (bscanData.length < 2) return null;
+    const startHz = sfcwParams.startFreq * 1e6;
+    const stopHz = sfcwParams.stopFreq * 1e6;
 
-    const intShifts = shifts.map(s => Math.round(s));
-    const maxShift = Math.max(...intShifts);
-    const numBins = filteredBscanData[0].magnitudes.length;
-    const overlapStart = maxShift;
-    const overlapEnd = numBins;
-    const overlapLen = overlapEnd - overlapStart;
-    if (overlapLen < 2) return null;
+    const hasLidar = bscanData.every(pos => pos.lidar_standoff_mm != null);
+    if (!hasLidar) return null;
 
-    const numPos = filteredBscanData.length;
-    const flat = new Float64Array(numPos * overlapLen);
-    for (let p = 0; p < numPos; p++) {
-      const mags = filteredBscanData[p].magnitudes;
-      const shift = intShifts[p];
-      for (let b = 0; b < overlapLen; b++) {
-        const srcBin = (overlapStart - shift) + b;
-        flat[p * overlapLen + b] = (srcBin >= 0 && srcBin < numBins) ? mags[srcBin] : mags[0];
+    const standoffs = bscanData.map(pos => pos.lidar_standoff_mm / 1000);
+    const maxStandoff = Math.max(...standoffs);
+
+    // Phase-shift each scan to the reference position (max standoff),
+    // then subtract BG (also phase-shifted to reference), then IFFT
+    const processed = bscanData.map((pos, idx) => {
+      if (!pos.h_cal_real || !pos.h_cal_imag) return pos;
+      const numSteps = pos.h_cal_real.length;
+
+      const alignD = maxStandoff - standoffs[idx];
+      const alignPhasePerHz = 2 * Math.PI * 2 * alignD / SPEED_OF_LIGHT;
+
+      let real = new Array(numSteps);
+      let imag = new Array(numSteps);
+      for (let i = 0; i < numSteps; i++) {
+        const freq = startHz + (i / (numSteps - 1)) * (stopHz - startHz);
+        const phase = alignPhasePerHz * freq;
+        const cosP = Math.cos(phase);
+        const sinP = Math.sin(phase);
+        real[i] = pos.h_cal_real[i] * cosP - pos.h_cal_imag[i] * sinP;
+        imag[i] = pos.h_cal_real[i] * sinP + pos.h_cal_imag[i] * cosP;
       }
-    }
 
-    const s = Math.max(0, Math.min(1, alignSvdStrength));
-    for (let i = 0; i < alignSvdK; i++) {
-      const { u, sigma, v } = powerIteration(flat, numPos, overlapLen);
-      if (sigma < 1e-10) break;
-      for (let p = 0; p < numPos; p++) {
-        for (let b = 0; b < overlapLen; b++) {
-          flat[p * overlapLen + b] -= s * sigma * u[p] * v[b];
+      if (bgApplied && bscanBgRef && bscanBgRef.h_cal_real && bscanBgRef.h_cal_imag
+          && bscanBgRef.h_cal_real.length === numSteps) {
+        let bgAlignD = 0;
+        if (bscanBgRef.lidar_standoff_mm != null) {
+          bgAlignD = maxStandoff - (bscanBgRef.lidar_standoff_mm / 1000);
+        }
+        const bgPhasePerHz = 2 * Math.PI * 2 * bgAlignD / SPEED_OF_LIGHT;
+
+        for (let i = 0; i < numSteps; i++) {
+          const freq = startHz + (i / (numSteps - 1)) * (stopHz - startHz);
+          const phase = bgPhasePerHz * freq;
+          const cosP = Math.cos(phase);
+          const sinP = Math.sin(phase);
+          const bgR = bscanBgRef.h_cal_real[i] * cosP - bscanBgRef.h_cal_imag[i] * sinP;
+          const bgI = bscanBgRef.h_cal_real[i] * sinP + bscanBgRef.h_cal_imag[i] * cosP;
+          real[i] -= bgR;
+          imag[i] -= bgI;
         }
       }
-    }
 
-    return filteredBscanData.map((pos, p) => {
-      const newMags = new Array(numBins);
-      const shift = intShifts[p];
-      for (let b = 0; b < numBins; b++) {
-        const overlapB = (b + shift) - overlapStart;
-        if (overlapB >= 0 && overlapB < overlapLen) {
-          newMags[b] = flat[p * overlapLen + overlapB];
-        } else {
-          newMags[b] = pos.magnitudes[b];
-        }
-      }
-      return { ...pos, magnitudes: newMags };
+      const rp = computeRangeProfile(real, imag, numSteps, pos.step_size, pos.range_offset);
+      return { ...pos, magnitudes: rp.magnitudes, distances: rp.distances };
     });
-  }, [filteredBscanData, alignShifts, alignSvdEnabled, alignSvdK, alignSvdStrength]);
+
+    if (alignSvdEnabled && processed.length >= 2) {
+      return svdFilter(processed, alignSvdK, alignSvdStrength);
+    }
+    return processed;
+  }, [bscanData, sfcwParams.startFreq, sfcwParams.stopFreq, bgApplied, bscanBgRef, alignSvdEnabled, alignSvdK, alignSvdStrength]);
 
   // SAR state (only SAR-specific params; depth/wall/svd come from bscan)
   const [sarParams, setSarParams] = useState({
