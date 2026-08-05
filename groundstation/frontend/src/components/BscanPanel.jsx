@@ -1,13 +1,46 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
 
-export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, bgApplied, onBgAppliedChange, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange, bscanAvgCount, onBscanAvgCountChange, bscanPrimer, onBscanPrimerChange }) {
+const LIDAR_AVG_WINDOW = 20;
+
+export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, bgApplied, onBgAppliedChange, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange, bscanAvgCount, onBscanAvgCountChange, bscanPrimer, onBscanPrimerChange, lidarMm }) {
   const { stepSize, numPositions, wallStandoff, wallThickness, wallPermittivity } = params;
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
   };
+
+  const lidarBuf = useRef([]);
+  const [lidarAvg, setLidarAvg] = useState(null);
+  const [bgStandoffMm, setBgStandoffMm] = useState(null);
+
+  useEffect(() => {
+    if (lidarMm == null) return;
+    const buf = lidarBuf.current;
+    buf.push(lidarMm);
+    if (buf.length > LIDAR_AVG_WINDOW) buf.shift();
+    const avg = buf.reduce((s, v) => s + v, 0) / buf.length;
+    setLidarAvg(avg);
+  }, [lidarMm]);
+
+  useEffect(() => {
+    if (!bgCaptured) {
+      setBgStandoffMm(null);
+    }
+  }, [bgCaptured]);
+
+  const handleAction = (action) => {
+    if (action === 'capture_bg' && lidarAvg != null) {
+      setBgStandoffMm(lidarAvg);
+    } else if (action === 'clear_bg') {
+      setBgStandoffMm(null);
+    }
+    onScanAction(action);
+  };
+
+  const deltaMm = (bgStandoffMm != null && lidarAvg != null) ? lidarAvg - bgStandoffMm : null;
+  const deltaOk = deltaMm != null && Math.abs(deltaMm) <= 5;
 
   const canCapture = isConnected && sdrConnected && !scanCapturing;
   const captured = scanData.length;
@@ -69,6 +102,33 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
         )}
       </Section>
 
+      <Section label="Standoff">
+        <div className="flex flex-col gap-2">
+          <div className="flex items-baseline justify-between px-3 py-2 rounded-xl border border-white/8 bg-[#0a0a0a]/60">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">Distance</span>
+            <span className="text-base font-bold font-mono text-white">
+              {lidarAvg != null ? lidarAvg.toFixed(1) : '—'} <span className="text-xs font-semibold text-[#888888]">mm</span>
+            </span>
+          </div>
+          {bgStandoffMm != null && (
+            <div className={cn(
+              'flex items-baseline justify-between px-3 py-2 rounded-xl border',
+              deltaOk
+                ? 'border-green-500/30 bg-green-500/5'
+                : 'border-red-500/30 bg-red-500/5'
+            )}>
+              <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">Delta</span>
+              <span className={cn(
+                'text-base font-bold font-mono',
+                deltaOk ? 'text-green-400' : 'text-red-400'
+              )}>
+                {deltaMm != null ? (deltaMm >= 0 ? '+' : '') + deltaMm.toFixed(1) : '—'} <span className="text-xs font-semibold text-[#888888]">mm</span>
+              </span>
+            </div>
+          )}
+        </div>
+      </Section>
+
       <Section label="Display">
         <div className="flex gap-2">
           <button
@@ -89,7 +149,7 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
       <Section label="Background">
         <div className="grid grid-cols-2 gap-2">
           <button
-            onClick={() => onScanAction('capture_bg')}
+            onClick={() => handleAction('capture_bg')}
             disabled={!canCapture}
             className={cn(
               'px-3 py-2.5 rounded-lg text-xs font-medium transition-all',
@@ -101,7 +161,7 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
             Capture BG
           </button>
           <button
-            onClick={() => onScanAction('clear_bg')}
+            onClick={() => handleAction('clear_bg')}
             className="px-3 py-2.5 rounded-lg text-xs font-medium bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
           >
             Clear BG
