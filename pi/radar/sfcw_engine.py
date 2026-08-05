@@ -249,6 +249,8 @@ class SFCWEngine:
         if self._warm or self.running:
             return
         self._stop_event.clear()
+        self._background = None
+        self._capture_background = False
         self._configure_hardware()
         self._start_tx_rx()
         time.sleep(0.1)

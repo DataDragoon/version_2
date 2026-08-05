@@ -57,12 +57,16 @@ class SDRServer:
         action = cmd.get('cmd')
         try:
             if action == 'start_tx':
+                if self.sfcw._warm:
+                    self.sfcw.cool_down()
                 self.driver.start_tx()
                 await self._broadcast_status()
             elif action == 'stop_tx':
                 self.driver.stop_tx()
                 await self._broadcast_status()
             elif action == 'start_rx':
+                if self.sfcw._warm:
+                    self.sfcw.cool_down()
                 self.driver.start_rx(self._rx_callback)
                 await self._broadcast_status()
             elif action == 'stop_rx':
@@ -122,6 +126,8 @@ class SDRServer:
                 await self._broadcast_sfcw_status()
 
             elif action == 'sfcw_start':
+                if self.sfcw._warm:
+                    self.sfcw.cool_down()
                 if self.driver.tx_running:
                     self.driver.stop_tx()
                 if self.driver.rx_running:
@@ -176,17 +182,24 @@ class SDRServer:
                 await self._broadcast_sfcw_status()
 
             elif action == 'sweep_capture_bg':
-                self.sfcw.capture_background()
-                if self.sfcw.running:
+                if self.sfcw.running and not self.sfcw._warm:
                     self.sfcw.stop()
-                self._stop_all_streams()
-                await self._broadcast_status()
+                if not self.sfcw._warm:
+                    self._stop_all_streams()
+                    await self._broadcast_status()
                 self.sfcw.run_single(self._sfcw_callback)
                 await self._broadcast_sfcw_status()
 
             elif action == 'bscan_clear_bg':
                 self.sfcw.clear_background()
                 await self._broadcast_sfcw_status()
+
+            elif action == 'device_reset':
+                if self.sfcw.running:
+                    self.sfcw.stop()
+                self._stop_all_streams()
+                self.driver.reset()
+                await self._broadcast_status()
 
         except Exception as e:
             await ws.send(json.dumps({'type': 'error', 'message': str(e)}))

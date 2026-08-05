@@ -133,7 +133,6 @@ export default function App() {
   const [bscanBgRef, setBscanBgRef] = useState(null);
   const [bgApplied, setBgApplied] = useState(true);
   const bscanPendingRef = useRef(null);
-  const bscanWarmRef = useRef(false);
 
   // Lidar accumulator for averaging during SFCW sweeps
   const LIDAR_ANTENNA_OFFSET_MM = 315;
@@ -174,46 +173,24 @@ export default function App() {
     });
   }, [bscanData]);
 
-  // B-scan frontend processing: align BG to each scan via first-peak offset → complex subtract → IFFT
+  // B-scan frontend processing: lidar-aligned complex BG subtract → IFFT
   const processedBscanData = useMemo(() => {
     if (bscanData.length === 0) return bscanData;
     const startHz = sfcwParams.startFreq * 1e6;
     const stopHz = sfcwParams.stopFreq * 1e6;
 
-    // Find BG's first peak distance from raw profile
-    let bgFirstPeakDist = 0;
-    if (bgApplied && bscanBgRef && bscanBgRef.h_cal_real && bscanBgRef.h_cal_imag) {
-      const bgRp = computeRangeProfile(bscanBgRef.h_cal_real, bscanBgRef.h_cal_imag,
-        bscanBgRef.h_cal_real.length, bscanBgRef.step_size, bscanBgRef.range_offset);
-      const bgMags = bgRp.magnitudes;
-      const bgDist = bgRp.distances;
-      for (let i = 1; i < bgMags.length - 1; i++) {
-        if (bgMags[i] > bgMags[i - 1] && bgMags[i] >= bgMags[i + 1]) {
-          bgFirstPeakDist = bgDist[i];
-          break;
-        }
-      }
-    }
-
-    return bscanData.map((pos, posIdx) => {
+    return bscanData.map((pos) => {
       if (!pos.h_cal_real || !pos.h_cal_imag) return pos;
       const numSteps = pos.h_cal_real.length;
       let real = pos.h_cal_real;
       let imag = pos.h_cal_imag;
 
       if (bgApplied && bscanBgRef && bscanBgRef.h_cal_real && bscanBgRef.h_cal_imag) {
-        // Use first-peak distance difference for phase alignment
-        let scanFirstPeakDist = 0;
-        const rawProf = rawBscanProfiles[posIdx];
-        if (rawProf && rawProf.magnitudes && rawProf.distances) {
-          for (let i = 1; i < rawProf.magnitudes.length - 1; i++) {
-            if (rawProf.magnitudes[i] > rawProf.magnitudes[i - 1] && rawProf.magnitudes[i] >= rawProf.magnitudes[i + 1]) {
-              scanFirstPeakDist = rawProf.distances[i];
-              break;
-            }
-          }
+        // Use lidar distance offset for phase alignment; direct subtraction if no lidar
+        let deltaD = 0;
+        if (pos.lidar_standoff_mm != null && bscanBgRef.lidar_standoff_mm != null) {
+          deltaD = (pos.lidar_standoff_mm - bscanBgRef.lidar_standoff_mm) / 1000;
         }
-        const deltaD = scanFirstPeakDist - bgFirstPeakDist;
         const deltaPhasePerHz = 2 * Math.PI * 2 * deltaD / SPEED_OF_LIGHT;
 
         real = new Array(numSteps);
@@ -239,7 +216,7 @@ export default function App() {
       }
       return { ...pos, magnitudes: rp.magnitudes, distances: rp.distances, h_cal_real: real, h_cal_imag: imag, freqs };
     });
-  }, [bscanData, bscanBgRef, bgApplied, rawBscanProfiles, sfcwParams.startFreq, sfcwParams.stopFreq]);
+  }, [bscanData, bscanBgRef, bgApplied, sfcwParams.startFreq, sfcwParams.stopFreq]);
 
   const filteredBscanData = useMemo(() => {
     if (!svdEnabled || processedBscanData.length < 2) return processedBscanData;
@@ -690,19 +667,13 @@ export default function App() {
 
   const handleBscanAction = useCallback((action) => {
     if (action === 'capture') {
-      if (!bscanWarmRef.current) {
-        sendSdr({ cmd: 'bscan_warm_up' });
-        bscanWarmRef.current = true;
-      }
+      sendSdr({ cmd: 'bscan_warm_up' });
       lidarAccumRef.current = [];
       bscanPendingRef.current = 'capture';
       setBscanCapturing(true);
       sendSdr({ cmd: 'sweep_capture' });
     } else if (action === 'capture_bg') {
-      if (!bscanWarmRef.current) {
-        sendSdr({ cmd: 'bscan_warm_up' });
-        bscanWarmRef.current = true;
-      }
+      sendSdr({ cmd: 'bscan_warm_up' });
       lidarAccumRef.current = [];
       bscanPendingRef.current = 'capture_bg';
       setBscanCapturing(true);
@@ -710,10 +681,6 @@ export default function App() {
     } else if (action === 'clear_bg') {
       setBscanBgRef(null);
     } else if (action === 'new') {
-      if (bscanWarmRef.current) {
-        sendSdr({ cmd: 'bscan_cool_down' });
-        bscanWarmRef.current = false;
-      }
       setBscanData([]);
     } else if (action === 'undo') {
       setBscanData(prev => prev.slice(0, -1));
@@ -802,19 +769,6 @@ export default function App() {
 
   const isConnected = imuStatus === 'connected';
 
-  // Cool down B-scan hardware when leaving B-scan panel
-  const prevPanelRef = useRef(activePanel);
-  useEffect(() => {
-    const prev = prevPanelRef.current;
-    prevPanelRef.current = activePanel;
-    if ((prev === 'bscan' || prev === 'aligned') && prev !== activePanel) {
-      if (bscanWarmRef.current) {
-        sendSdr({ cmd: 'bscan_cool_down' });
-        bscanWarmRef.current = false;
-      }
-    }
-  }, [activePanel, sendSdr]);
-
   // Auto-connect on mount if a saved IP exists
   const autoConnectedRef = useRef(false);
   useEffect(() => {
@@ -887,10 +841,7 @@ export default function App() {
         onAlignNormEnabledChange={setAlignNormEnabled}
         alignBgCaptured={alignBgRef !== null}
         onAlignBgCapture={() => {
-          if (!bscanWarmRef.current) {
-            sendSdr({ cmd: 'bscan_warm_up' });
-            bscanWarmRef.current = true;
-          }
+          sendSdr({ cmd: 'bscan_warm_up' });
           lidarAccumRef.current = [];
           bscanPendingRef.current = 'capture_align_bg';
           setBscanCapturing(true);

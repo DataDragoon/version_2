@@ -49,6 +49,19 @@ class BladeRFDriver:
             self.device.close()
             self.device = None
 
+    def reset(self):
+        """Full device close + reopen. Clears all USB/RFIC state."""
+        self.stop_tx()
+        self.stop_rx()
+        self.stop_tx_dual()
+        self.stop_rx_dual()
+        if self.device:
+            self.device.close()
+        self.device = bladerf.BladeRF()
+        self.serial = self.device.get_serial()
+        self._configure_channels()
+        print("[bladerf] Device reset complete")
+
     def _configure_channels(self):
         ch_tx = self.device.Channel(bladerf.CHANNEL_TX(0))
         ch_rx = self.device.Channel(bladerf.CHANNEL_RX(0))

@@ -181,6 +181,20 @@ export default function RfCalibPanel({ isConnected, sdrConnected, txActive, rxAc
             {graphPaused ? 'Play' : 'Pause'}
           </button>
         </div>
+
+        {/* Device Reset */}
+        <button
+          onClick={() => sendSdr({ cmd: 'device_reset' })}
+          disabled={!canActivate}
+          className={cn(
+            'w-full py-3 rounded-2xl text-xs font-semibold uppercase tracking-widest',
+            'border transition-all duration-200 cursor-pointer',
+            'bg-[#ef4444]/8 text-[#ef4444] border-[#ef4444]/20 hover:bg-[#ef4444]/15',
+            !canActivate && 'opacity-30 cursor-not-allowed',
+          )}
+        >
+          Reset Device
+        </button>
       </Section>
     </>
   );
