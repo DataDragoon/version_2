@@ -73,6 +73,12 @@ function hanningWindow(n) {
   return w;
 }
 
+function rectangularWindow(n) {
+  const w = new Float64Array(n);
+  w.fill(1.0);
+  return w;
+}
+
 // Radix-2 FFT (in-place, decimation-in-time)
 function fft(re, im) {
   const n = re.length;
@@ -162,8 +168,8 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
   const [scaleMode, setScaleMode] = useState('db');
 
   // Windowing state
-  const [windowType, setWindowType] = useState('kaiser');
-  const [kaiserBeta, setKaiserBeta] = useState(8);
+  const [windowType, setWindowType] = useState('rectangular');
+  const [kaiserBeta, setKaiserBeta] = useState(3);
   const hCalRef = useRef(null);
 
   // Averaging state
@@ -219,7 +225,9 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
 
     const winFn = windowType === 'kaiser'
       ? (n) => kaiserWindow(n, kaiserBeta)
-      : hanningWindow;
+      : windowType === 'hanning'
+        ? hanningWindow
+        : rectangularWindow;
 
     const { magnitudeDb, nfft } = computeRangeProfile(
       hCal.real, hCal.imag, winFn, 4
@@ -771,6 +779,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
             onChange={(e) => setWindowType(e.target.value)}
             className="bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-[10px] text-white/70 outline-none"
           >
+            <option value="rectangular">Rectangular</option>
             <option value="kaiser">Kaiser</option>
             <option value="hanning">Hanning</option>
           </select>
