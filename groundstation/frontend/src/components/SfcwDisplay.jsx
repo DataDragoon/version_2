@@ -172,6 +172,9 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
   const [kaiserBeta, setKaiserBeta] = useState(3);
   const hCalRef = useRef(null);
 
+  // Range compensation state
+  const [rangeComp, setRangeComp] = useState(0); // exponent: 0=off, 2=R², 4=R⁴
+
   // Averaging state
   const avgBuffer = useRef([]);
   const [avgCount, setAvgCount] = useState(1);
@@ -216,7 +219,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
   useEffect(() => {
     avgBuffer.current = [];
     setAveraged(null);
-  }, [windowType, kaiserBeta]);
+  }, [windowType, kaiserBeta, rangeComp]);
 
   // Recompute range profile client-side when window params change
   useEffect(() => {
@@ -245,8 +248,18 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     const distances = allDistances.slice(startIdx);
     const clippedMag = magnitudeDb.slice(startIdx);
 
+    // R^n range compensation (STC)
+    if (rangeComp > 0) {
+      for (let i = 0; i < clippedMag.length; i++) {
+        const r = distances[i];
+        if (r > 0.01) {
+          clippedMag[i] += rangeComp * 10 * Math.log10(r);
+        }
+      }
+    }
+
     setRecomputed({ magnitudes: clippedMag, distances });
-  }, [windowType, kaiserBeta, sfcwResult]);
+  }, [windowType, kaiserBeta, rangeComp, sfcwResult]);
 
   // Averaging — uses recomputed data
   useEffect(() => {
@@ -800,6 +813,23 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
             <span className="text-[10px] text-white/60 font-mono w-6">{kaiserBeta.toFixed(1)}</span>
           </div>
         )}
+
+        <div className="w-px h-3 bg-white/10" />
+
+        {/* Range compensation */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[9px] text-white/40 uppercase tracking-wider">R^n</span>
+          <select
+            value={rangeComp}
+            onChange={(e) => setRangeComp(Number(e.target.value))}
+            className="bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-[10px] text-white/70 outline-none"
+          >
+            <option value={0}>Off</option>
+            <option value={2}>R²</option>
+            <option value={3}>R³</option>
+            <option value={4}>R⁴</option>
+          </select>
+        </div>
 
         <div className="w-px h-3 bg-white/10" />
 
