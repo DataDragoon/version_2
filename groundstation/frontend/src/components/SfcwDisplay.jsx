@@ -248,10 +248,10 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     const distances = allDistances.slice(startIdx);
     const clippedMag = magnitudeDb.slice(startIdx);
 
-    // R^n range compensation (STC)
+    // R^n range compensation (STC) — use true physical distance (add back offset)
     if (rangeComp > 0) {
       for (let i = 0; i < clippedMag.length; i++) {
-        const r = distances[i];
+        const r = distances[i] + hCal.range_offset;
         if (r > 0.01) {
           clippedMag[i] += rangeComp * 10 * Math.log10(r);
         }
