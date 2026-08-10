@@ -241,6 +241,7 @@ export default function Sidebar({
                   bgSubtractMode={sfcwStatus?.bg_subtract_mode || 'complex'}
                   rangeScale={sfcwRangeScale}
                   onRangeScaleChange={onSfcwRangeScaleChange}
+                  lidarMm={lidarMm}
                 />
               )}
               {activePanel === 'bscan' && (

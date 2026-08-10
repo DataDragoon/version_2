@@ -6,13 +6,26 @@ const BUFFER_SAMPLES = 1024;
 const SAMPLE_RATE = 2_000_000;
 const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
-export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, bgSubtractMode, rangeScale, onRangeScaleChange }) {
+const LIDAR_AVG_WINDOW = 20;
+
+export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, bgSubtractMode, rangeScale, onRangeScaleChange, lidarMm }) {
   const { startFreq, stopFreq, stepSize, settleTime, numBuffers, tx1Gain, rx1Gain, rangeOffset } = params;
   const [coherenceRunning, setCoherenceRunning] = useState(false);
+  const lidarBuf = useRef([]);
+  const [lidarAvg, setLidarAvg] = useState(null);
 
   useEffect(() => {
     if (coherenceResult) setCoherenceRunning(false);
   }, [coherenceResult]);
+
+  useEffect(() => {
+    if (lidarMm == null) return;
+    const buf = lidarBuf.current;
+    buf.push(lidarMm);
+    if (buf.length > LIDAR_AVG_WINDOW) buf.shift();
+    const avg = buf.reduce((s, v) => s + v, 0) / buf.length;
+    setLidarAvg(avg);
+  }, [lidarMm]);
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
@@ -106,6 +119,18 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
           min={0}
           max={10}
         />
+      </Section>
+
+      {/* Distance */}
+      <Section label="Standoff">
+        <div className="flex flex-col gap-2">
+          <div className="flex items-baseline justify-between px-3 py-2 rounded-xl border border-white/8 bg-[#0a0a0a]/60">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">Distance</span>
+            <span className="text-base font-bold font-mono text-white">
+              {lidarAvg != null ? lidarAvg.toFixed(1) : '—'} <span className="text-xs font-semibold text-[#888888]">mm</span>
+            </span>
+          </div>
+        </div>
       </Section>
 
       {/* Gains */}
