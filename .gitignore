@@ -17,3 +17,4 @@ build/
 *.log
 data/
 recordings/
+pi/sensors/imu_cal.json
