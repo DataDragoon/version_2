@@ -4,7 +4,7 @@ import { Section, InfoTile } from './Sidebar';
 
 const LIDAR_AVG_WINDOW = 20;
 
-export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanData, scanCapturing, bgCaptured, bgApplied, onBgAppliedChange, onScanAction, params, onParamsChange, sfcwParams, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange, bscanAvgCount, onBscanAvgCountChange, bscanPrimer, onBscanPrimerChange, lidarMm, bgStandoffMm, onBgStandoffMmChange }) {
+export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, scanData, scanCapturing, bgCaptured, bgApplied, onBgAppliedChange, onScanAction, params, onParamsChange, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange, lidarMm, bgStandoffMm, onBgStandoffMmChange }) {
   const { stepSize, numPositions, wallStandoff, wallThickness, wallPermittivity } = params;
 
   const update = (key, value) => {
@@ -35,12 +35,120 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
   const deltaMm = (bgStandoffMm != null && lidarAvg != null) ? lidarAvg - bgStandoffMm : null;
   const deltaOk = deltaMm != null && Math.abs(deltaMm) <= 5;
 
-  const canCapture = isConnected && sdrConnected && !scanCapturing;
+  const canActivate = isConnected && sdrConnected;
   const captured = scanData.length;
   const apertureLength = stepSize * (numPositions - 1);
 
   return (
     <>
+      {/* Session control — starts/stops continuous sweep */}
+      <Section label="Session">
+        <button
+          onClick={() => onScanAction(sfcwRunning ? 'stop_session' : 'start_session')}
+          disabled={!canActivate}
+          className={cn(
+            'group relative flex items-center gap-3 w-full p-4 rounded-2xl border',
+            'transition-all duration-500 cursor-pointer',
+            'disabled:cursor-not-allowed disabled:opacity-40',
+            sfcwRunning
+              ? 'bg-orange-500/8 border-orange-500/30 hover:border-orange-500/50'
+              : canActivate
+                ? 'bg-[#6B9BD2]/8 border-[#6B9BD2]/30 hover:border-[#6B9BD2]/50'
+                : 'bg-[#0a0a0a]/50 border-white/5',
+          )}
+        >
+          <div className={cn(
+            'flex items-center justify-center w-10 h-10 rounded-xl shrink-0 transition-all duration-500',
+            sfcwRunning ? 'bg-orange-500/15' : canActivate ? 'bg-[#6B9BD2]/15' : 'bg-white/5',
+          )}>
+            {sfcwRunning ? (
+              <div className="w-3 h-3 rounded-sm bg-orange-400" />
+            ) : (
+              <div className="w-3 h-3 rounded-full border-2 border-current text-[#6B9BD2]" />
+            )}
+          </div>
+          <div className="flex flex-col gap-0.5 text-left min-w-0">
+            <span className="text-sm font-semibold text-white">
+              {sfcwRunning ? 'Stop Session' : 'Start Session'}
+            </span>
+            <span className="text-xs text-[#555555] leading-relaxed">
+              {sfcwRunning ? 'Sweeping continuously...' :
+               !sdrConnected ? 'SDR not connected' : 'Start continuous sweep'}
+            </span>
+          </div>
+        </button>
+      </Section>
+
+      {/* Capture controls — only available when session is running */}
+      <Section label="Capture">
+        <button
+          onClick={() => onScanAction('add_scan')}
+          disabled={!sfcwRunning || scanCapturing || captured >= numPositions}
+          className={cn(
+            'group relative flex items-center gap-3 w-full p-4 rounded-2xl border',
+            'transition-all duration-500 cursor-pointer',
+            'disabled:cursor-not-allowed disabled:opacity-40',
+            sfcwRunning && !scanCapturing && captured < numPositions
+              ? 'bg-[#6B9BD2]/8 border-[#6B9BD2]/30 hover:border-[#6B9BD2]/50'
+              : 'bg-[#0a0a0a]/50 border-white/5',
+          )}
+        >
+          <div className={cn(
+            'flex items-center justify-center w-10 h-10 rounded-xl shrink-0 transition-all duration-500',
+            sfcwRunning && !scanCapturing && captured < numPositions ? 'bg-[#6B9BD2]/15' : 'bg-white/5',
+          )}>
+            {scanCapturing ? (
+              <div className="w-3 h-3 rounded-full border-2 border-[#6B9BD2] border-t-transparent animate-spin" />
+            ) : (
+              <svg className="w-4 h-4 text-[#6B9BD2]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+            )}
+          </div>
+          <div className="flex flex-col gap-0.5 text-left min-w-0">
+            <span className="text-sm font-semibold text-white">
+              {scanCapturing ? 'Capturing...' : `Add Scan ${captured + 1}`}
+            </span>
+            <span className="text-xs text-[#555555] leading-relaxed">
+              {scanCapturing ? 'Waiting for next sweep' :
+               captured >= numPositions ? 'Scan complete' :
+               !sfcwRunning ? 'Start session first' :
+               `At ${(captured * stepSize).toFixed(1)} cm`}
+            </span>
+          </div>
+        </button>
+
+        {captured > 0 && (
+          <div className="relative h-1.5 rounded-full bg-white/5 overflow-hidden">
+            <div
+              className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-[#6B9BD2] to-[#8BB8E8] transition-all duration-300"
+              style={{ width: `${(captured / numPositions) * 100}%` }}
+            />
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => onScanAction('new')}
+            className="px-3 py-2 rounded-lg text-xs font-medium bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
+          >
+            New Scan
+          </button>
+          <button
+            onClick={() => onScanAction('undo')}
+            disabled={captured === 0}
+            className={cn(
+              'px-3 py-2 rounded-lg text-xs font-medium transition-all',
+              captured > 0
+                ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+                : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
+            )}
+          >
+            Undo Last
+          </button>
+        </div>
+      </Section>
+
       <Section label="Aperture">
         <div className="grid grid-cols-2 gap-2">
           <EditableField
@@ -60,30 +168,6 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
             max={200}
           />
         </div>
-        <div className="grid grid-cols-1 gap-2">
-          <EditableField
-            label="Avg Sweeps"
-            value={bscanAvgCount}
-            unit="ct"
-            onChange={(v) => onBscanAvgCountChange(Math.round(v))}
-            min={1}
-            max={16}
-          />
-        </div>
-        <button
-          onClick={() => onBscanPrimerChange(!bscanPrimer)}
-          className={cn(
-            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-            bscanPrimer
-              ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
-              : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-          )}
-        >
-          {bscanPrimer ? '● Primer ON' : 'Primer OFF'}
-        </button>
-      </Section>
-
-      <Section label="Scan Info">
         <div className="grid grid-cols-2 gap-2">
           <InfoTile label="Aperture" value={`${apertureLength.toFixed(1)} cm`} />
           <InfoTile label="Captured" value={`${captured} / ${numPositions}`} />
@@ -143,10 +227,10 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
         <div className="grid grid-cols-2 gap-2">
           <button
             onClick={() => handleAction('capture_bg')}
-            disabled={!canCapture}
+            disabled={!sfcwRunning}
             className={cn(
               'px-3 py-2.5 rounded-lg text-xs font-medium transition-all',
-              canCapture
+              sfcwRunning
                 ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
                 : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
             )}
@@ -173,72 +257,6 @@ export default function BscanPanel({ isConnected, sdrConnected, sendSdr, scanDat
             {bgApplied ? '● BG Applied' : 'BG Not Applied'}
           </button>
         )}
-      </Section>
-
-      <Section label="Scan">
-        <button
-          onClick={() => onScanAction('capture')}
-          disabled={!canCapture || captured >= numPositions}
-          className={cn(
-            'group relative flex items-center gap-3 w-full p-4 rounded-2xl border',
-            'transition-all duration-500 cursor-pointer',
-            'disabled:cursor-not-allowed disabled:opacity-40',
-            canCapture && captured < numPositions
-              ? 'bg-[#6B9BD2]/8 border-[#6B9BD2]/30 hover:border-[#6B9BD2]/50'
-              : 'bg-[#0a0a0a]/50 border-white/5',
-          )}
-        >
-          <div className={cn(
-            'flex items-center justify-center w-10 h-10 rounded-xl shrink-0 transition-all duration-500',
-            canCapture && captured < numPositions ? 'bg-[#6B9BD2]/15' : 'bg-white/5',
-          )}>
-            {scanCapturing ? (
-              <div className="w-3 h-3 rounded-full border-2 border-[#6B9BD2] border-t-transparent animate-spin" />
-            ) : (
-              <div className="w-3 h-3 rounded-full border-2 border-current text-[#6B9BD2]" />
-            )}
-          </div>
-          <div className="flex flex-col gap-0.5 text-left min-w-0">
-            <span className="text-sm font-semibold text-white">
-              {scanCapturing ? 'Sweeping...' : `Capture Position ${captured + 1}`}
-            </span>
-            <span className="text-xs text-[#555555] leading-relaxed">
-              {scanCapturing ? `Averaging ${bscanAvgCount} sweep${bscanAvgCount > 1 ? 's' : ''}...` :
-               captured >= numPositions ? 'Scan complete' :
-               `At ${(captured * stepSize).toFixed(1)} cm`}
-            </span>
-          </div>
-        </button>
-
-        {captured > 0 && (
-          <div className="relative h-1.5 rounded-full bg-white/5 overflow-hidden">
-            <div
-              className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-[#6B9BD2] to-[#8BB8E8] transition-all duration-300"
-              style={{ width: `${(captured / numPositions) * 100}%` }}
-            />
-          </div>
-        )}
-
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            onClick={() => onScanAction('new')}
-            className="px-3 py-2 rounded-lg text-xs font-medium bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
-          >
-            New Scan
-          </button>
-          <button
-            onClick={() => onScanAction('undo')}
-            disabled={captured === 0}
-            className={cn(
-              'px-3 py-2 rounded-lg text-xs font-medium transition-all',
-              captured > 0
-                ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
-            )}
-          >
-            Undo Last
-          </button>
-        </div>
       </Section>
 
       <Section label="Data">

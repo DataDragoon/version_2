@@ -148,8 +148,6 @@ export default function App() {
   // B-scan display toggles
   const [bscanScaleMode, setBscanScaleMode] = useState('linear');
   const [bscanDisplayMode, setBscanDisplayMode] = useState('color');
-  const [bscanAvgCount, setBscanAvgCount] = useState(1);
-  const [bscanPrimer, setBscanPrimer] = useState(false);
   const [bgStandoffMm, setBgStandoffMm] = useState(null);
 
   // B-scan SVD filter state (used by bscan panel + sar)
@@ -519,10 +517,7 @@ export default function App() {
     setImuData(msg);
     if (msg.lidar !== null && msg.lidar !== undefined) {
       setLidarMm(msg.lidar);
-      // Accumulate lidar during bscan captures
-      if (bscanPendingRef.current) {
-        lidarAccumRef.current.push(msg.lidar);
-      }
+      lidarAccumRef.current.push(msg.lidar);
     }
   }, []);
 
@@ -564,7 +559,11 @@ export default function App() {
       const standoffMm = avgLidarMm !== null ? avgLidarMm - LIDAR_ANTENNA_OFFSET_MM : null;
       lidarAccumRef.current = [];
 
-      if (bscanPendingRef.current === 'capture') {
+      // Always update live display
+      setSfcwResult(msg);
+
+      // Flag-based B-scan capture: sweep itself carries the flag
+      if (msg.bscan_capture) {
         const posData = {
           magnitudes: [...msg.magnitudes],
           distances: [...msg.distances],
@@ -576,9 +575,9 @@ export default function App() {
           lidar_standoff_mm: standoffMm,
         };
         setBscanData(prev => [...prev, posData]);
-        bscanPendingRef.current = null;
         setBscanCapturing(false);
-      } else if (bscanPendingRef.current === 'capture_bg') {
+      }
+      if (msg.bscan_bg_capture) {
         setBscanBgRef({
           h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
           h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
@@ -587,9 +586,10 @@ export default function App() {
           range_offset: msg.range_offset,
           lidar_standoff_mm: standoffMm,
         });
-        bscanPendingRef.current = null;
         setBscanCapturing(false);
-      } else if (bscanPendingRef.current === 'capture_align_bg') {
+      }
+      // Legacy: alignment BG capture (still uses pending ref)
+      if (bscanPendingRef.current === 'capture_align_bg') {
         setAlignBgRef({
           h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
           h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
@@ -600,8 +600,6 @@ export default function App() {
         });
         bscanPendingRef.current = null;
         setBscanCapturing(false);
-      } else {
-        setSfcwResult(msg);
       }
       setSfcwProgress(null);
     } else if (msg.type === 'sfcw_progress') {
@@ -622,29 +620,18 @@ export default function App() {
   const sdrUrl = piIp ? `ws://${piIp}:9003` : null;
   const { status: sdrConnectionStatus, send: sendSdr, connect: connectSdr, disconnect: disconnectSdr } = useWebSocket(sdrUrl, handleSdrMessage);
 
-  const handleBscanAvgCountChange = useCallback((count) => {
-    setBscanAvgCount(count);
-    sendSdr({ cmd: 'sfcw_set_params', bscan_avg_count: count });
-  }, [sendSdr]);
-
-  const handleBscanPrimerChange = useCallback((enabled) => {
-    setBscanPrimer(enabled);
-    sendSdr({ cmd: 'sfcw_set_params', bscan_primer: enabled });
-  }, [sendSdr]);
-
   const handleBscanAction = useCallback((action) => {
-    if (action === 'capture') {
-      sendSdr({ cmd: 'bscan_warm_up' });
-      lidarAccumRef.current = [];
-      bscanPendingRef.current = 'capture';
+    if (action === 'start_session') {
+      if (sfcwRunning) return;
+      sendSdr({ cmd: 'sfcw_start' });
+    } else if (action === 'stop_session') {
+      sendSdr({ cmd: 'sfcw_stop' });
+    } else if (action === 'add_scan') {
       setBscanCapturing(true);
-      sendSdr({ cmd: 'sweep_capture' });
+      sendSdr({ cmd: 'bscan_capture' });
     } else if (action === 'capture_bg') {
-      sendSdr({ cmd: 'bscan_warm_up' });
-      lidarAccumRef.current = [];
-      bscanPendingRef.current = 'capture_bg';
       setBscanCapturing(true);
-      sendSdr({ cmd: 'sweep_capture' });
+      sendSdr({ cmd: 'bscan_bg_capture' });
     } else if (action === 'clear_bg') {
       setBscanBgRef(null);
     } else if (action === 'new') {
@@ -704,7 +691,7 @@ export default function App() {
       };
       input.click();
     }
-  }, [sendSdr, bscanData, bscanParams, sfcwParams]);
+  }, [sendSdr, sfcwRunning, bscanData, bscanParams, sfcwParams]);
 
   // Rate counter interval
   const rateIntervalRef = useRef(null);
@@ -800,10 +787,6 @@ export default function App() {
         onBscanScaleModeChange={setBscanScaleMode}
         bscanDisplayMode={bscanDisplayMode}
         onBscanDisplayModeChange={setBscanDisplayMode}
-        bscanAvgCount={bscanAvgCount}
-        onBscanAvgCountChange={handleBscanAvgCountChange}
-        bscanPrimer={bscanPrimer}
-        onBscanPrimerChange={handleBscanPrimerChange}
         bgStandoffMm={bgStandoffMm}
         onBgStandoffMmChange={setBgStandoffMm}
         alignEnabled={alignEnabled}
@@ -814,11 +797,9 @@ export default function App() {
         onAlignNormEnabledChange={setAlignNormEnabled}
         alignBgCaptured={alignBgRef !== null}
         onAlignBgCapture={() => {
-          sendSdr({ cmd: 'bscan_warm_up' });
           lidarAccumRef.current = [];
           bscanPendingRef.current = 'capture_align_bg';
           setBscanCapturing(true);
-          sendSdr({ cmd: 'sweep_capture' });
         }}
         onAlignBgClear={() => setAlignBgRef(null)}
         alignSvdEnabled={alignSvdEnabled}

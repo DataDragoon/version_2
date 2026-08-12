@@ -177,9 +177,25 @@ export default function Viewport({
     const targetScanShifts = bscanData.map(() => 0);
     const targetBgShift = 0;
     const displayData = (isAligned && bscanAlignedSvdData) ? bscanAlignedSvdData : bscanData;
+    const showLiveSweep = activePanel === 'bscan' && (sfcwRunning || sfcwResult);
 
     return (
       <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
+        {/* Live sweep range profile (top) — shown during B-scan session */}
+        {showLiveSweep && (
+          <div className="relative flex flex-col border-b border-white/5" style={{ flex: '0 0 35%' }}>
+            <PaneHeader icon={Radar} label="Live Sweep" active={sfcwRunning} color="orange" />
+            <div className="flex-1 min-h-0 relative overflow-hidden">
+              <SfcwDisplay
+                sfcwResult={sfcwResult}
+                sfcwProgress={sfcwProgress}
+                sfcwRunning={sfcwRunning}
+                rangeScale={sfcwRangeScale}
+              />
+            </div>
+          </div>
+        )}
+        {/* B-scan image (bottom) */}
         <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
           <PaneHeader icon={icon} label={label} active={bscanData.length > 0} color="cyan" />
           <div className="flex-1 min-h-0 relative overflow-hidden">
@@ -199,7 +215,7 @@ export default function Viewport({
               targetShifts={targetScanShifts}
               targetBgShift={targetBgShift}
             />
-            {bscanData.length === 0 && (
+            {bscanData.length === 0 && !showLiveSweep && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No scan data</span>
               </div>

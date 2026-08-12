@@ -68,10 +68,6 @@ export default function Sidebar({
   onBscanScaleModeChange,
   bscanDisplayMode,
   onBscanDisplayModeChange,
-  bscanAvgCount,
-  onBscanAvgCountChange,
-  bscanPrimer,
-  onBscanPrimerChange,
   bgStandoffMm,
   onBgStandoffMmChange,
   alignEnabled,
@@ -248,7 +244,7 @@ export default function Sidebar({
                 <BscanPanel
                   isConnected={isConnected}
                   sdrConnected={sdrConnected}
-                  sendSdr={sendSdr}
+                  sfcwRunning={sfcwRunning}
                   scanData={bscanData}
                   scanCapturing={bscanCapturing}
                   bgCaptured={bscanBgCaptured}
@@ -257,7 +253,6 @@ export default function Sidebar({
                   onScanAction={onBscanAction}
                   params={bscanParams}
                   onParamsChange={onBscanParamsChange}
-                  sfcwParams={sfcwParams}
                   svdEnabled={svdEnabled}
                   svdK={svdK}
                   svdStrength={svdStrength}
@@ -268,10 +263,6 @@ export default function Sidebar({
                   onScaleModeChange={onBscanScaleModeChange}
                   displayMode={bscanDisplayMode}
                   onDisplayModeChange={onBscanDisplayModeChange}
-                  bscanAvgCount={bscanAvgCount}
-                  onBscanAvgCountChange={onBscanAvgCountChange}
-                  bscanPrimer={bscanPrimer}
-                  onBscanPrimerChange={onBscanPrimerChange}
                   lidarMm={lidarMm}
                   bgStandoffMm={bgStandoffMm}
                   onBgStandoffMmChange={onBgStandoffMmChange}

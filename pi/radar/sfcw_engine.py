@@ -43,6 +43,8 @@ class SFCWEngine:
         self._lock = threading.Lock()
         self._background = None
         self._capture_background = False
+        self._capture_bscan = False
+        self._capture_bscan_bg = False
         self._bg_subtract_mode = 'complex'  # 'complex' or 'magnitude'
         self._last_h_cal = None
         self._fpga_tuning = False
@@ -131,6 +133,12 @@ class SFCWEngine:
 
     def capture_background(self):
         self._capture_background = True
+
+    def capture_bscan(self):
+        self._capture_bscan = True
+
+    def capture_bscan_bg(self):
+        self._capture_bscan_bg = True
 
     def clear_background(self):
         self._background = None
@@ -634,6 +642,13 @@ class SFCWEngine:
         h_cal_real = h_cal.real.tolist()
         h_cal_imag = h_cal.imag.tolist()
 
+        bscan_flag = self._capture_bscan
+        if bscan_flag:
+            self._capture_bscan = False
+        bscan_bg_flag = self._capture_bscan_bg
+        if bscan_bg_flag:
+            self._capture_bscan_bg = False
+
         return {
             'type': 'range_profile',
             'distances': distances.tolist(),
@@ -646,6 +661,8 @@ class SFCWEngine:
             'step_size': step,
             'range_offset': self.range_offset,
             'timestamp': time.time(),
+            'bscan_capture': bscan_flag,
+            'bscan_bg_capture': bscan_bg_flag,
             'phase_coherence': {
                 'phase_std_rad': phase_std,
                 'phase_std_deg': float(np.degrees(phase_std)),
