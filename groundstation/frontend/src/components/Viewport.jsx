@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Activity, Eye, Radio, Radar, ScanLine, AlignVerticalSpaceBetween, Grid3x3, Zap } from 'lucide-react';
 import ImuDisplay from './ImuDisplay';
@@ -37,6 +38,8 @@ export default function Viewport({
   sarResult,
   sarProgress,
 }) {
+  const [bscanLiveRange, setBscanLiveRange] = useState({ min: 0, max: 0.3 });
+
   if (!activePanel) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center bg-black select-none">
@@ -190,7 +193,12 @@ export default function Viewport({
                 sfcwResult={sfcwResult}
                 sfcwProgress={sfcwProgress}
                 sfcwRunning={sfcwRunning}
-                rangeScale={sfcwRangeScale}
+                rangeScale={bscanLiveRange}
+                hideWaterfall
+                defaultScaleMode="linear"
+                onRangeScaleToggle={() => setBscanLiveRange(prev =>
+                  prev.max <= 0.5 ? { min: 0, max: 3 } : { min: 0, max: 0.3 }
+                )}
               />
             </div>
           </div>

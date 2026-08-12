@@ -274,6 +274,10 @@ class SDRServer:
                 }
                 if 'phase_coherence' in data:
                     result_msg['phase_coherence'] = data['phase_coherence']
+                if data.get('bscan_capture'):
+                    result_msg['bscan_capture'] = True
+                if data.get('bscan_bg_capture'):
+                    result_msg['bscan_bg_capture'] = True
                 msg = json.dumps(result_msg)
             else:
                 continue

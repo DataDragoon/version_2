@@ -156,7 +156,7 @@ function computeRangeProfile(hCalReal, hCalImag, windowFn, zeroPadFactor) {
   return { magnitudeDb, nfft };
 }
 
-export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, rangeScale }) {
+export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, rangeScale, hideWaterfall, defaultScaleMode, onRangeScaleToggle }) {
   const rangeCanvasRef = useRef(null);
   const waterfallCanvasRef = useRef(null);
   const animRef = useRef(null);
@@ -165,7 +165,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
   const [crosshairWaterfall, setCrosshairWaterfall] = useState(null);
 
   // Scale mode: 'db' or 'linear'
-  const [scaleMode, setScaleMode] = useState('db');
+  const [scaleMode, setScaleMode] = useState(defaultScaleMode || 'db');
 
   // Windowing state
   const [windowType, setWindowType] = useState('rectangular');
@@ -931,20 +931,31 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
         >
           {scaleMode === 'db' ? 'dB' : 'LIN'}
         </button>
+        {/* Range scale toggle button (only in bscan mode) */}
+        {onRangeScaleToggle && (
+          <button
+            onClick={onRangeScaleToggle}
+            className="absolute bottom-10 left-28 px-2 py-1 rounded text-[9px] font-medium uppercase tracking-wider transition-all border z-10 bg-white/10 text-white/70 border-white/20 hover:text-white hover:border-white/40"
+          >
+            {rangeScale.max <= 0.5 ? '0.3m' : '3m'}
+          </button>
+        )}
       </div>
 
       {/* Waterfall */}
-      <div className="relative border-t border-white/5" style={{ flex: '0 0 45%' }}>
-        <canvas
-          ref={waterfallCanvasRef}
-          className="absolute inset-0 w-full h-full cursor-crosshair"
-          onMouseMove={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            setCrosshairWaterfall({ x: e.clientX - rect.left, y: e.clientY - rect.top });
-          }}
-          onMouseLeave={() => setCrosshairWaterfall(null)}
-        />
-      </div>
+      {!hideWaterfall && (
+        <div className="relative border-t border-white/5" style={{ flex: '0 0 45%' }}>
+          <canvas
+            ref={waterfallCanvasRef}
+            className="absolute inset-0 w-full h-full cursor-crosshair"
+            onMouseMove={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              setCrosshairWaterfall({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+            }}
+            onMouseLeave={() => setCrosshairWaterfall(null)}
+          />
+        </div>
+      )}
     </div>
   );
 }
