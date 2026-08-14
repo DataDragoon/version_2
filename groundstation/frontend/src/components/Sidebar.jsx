@@ -72,20 +72,14 @@ export default function Sidebar({
   onBgStandoffMmChange,
   alignEnabled,
   onAlignEnabledChange,
-  alignMethod,
-  onAlignMethodChange,
   alignNormEnabled,
   onAlignNormEnabledChange,
-  alignBgCaptured,
-  onAlignBgCapture,
-  onAlignBgClear,
   alignSvdEnabled,
   alignSvdK,
   alignSvdStrength,
   onAlignSvdEnabledChange,
   onAlignSvdKChange,
   onAlignSvdStrengthChange,
-  alignedDisplayData,
   sarBscanData,
   sarParams,
   onSarParamsChange,
@@ -273,13 +267,8 @@ export default function Sidebar({
                   scanData={bscanData}
                   alignEnabled={alignEnabled}
                   onAlignEnabledChange={onAlignEnabledChange}
-                  alignMethod={alignMethod}
-                  onAlignMethodChange={onAlignMethodChange}
                   normEnabled={alignNormEnabled}
                   onNormEnabledChange={onAlignNormEnabledChange}
-                  bgCaptured={alignBgCaptured}
-                  onBgCapture={onAlignBgCapture}
-                  onBgClear={onAlignBgClear}
                   svdEnabled={alignSvdEnabled}
                   svdK={alignSvdK}
                   svdStrength={alignSvdStrength}

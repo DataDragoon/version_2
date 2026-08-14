@@ -34,7 +34,6 @@ export default function Viewport({
   bscanCapturing,
   bscanScaleMode,
   bscanDisplayMode,
-  alignedDisplayData,
   sarResult,
   sarProgress,
 }) {

@@ -164,16 +164,6 @@ export default function App() {
     return { magnitudes: rp.magnitudes, distances: rp.distances };
   }, [bscanBgRef]);
 
-  // Raw range profiles (no BG subtraction, no SVD) — used for wall reflection alignment
-  const rawBscanProfiles = useMemo(() => {
-    if (bscanData.length === 0) return [];
-    return bscanData.map(pos => {
-      if (!pos.h_cal_real || !pos.h_cal_imag) return pos;
-      const numSteps = pos.h_cal_real.length;
-      const rp = computeRangeProfile(pos.h_cal_real, pos.h_cal_imag, numSteps, pos.step_size, pos.range_offset);
-      return { ...pos, magnitudes: rp.magnitudes, distances: rp.distances };
-    });
-  }, [bscanData]);
 
   // B-scan frontend processing: lidar-aligned complex BG subtract → IFFT
   const processedBscanData = useMemo(() => {
@@ -225,12 +215,7 @@ export default function App() {
     return svdFilter(processedBscanData, svdK, svdStrength);
   }, [processedBscanData, svdEnabled, svdK, svdStrength]);
 
-  // Alignment method state (must be before alignShifts memo)
-  const [alignMethod, setAlignMethod] = useState('lidar');
-
-  // Compute spatial alignment bin shifts (for animated transition in BscanDisplay)
-  // Uses lidar standoff data if available, falls back to peak-finding
-  // Returns { scanShifts: [...], bgShift: number }
+  // Compute spatial alignment bin shifts using lidar standoff data
   const alignShifts = useMemo(() => {
     if (filteredBscanData.length < 2) {
       return { scanShifts: filteredBscanData.map(() => 0), bgShift: 0 };
@@ -242,69 +227,41 @@ export default function App() {
     }
     const binSpacingM = distances[1] - distances[0];
 
-    // Check if lidar data is available on all scans
     const hasLidar = filteredBscanData.every(pos => pos.lidar_standoff_mm != null);
-    const useLidar = alignMethod === 'lidar' && hasLidar;
-
-    if (useLidar) {
-      const standoffs = filteredBscanData.map(pos => pos.lidar_standoff_mm / 1000);
-      const maxStandoff = Math.max(...standoffs);
-
-      const scanShifts = standoffs.map(s => (maxStandoff - s) / binSpacingM);
-
-      let bgShift = 0;
-      if (bscanBgRef && bscanBgRef.lidar_standoff_mm != null) {
-        const bgStandoff = bscanBgRef.lidar_standoff_mm / 1000;
-        bgShift = (maxStandoff - bgStandoff) / binSpacingM;
-      } else if (bscanBgDisplay && bscanBgDisplay.magnitudes) {
-        let bgPeakIdx = 0, maxVal = -Infinity;
-        for (let i = 0; i < bscanBgDisplay.magnitudes.length; i++) {
-          if (bscanBgDisplay.magnitudes[i] > maxVal) { maxVal = bscanBgDisplay.magnitudes[i]; bgPeakIdx = i; }
-        }
-        const maxStandoffScanPeak = (() => {
-          const idx = standoffs.indexOf(maxStandoff);
-          const mags = filteredBscanData[idx].magnitudes;
-          let pk = 0, mv = -Infinity;
-          for (let i = 0; i < mags.length; i++) { if (mags[i] > mv) { mv = mags[i]; pk = i; } }
-          return pk;
-        })();
-        bgShift = maxStandoffScanPeak - bgPeakIdx;
-        if (bgShift < 0) bgShift = 0;
-      }
-
-      return { scanShifts, bgShift };
+    if (!hasLidar) {
+      return { scanShifts: filteredBscanData.map(() => 0), bgShift: 0 };
     }
 
-    // Wall reflection alignment: find first peak (first local max) in each raw range profile
-    const findFirstPeak = (magnitudes) => {
-      if (!magnitudes || magnitudes.length < 3) return 0;
-      for (let i = 1; i < magnitudes.length - 1; i++) {
-        if (magnitudes[i] > magnitudes[i - 1] && magnitudes[i] >= magnitudes[i + 1]) {
-          return i;
-        }
-      }
-      return 0;
-    };
+    const standoffs = filteredBscanData.map(pos => pos.lidar_standoff_mm / 1000);
+    const maxStandoff = Math.max(...standoffs);
 
-    const peakIndices = rawBscanProfiles.map(pos => findFirstPeak(pos.magnitudes));
-
-    // Reference: the scan whose first peak is furthest
-    const maxPeakIdx = Math.max(...peakIndices);
+    const scanShifts = standoffs.map(s => (maxStandoff - s) / binSpacingM);
 
     let bgShift = 0;
-    if (bscanBgDisplay && bscanBgDisplay.magnitudes) {
-      bgShift = maxPeakIdx - findFirstPeak(bscanBgDisplay.magnitudes);
+    if (bscanBgRef && bscanBgRef.lidar_standoff_mm != null) {
+      const bgStandoff = bscanBgRef.lidar_standoff_mm / 1000;
+      bgShift = (maxStandoff - bgStandoff) / binSpacingM;
+    } else if (bscanBgDisplay && bscanBgDisplay.magnitudes) {
+      let bgPeakIdx = 0, maxVal = -Infinity;
+      for (let i = 0; i < bscanBgDisplay.magnitudes.length; i++) {
+        if (bscanBgDisplay.magnitudes[i] > maxVal) { maxVal = bscanBgDisplay.magnitudes[i]; bgPeakIdx = i; }
+      }
+      const maxStandoffScanPeak = (() => {
+        const idx = standoffs.indexOf(maxStandoff);
+        const mags = filteredBscanData[idx].magnitudes;
+        let pk = 0, mv = -Infinity;
+        for (let i = 0; i < mags.length; i++) { if (mags[i] > mv) { mv = mags[i]; pk = i; } }
+        return pk;
+      })();
+      bgShift = maxStandoffScanPeak - bgPeakIdx;
+      if (bgShift < 0) bgShift = 0;
     }
 
-    return {
-      scanShifts: peakIndices.map(idx => maxPeakIdx - idx),
-      bgShift,
-    };
-  }, [rawBscanProfiles, filteredBscanData, bscanBgDisplay, bscanBgRef, alignMethod, bscanParams]);
+    return { scanShifts, bgShift };
+  }, [filteredBscanData, bscanBgDisplay, bscanBgRef, bscanParams]);
 
   // Aligned panel state
   const [alignEnabled, setAlignEnabled] = useState(true);
-  const [alignBgRef, setAlignBgRef] = useState(null);
   const [alignNormEnabled, setAlignNormEnabled] = useState(false);
   const [alignSvdEnabled, setAlignSvdEnabled] = useState(false);
   const [alignSvdK, setAlignSvdK] = useState(1);
@@ -383,102 +340,6 @@ export default function App() {
     useAligned: false,
   });
 
-  // Aligned pipeline: complex BG subtract with phase correction → IFFT → spatial align → SVD
-  const alignedDisplayData = useMemo(() => {
-    if (bscanData.length === 0) return [];
-    const startHz = sfcwParams.startFreq * 1e6;
-    const stopHz = sfcwParams.stopFreq * 1e6;
-
-    const hasBg = alignBgRef && alignBgRef.h_cal_real && alignBgRef.h_cal_imag;
-
-    // Step 1: complex BG subtraction with per-position phase correction, then IFFT
-    let processed = bscanData.map(pos => {
-      if (!pos.h_cal_real || !pos.h_cal_imag) return pos;
-      const numSteps = pos.h_cal_real.length;
-      let real = pos.h_cal_real;
-      let imag = pos.h_cal_imag;
-
-      if (hasBg && alignBgRef.h_cal_real.length === numSteps) {
-        let deltaD = 0;
-        if (pos.lidar_standoff_mm != null && alignBgRef.lidar_standoff_mm != null) {
-          deltaD = (pos.lidar_standoff_mm - alignBgRef.lidar_standoff_mm) / 1000;
-        }
-        const deltaPhasePerHz = 2 * Math.PI * 2 * deltaD / SPEED_OF_LIGHT;
-
-        real = new Array(numSteps);
-        imag = new Array(numSteps);
-        for (let i = 0; i < numSteps; i++) {
-          const freq = startHz + (i / (numSteps - 1)) * (stopHz - startHz);
-          const phase = deltaPhasePerHz * freq;
-          const cosP = Math.cos(phase);
-          const sinP = Math.sin(phase);
-          const bgR = alignBgRef.h_cal_real[i];
-          const bgI = alignBgRef.h_cal_imag[i];
-          const alignedBgR = bgR * cosP - bgI * sinP;
-          const alignedBgI = bgR * sinP + bgI * cosP;
-          real[i] = pos.h_cal_real[i] - alignedBgR;
-          imag[i] = pos.h_cal_imag[i] - alignedBgI;
-        }
-      }
-
-      const rp = computeRangeProfile(real, imag, numSteps, pos.step_size, pos.range_offset);
-      return { ...pos, magnitudes: rp.magnitudes, distances: rp.distances };
-    });
-
-    // Step 2: spatial alignment (bin shifts based on lidar or peak-finding)
-    if (alignEnabled && processed.length >= 2) {
-      const numBins = processed[0].magnitudes.length;
-      const distances = processed[0].distances;
-      const binSpacingM = distances.length >= 2 ? distances[1] - distances[0] : 0.001;
-
-      const hasLidar = processed.every(p => p.lidar_standoff_mm != null);
-
-      if (hasLidar) {
-        const standoffs = processed.map(p => p.lidar_standoff_mm / 1000);
-        const maxStandoff = Math.max(...standoffs);
-
-        processed = processed.map((pos, i) => {
-          const shift = Math.round((maxStandoff - standoffs[i]) / binSpacingM);
-          if (shift === 0) return pos;
-          const fillVal = pos.magnitudes[0];
-          const newMags = new Array(numBins).fill(fillVal);
-          for (let j = 0; j < numBins; j++) {
-            const srcIdx = j - shift;
-            if (srcIdx >= 0 && srcIdx < numBins) newMags[j] = pos.magnitudes[srcIdx];
-          }
-          return { ...pos, magnitudes: newMags, distances };
-        });
-      } else {
-        const peakIndices = processed.map(pos => {
-          let maxVal = -Infinity, maxIdx = 0;
-          for (let i = 0; i < pos.magnitudes.length; i++) {
-            if (pos.magnitudes[i] > maxVal) { maxVal = pos.magnitudes[i]; maxIdx = i; }
-          }
-          return maxIdx;
-        });
-        const maxPeakIdx = Math.max(...peakIndices);
-
-        processed = processed.map((pos, i) => {
-          const shift = maxPeakIdx - peakIndices[i];
-          if (shift === 0) return pos;
-          const fillVal = pos.magnitudes[0];
-          const newMags = new Array(numBins).fill(fillVal);
-          for (let j = 0; j < numBins; j++) {
-            const srcIdx = j - shift;
-            if (srcIdx >= 0 && srcIdx < numBins) newMags[j] = pos.magnitudes[srcIdx];
-          }
-          return { ...pos, magnitudes: newMags, distances };
-        });
-      }
-    }
-
-    // Step 3: SVD
-    if (alignSvdEnabled && processed.length >= 2) {
-      processed = svdFilter(processed, alignSvdK, alignSvdStrength);
-    }
-
-    return processed;
-  }, [bscanData, sfcwParams.startFreq, sfcwParams.stopFreq, alignEnabled, alignBgRef, alignSvdEnabled, alignSvdK, alignSvdStrength]);
 
   // SAR uses exactly what's displayed: aligned+shifted data when useAligned, else bscan data
   const sarInputData = useMemo(() => {
@@ -587,19 +448,6 @@ export default function App() {
           range_offset: msg.range_offset,
           lidar_standoff_mm: standoffMm,
         });
-        setBscanCapturing(false);
-      }
-      // Legacy: alignment BG capture (still uses pending ref)
-      if (bscanPendingRef.current === 'capture_align_bg') {
-        setAlignBgRef({
-          h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
-          h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
-          num_steps: msg.num_steps,
-          step_size: msg.step_size,
-          range_offset: msg.range_offset,
-          lidar_standoff_mm: standoffMm,
-        });
-        bscanPendingRef.current = null;
         setBscanCapturing(false);
       }
       setSfcwProgress(null);
@@ -792,24 +640,14 @@ export default function App() {
         onBgStandoffMmChange={setBgStandoffMm}
         alignEnabled={alignEnabled}
         onAlignEnabledChange={setAlignEnabled}
-        alignMethod={alignMethod}
-        onAlignMethodChange={setAlignMethod}
         alignNormEnabled={alignNormEnabled}
         onAlignNormEnabledChange={setAlignNormEnabled}
-        alignBgCaptured={alignBgRef !== null}
-        onAlignBgCapture={() => {
-          lidarAccumRef.current = [];
-          bscanPendingRef.current = 'capture_align_bg';
-          setBscanCapturing(true);
-        }}
-        onAlignBgClear={() => setAlignBgRef(null)}
         alignSvdEnabled={alignSvdEnabled}
         alignSvdK={alignSvdK}
         alignSvdStrength={alignSvdStrength}
         onAlignSvdEnabledChange={setAlignSvdEnabled}
         onAlignSvdKChange={setAlignSvdK}
         onAlignSvdStrengthChange={setAlignSvdStrength}
-        alignedDisplayData={alignedDisplayData}
         sarBscanData={sarInputData}
         sarParams={sarParams}
         onSarParamsChange={setSarParams}
@@ -840,7 +678,6 @@ export default function App() {
         bscanCapturing={bscanCapturing}
         bscanScaleMode={bscanScaleMode}
         bscanDisplayMode={bscanDisplayMode}
-        alignedDisplayData={alignedDisplayData}
         sarResult={sarResult}
         sarProgress={sarProgress}
       />

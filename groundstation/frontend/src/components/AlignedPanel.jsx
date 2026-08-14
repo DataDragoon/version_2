@@ -2,9 +2,8 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
 
-export default function AlignedPanel({ scanData, alignEnabled, onAlignEnabledChange, alignMethod, onAlignMethodChange, normEnabled, onNormEnabledChange, bgCaptured, onBgCapture, onBgClear, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, isConnected, sdrConnected }) {
+export default function AlignedPanel({ scanData, alignEnabled, onAlignEnabledChange, normEnabled, onNormEnabledChange, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, isConnected, sdrConnected }) {
   const numPositions = scanData ? scanData.length : 0;
-  const canCapture = isConnected && sdrConnected;
 
   return (
     <>
@@ -13,27 +12,7 @@ export default function AlignedPanel({ scanData, alignEnabled, onAlignEnabledCha
           <InfoTile label="Positions" value={numPositions < 2 ? `${numPositions} (need ≥2)` : numPositions} />
         </div>
         <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
-          Uses B-scan data. Processing: IFFT → peak align → normalized BG subtract → SVD.
-        </div>
-      </Section>
-
-      <Section label="Alignment">
-        <button
-          onClick={() => onAlignMethodChange(alignMethod === 'lidar' ? 'wall' : 'lidar')}
-          disabled={numPositions < 2}
-          className={cn(
-            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-            numPositions < 2
-              ? 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
-              : 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
-          )}
-        >
-          {alignMethod === 'lidar' ? 'LiDAR' : 'Wall Reflection'}
-        </button>
-        <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
-          {alignMethod === 'lidar'
-            ? 'Aligns using LiDAR-measured standoff per scan.'
-            : 'Aligns to first strongest reflection (wall front).'}
+          Uses B-scan data. Processing: freq-domain LiDAR align → BG subtract → IFFT → SVD.
         </div>
       </Section>
 
