@@ -13,7 +13,7 @@ import time
 import numpy as np
 
 from bladerf_driver import BladeRFDriver
-from bladerf._bladerf import libbladeRF
+from bladerf._bladerf import ffi, libbladeRF
 import bladerf
 
 SPEED_OF_LIGHT = 299_792_458
@@ -51,6 +51,10 @@ class SFCWEngine:
         self._gains_dirty = False
         self._warm = False
         self._sweep_lock = threading.Lock()
+        self._qt_profiles_rx = None
+        self._qt_profiles_tx = None
+        self._qt_params = None
+        self._use_quick_tune = True
 
     @property
     def num_steps(self):
@@ -351,6 +355,43 @@ class SFCWEngine:
             self._stop_tx_rx()
             self.running = False
 
+    def _generate_quick_tune_profiles(self):
+        """Generate and cache quick_tune profiles for all sweep frequencies.
+
+        Must be called before streaming starts (set_frequency does full VCO cal).
+        Profiles are reused across sweeps until parameters change.
+        """
+        with self._lock:
+            start = self.start_freq
+            stop = self.stop_freq
+            step = self.step_size
+
+        params_key = (start, stop, step)
+        if self._qt_params == params_key and self._qt_profiles_rx is not None:
+            return
+
+        num_steps = int((stop - start) / step) + 1
+        freqs = np.linspace(start, stop, num_steps).astype(np.int64)
+        dev_ptr = self.driver.device.dev[0]
+
+        qt_rx = []
+        qt_tx = []
+        for f in freqs:
+            f_int = int(f)
+            libbladeRF.bladerf_set_frequency(dev_ptr, bladerf.CHANNEL_RX(0), f_int)
+            libbladeRF.bladerf_set_frequency(dev_ptr, bladerf.CHANNEL_TX(0), f_int)
+            qr = ffi.new('struct bladerf_quick_tune *')
+            qt_val = ffi.new('struct bladerf_quick_tune *')
+            libbladeRF.bladerf_get_quick_tune(dev_ptr, bladerf.CHANNEL_RX(0), qr)
+            libbladeRF.bladerf_get_quick_tune(dev_ptr, bladerf.CHANNEL_TX(0), qt_val)
+            qt_rx.append(qr)
+            qt_tx.append(qt_val)
+
+        self._qt_profiles_rx = qt_rx
+        self._qt_profiles_tx = qt_tx
+        self._qt_params = params_key
+        print(f"[sfcw] Generated {num_steps} quick_tune profiles")
+
     def _configure_hardware(self):
         self.driver.tx_gain = self.tx1_gain
         self.driver.rx_gain = self.rx1_gain
@@ -359,6 +400,8 @@ class SFCWEngine:
         self.driver.sample_rate = 10_000_000
         self.driver.bandwidth = 8_000_000
         self.driver.set_waveform('cw', offset=100_000, amplitude=0.9)
+        if self._use_quick_tune:
+            self._generate_quick_tune_profiles()
         self.driver._configure_channels_dual()
         self.driver.set_tuning_mode_fpga()
         self._fpga_tuning = True
@@ -424,9 +467,9 @@ class SFCWEngine:
         rx_ch = bladerf.CHANNEL_RX(0)
         rx_ch1 = bladerf.CHANNEL_RX(1)
 
-        # RX gain held constant during sweep — per-step gain changes introduce
-        # non-deterministic phase offsets between RX1/RX2 that break coherence.
-        # Frequency-dependent power rolloff is compensated in post-processing instead.
+        use_qt = (self._use_quick_tune and self._qt_profiles_rx is not None
+                  and len(self._qt_profiles_rx) == num_steps)
+        settle_count = 10 if use_qt else 2
 
         dropped_steps = 0
 
@@ -435,12 +478,16 @@ class SFCWEngine:
                 return None
 
             f = int(freqs[i])
-            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
-            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+            if use_qt:
+                libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, self._qt_profiles_rx[i])
+                libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, self._qt_profiles_tx[i])
+            else:
+                libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+                libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
 
-            # Wait for settle: skip buffers that arrived before/during retune.
+            # Wait for PLL settle after retune
             with self._rx_cond:
-                target_seq = self._rx_seq + 2
+                target_seq = self._rx_seq + settle_count
                 while self._rx_seq < target_seq:
                     if not self._rx_cond.wait(timeout=1.0):
                         break
@@ -517,6 +564,10 @@ class SFCWEngine:
         tx_ch = bladerf.CHANNEL_TX(0)
         rx_ch = bladerf.CHANNEL_RX(0)
 
+        use_qt = (self._use_quick_tune and self._qt_profiles_rx is not None
+                  and len(self._qt_profiles_rx) == num_steps)
+        settle_count = 10 if use_qt else 2
+
         dropped_steps = 0
 
         for i in range(num_steps):
@@ -524,11 +575,15 @@ class SFCWEngine:
                 return None
 
             f = int(freqs[i])
-            libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
-            libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+            if use_qt:
+                libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, self._qt_profiles_rx[i])
+                libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, self._qt_profiles_tx[i])
+            else:
+                libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+                libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
 
             with self._rx_cond:
-                target_seq = self._rx_seq + 2
+                target_seq = self._rx_seq + settle_count
                 while self._rx_seq < target_seq:
                     if not self._rx_cond.wait(timeout=1.0):
                         break

@@ -35,6 +35,8 @@ class SDRServer:
             sys.exit(1)
 
         print(f"[sdr] Device: {self.driver.serial}")
+        self.sfcw._generate_quick_tune_profiles()
+        print(f"[sdr] SFCW quick_tune profiles ready")
         print(f"[sdr] Starting WebSocket server on port {PORT}")
         self._broadcast_task = asyncio.create_task(self._broadcast_loop())
         self._sfcw_broadcast_task = asyncio.create_task(self._sfcw_broadcast_loop())
