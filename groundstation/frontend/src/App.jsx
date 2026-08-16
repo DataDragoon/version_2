@@ -331,47 +331,76 @@ export default function App() {
     return processed;
   }, [bscanData, sfcwParams.startFreq, sfcwParams.stopFreq, bgApplied, bscanBgRef, alignSvdEnabled, alignSvdK, alignSvdStrength]);
 
-  // SAR state (only SAR-specific params; depth/wall/svd come from bscan)
-  const [sarParams, setSarParams] = useState({
-    pixelsX: 100,
-    pixelsZ: 100,
-    window: 'blackman-harris',
-    coherent: false,
-    useAligned: false,
-  });
+  // 2D Map state
+  const [mapGateStart, setMapGateStart] = useState(2);
+  const [mapGateEnd, setMapGateEnd] = useState(15);
+  const [mapDynRange, setMapDynRange] = useState(30);
+  const [mapMetric, setMapMetric] = useState('peak');
+  const [mapFocusEnabled, setMapFocusEnabled] = useState(false);
+  const [mapFocusAperture, setMapFocusAperture] = useState(7);
+  const [mapSvdEnabled, setMapSvdEnabled] = useState(false);
+  const [mapSvdK, setMapSvdK] = useState(1);
+  const [mapSvdStrength, setMapSvdStrength] = useState(0.5);
 
+  // SAR processing state (independent of B-scan panel)
+  const [sarBgEnabled, setSarBgEnabled] = useState(true);
+  const [sarSvdEnabled, setSarSvdEnabled] = useState(false);
+  const [sarSvdK, setSarSvdK] = useState(1);
+  const [sarSvdStrength, setSarSvdStrength] = useState(1.0);
+  const [sarScaleMode, setSarScaleMode] = useState('db');
+  const [sarAperture, setSarAperture] = useState(1);
+  const [sarCoherent, setSarCoherent] = useState(true);
+  const [sarDynRange, setSarDynRange] = useState(20);
 
-  // SAR uses exactly what's displayed: aligned+shifted data when useAligned, else bscan data
-  const sarInputData = useMemo(() => {
-    if (!sarParams.useAligned) return filteredBscanData;
-    const sourceData = alignedSvdData || filteredBscanData;
-    const shifts = alignShifts.scanShifts;
-    if (!shifts || shifts.length !== sourceData.length) return sourceData;
-    // Bake alignment shifts into the data (shift magnitudes + distances)
-    const binSpacing = sourceData[0].distances && sourceData[0].distances.length >= 2
-      ? sourceData[0].distances[1] - sourceData[0].distances[0] : 0;
-    if (binSpacing === 0) return sourceData;
-    return sourceData.map((pos, i) => {
-      const intShift = Math.round(shifts[i]);
-      if (intShift === 0) return pos;
-      const numBins = pos.magnitudes.length;
-      const newMags = new Array(numBins);
-      const newDist = new Array(numBins);
-      for (let b = 0; b < numBins; b++) {
-        const srcBin = b - intShift;
-        if (srcBin >= 0 && srcBin < numBins) {
-          newMags[b] = pos.magnitudes[srcBin];
-          newDist[b] = pos.distances[srcBin] + intShift * binSpacing;
-        } else {
-          newMags[b] = pos.magnitudes[0];
-          newDist[b] = (pos.distances[0] || 0) + b * binSpacing;
+  const sarProcessedData = useMemo(() => {
+    if (bscanData.length === 0) return bscanData;
+    const startHz = sfcwParams.startFreq * 1e6;
+    const stopHz = sfcwParams.stopFreq * 1e6;
+
+    return bscanData.map((pos) => {
+      if (!pos.h_cal_real || !pos.h_cal_imag) return pos;
+      const numSteps = pos.h_cal_real.length;
+      let real = pos.h_cal_real;
+      let imag = pos.h_cal_imag;
+
+      if (sarBgEnabled && bscanBgRef && bscanBgRef.h_cal_real && bscanBgRef.h_cal_imag) {
+        let deltaD = 0;
+        if (pos.lidar_standoff_mm != null && bscanBgRef.lidar_standoff_mm != null) {
+          deltaD = (pos.lidar_standoff_mm - bscanBgRef.lidar_standoff_mm) / 1000;
+        }
+        const deltaPhasePerHz = 2 * Math.PI * 2 * deltaD / SPEED_OF_LIGHT;
+        real = new Array(numSteps);
+        imag = new Array(numSteps);
+        for (let i = 0; i < numSteps; i++) {
+          const freq = startHz + (i / (numSteps - 1)) * (stopHz - startHz);
+          const phase = deltaPhasePerHz * freq;
+          const cosP = Math.cos(phase);
+          const sinP = Math.sin(phase);
+          const bgR = bscanBgRef.h_cal_real[i];
+          const bgI = bscanBgRef.h_cal_imag[i];
+          real[i] = pos.h_cal_real[i] - (bgR * cosP - bgI * sinP);
+          imag[i] = pos.h_cal_imag[i] - (bgR * sinP + bgI * cosP);
         }
       }
-      return { ...pos, magnitudes: newMags, distances: newDist };
-    });
-  }, [sarParams.useAligned, filteredBscanData, alignedSvdData, alignShifts]);
 
-  const { sarResult, sarProgress } = useSarWorker(sarInputData, bscanParams, sarParams);
+      const rp = computeRangeProfile(real, imag, numSteps, pos.step_size, pos.range_offset);
+      return { ...pos, magnitudes: rp.magnitudes, distances: rp.distances, h_cal_real: Array.from(real), h_cal_imag: Array.from(imag) };
+    });
+  }, [bscanData, bscanBgRef, sarBgEnabled, sfcwParams.startFreq, sfcwParams.stopFreq]);
+
+  const sarBscanInput = useMemo(() => {
+    if (!sarSvdEnabled || sarProcessedData.length < 2) return sarProcessedData;
+    return svdFilter(sarProcessedData, sarSvdK, sarSvdStrength);
+  }, [sarProcessedData, sarSvdEnabled, sarSvdK, sarSvdStrength]);
+
+  const sarParams = useMemo(() => ({ ...bscanParams, aperture: sarAperture, coherent: sarCoherent, startFreq: sfcwParams.startFreq, svdEnabled: sarSvdEnabled, svdK: sarSvdK, svdStrength: sarSvdStrength }), [bscanParams, sarAperture, sarCoherent, sfcwParams.startFreq, sarSvdEnabled, sarSvdK, sarSvdStrength]);
+  const { sarResult, sarProgress } = useSarWorker(sarBscanInput, sarParams);
+
+  // 2D Map uses the same processed B-scan as the main B-scan panel, optionally with its own SVD
+  const mapBscanData = useMemo(() => {
+    if (!mapSvdEnabled || processedBscanData.length < 2) return processedBscanData;
+    return svdFilter(processedBscanData, mapSvdK, mapSvdStrength);
+  }, [processedBscanData, mapSvdEnabled, mapSvdK, mapSvdStrength]);
 
   // IMU WebSocket
   const handleImuMessage = useCallback((msg) => {
@@ -648,11 +677,44 @@ export default function App() {
         onAlignSvdEnabledChange={setAlignSvdEnabled}
         onAlignSvdKChange={setAlignSvdK}
         onAlignSvdStrengthChange={setAlignSvdStrength}
-        sarBscanData={sarInputData}
-        sarParams={sarParams}
-        onSarParamsChange={setSarParams}
+        sarBscanData={sarBscanInput}
         sarResult={sarResult}
         sarProgress={sarProgress}
+        sarBgEnabled={sarBgEnabled}
+        onSarBgEnabledChange={setSarBgEnabled}
+        sarSvdEnabled={sarSvdEnabled}
+        sarSvdK={sarSvdK}
+        sarSvdStrength={sarSvdStrength}
+        onSarSvdEnabledChange={setSarSvdEnabled}
+        onSarSvdKChange={setSarSvdK}
+        onSarSvdStrengthChange={setSarSvdStrength}
+        sarScaleMode={sarScaleMode}
+        onSarScaleModeChange={setSarScaleMode}
+        sarAperture={sarAperture}
+        onSarApertureChange={setSarAperture}
+        sarCoherent={sarCoherent}
+        onSarCoherentChange={setSarCoherent}
+        sarDynRange={sarDynRange}
+        onSarDynRangeChange={setSarDynRange}
+        mapBscanData={mapBscanData}
+        mapGateStart={mapGateStart}
+        mapGateEnd={mapGateEnd}
+        onMapGateStartChange={setMapGateStart}
+        onMapGateEndChange={setMapGateEnd}
+        mapDynRange={mapDynRange}
+        onMapDynRangeChange={setMapDynRange}
+        mapMetric={mapMetric}
+        onMapMetricChange={setMapMetric}
+        mapFocusEnabled={mapFocusEnabled}
+        mapFocusAperture={mapFocusAperture}
+        onMapFocusEnabledChange={setMapFocusEnabled}
+        onMapFocusApertureChange={setMapFocusAperture}
+        mapSvdEnabled={mapSvdEnabled}
+        mapSvdK={mapSvdK}
+        mapSvdStrength={mapSvdStrength}
+        onMapSvdEnabledChange={setMapSvdEnabled}
+        onMapSvdKChange={setMapSvdK}
+        onMapSvdStrengthChange={setMapSvdStrength}
       />
       <Viewport
         activePanel={activePanel}
@@ -680,6 +742,16 @@ export default function App() {
         bscanDisplayMode={bscanDisplayMode}
         sarResult={sarResult}
         sarProgress={sarProgress}
+        sarScaleMode={sarScaleMode}
+        sarDynRange={sarDynRange}
+        mapBscanData={mapBscanData}
+        mapGateStart={mapGateStart}
+        mapGateEnd={mapGateEnd}
+        mapDynRange={mapDynRange}
+        mapMetric={mapMetric}
+        mapStepSize={bscanParams.stepSize}
+        mapFocusEnabled={mapFocusEnabled}
+        mapFocusAperture={mapFocusAperture}
       />
     </div>
   );

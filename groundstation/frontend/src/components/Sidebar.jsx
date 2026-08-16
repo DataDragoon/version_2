@@ -1,4 +1,4 @@
-import { Activity, Eye, Radio, Radar, ScanLine, AlignVerticalSpaceBetween, Grid3x3, ChevronLeft, Wifi, WifiOff } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ScanLine, AlignVerticalSpaceBetween, Grid3x3, Map, ChevronLeft, Wifi, WifiOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ImuPanel from './ImuPanel';
 import OptiFlowPanel from './OptiFlowPanel';
@@ -7,6 +7,7 @@ import SfcwPanel from './SfcwPanel';
 import BscanPanel from './BscanPanel';
 import AlignedPanel from './AlignedPanel';
 import SarPanel from './SarPanel';
+import MapPanel from './MapPanel';
 
 const PANELS = [
   { id: 'imu',       label: 'IMU',       icon: Activity },
@@ -16,6 +17,7 @@ const PANELS = [
   { id: 'bscan',     label: 'B-Scan',    icon: ScanLine },
   { id: 'aligned',   label: 'Aligned',   icon: AlignVerticalSpaceBetween },
   { id: 'sar',       label: 'SAR',       icon: Grid3x3 },
+  { id: 'map',       label: '2D Map',    icon: Map },
 ];
 
 export default function Sidebar({
@@ -81,10 +83,43 @@ export default function Sidebar({
   onAlignSvdKChange,
   onAlignSvdStrengthChange,
   sarBscanData,
-  sarParams,
-  onSarParamsChange,
   sarResult,
   sarProgress,
+  sarBgEnabled,
+  onSarBgEnabledChange,
+  sarSvdEnabled,
+  sarSvdK,
+  sarSvdStrength,
+  onSarSvdEnabledChange,
+  onSarSvdKChange,
+  onSarSvdStrengthChange,
+  sarScaleMode,
+  onSarScaleModeChange,
+  sarAperture,
+  onSarApertureChange,
+  sarCoherent,
+  onSarCoherentChange,
+  sarDynRange,
+  onSarDynRangeChange,
+  mapBscanData,
+  mapGateStart,
+  mapGateEnd,
+  onMapGateStartChange,
+  onMapGateEndChange,
+  mapDynRange,
+  onMapDynRangeChange,
+  mapMetric,
+  onMapMetricChange,
+  mapFocusEnabled,
+  mapFocusAperture,
+  onMapFocusEnabledChange,
+  onMapFocusApertureChange,
+  mapSvdEnabled,
+  mapSvdK,
+  mapSvdStrength,
+  onMapSvdEnabledChange,
+  onMapSvdKChange,
+  onMapSvdStrengthChange,
 }) {
   return (
     <div className="flex h-screen shrink-0">
@@ -282,14 +317,47 @@ export default function Sidebar({
               {activePanel === 'sar' && (
                 <SarPanel
                   bscanData={sarBscanData}
-                  sarParams={sarParams}
-                  onSarParamsChange={onSarParamsChange}
                   sarResult={sarResult}
                   sarProgress={sarProgress}
-                  wallStandoff={bscanParams.wallStandoff}
-                  wallThickness={bscanParams.wallThickness}
-                  wallPermittivity={bscanParams.wallPermittivity}
-                  onWallParamsChange={(key, value) => onBscanParamsChange({ ...bscanParams, [key]: value })}
+                  bgEnabled={sarBgEnabled}
+                  onBgEnabledChange={onSarBgEnabledChange}
+                  svdEnabled={sarSvdEnabled}
+                  svdK={sarSvdK}
+                  svdStrength={sarSvdStrength}
+                  onSvdEnabledChange={onSarSvdEnabledChange}
+                  onSvdKChange={onSarSvdKChange}
+                  onSvdStrengthChange={onSarSvdStrengthChange}
+                  scaleMode={sarScaleMode}
+                  onScaleModeChange={onSarScaleModeChange}
+                  aperture={sarAperture}
+                  onApertureChange={onSarApertureChange}
+                  coherent={sarCoherent}
+                  onCoherentChange={onSarCoherentChange}
+                  dynRange={sarDynRange}
+                  onDynRangeChange={onSarDynRangeChange}
+                />
+              )}
+              {activePanel === 'map' && (
+                <MapPanel
+                  bscanData={mapBscanData}
+                  gateStart={mapGateStart}
+                  gateEnd={mapGateEnd}
+                  onGateStartChange={onMapGateStartChange}
+                  onGateEndChange={onMapGateEndChange}
+                  dynRange={mapDynRange}
+                  onDynRangeChange={onMapDynRangeChange}
+                  metric={mapMetric}
+                  onMetricChange={onMapMetricChange}
+                  focusEnabled={mapFocusEnabled}
+                  focusAperture={mapFocusAperture}
+                  onFocusEnabledChange={onMapFocusEnabledChange}
+                  onFocusApertureChange={onMapFocusApertureChange}
+                  svdEnabled={mapSvdEnabled}
+                  svdK={mapSvdK}
+                  svdStrength={mapSvdStrength}
+                  onSvdEnabledChange={onMapSvdEnabledChange}
+                  onSvdKChange={onMapSvdKChange}
+                  onSvdStrengthChange={onMapSvdStrengthChange}
                 />
               )}
             </div>

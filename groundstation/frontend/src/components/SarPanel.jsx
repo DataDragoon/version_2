@@ -2,13 +2,7 @@ import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
 
-export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarResult, sarProgress, wallStandoff, wallThickness, wallPermittivity, onWallParamsChange }) {
-  const { pixelsX, pixelsZ, window: windowType, coherent, useAligned } = sarParams;
-
-  const update = (key, value) => {
-    onSarParamsChange({ ...sarParams, [key]: value });
-  };
-
+export default function SarPanel({ bscanData, sarResult, sarProgress, bgEnabled, onBgEnabledChange, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, scaleMode, onScaleModeChange, aperture, onApertureChange, coherent, onCoherentChange, dynRange, onDynRangeChange }) {
   const numPositions = bscanData ? bscanData.length : 0;
 
   return (
@@ -21,7 +15,7 @@ export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarR
         {sarResult && (
           <div className="grid grid-cols-2 gap-2">
             <InfoTile label="Grid" value={`${sarResult.pixelsX}×${sarResult.pixelsZ}`} />
-            <InfoTile label="Mode" value={sarResult.coherent ? 'coherent' : 'incoherent'} />
+            <InfoTile label="Aperture" value={`${(sarResult.apertureLength * 100).toFixed(1)} cm`} />
           </div>
         )}
         {sarProgress !== null && (
@@ -38,131 +32,146 @@ export default function SarPanel({ bscanData, sarParams, onSarParamsChange, sarR
             </div>
           </div>
         )}
-        <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
-          Reconstructs from {useAligned ? 'aligned' : 'B-scan'} data with its current settings.
-        </div>
-      </Section>
-
-      <Section label="Source">
-        <button
-          onClick={() => update('useAligned', !useAligned)}
-          className="w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
-        >
-          {useAligned ? 'Aligned' : 'B-Scan'}
-        </button>
       </Section>
 
       <Section label="Mode">
         <div className="flex gap-2">
           <button
-            onClick={() => update('coherent', false)}
-            className={cn(
-              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              !coherent
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-            )}
-          >
-            Incoherent
-          </button>
-          <button
-            onClick={() => update('coherent', true)}
+            onClick={() => onCoherentChange(true)}
             className={cn(
               'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
               coherent
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                ? 'bg-purple-500/10 border-purple-500/30 text-purple-400'
                 : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
             )}
           >
             Coherent
           </button>
+          <button
+            onClick={() => onCoherentChange(false)}
+            className={cn(
+              'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              !coherent
+                ? 'bg-purple-500/10 border-purple-500/30 text-purple-400'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            Incoherent
+          </button>
         </div>
       </Section>
 
-      <Section label="Window">
+      <Section label="Background">
+        <button
+          onClick={() => onBgEnabledChange(!bgEnabled)}
+          className={cn(
+            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+            bgEnabled
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+              : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+          )}
+        >
+          {bgEnabled ? '● BG Subtract ON' : 'BG Subtract OFF'}
+        </button>
+      </Section>
+
+      <Section label="SVD Filter">
+        <button
+          onClick={() => onSvdEnabledChange(!svdEnabled)}
+          disabled={numPositions < 2}
+          className={cn(
+            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+            numPositions < 2
+              ? 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
+              : svdEnabled
+                ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+          )}
+        >
+          {svdEnabled ? '● SVD ON' : 'SVD OFF'}
+        </button>
+        <div className="grid grid-cols-2 gap-2">
+          <EditableField
+            label="k (remove)"
+            value={svdK}
+            unit=""
+            onChange={(v) => onSvdKChange(Math.round(v))}
+            min={1}
+            max={Math.max(1, numPositions - 1)}
+          />
+          <EditableField
+            label="Strength"
+            value={svdStrength}
+            unit=""
+            onChange={(v) => onSvdStrengthChange(v)}
+            min={0.01}
+            max={1}
+          />
+        </div>
+      </Section>
+
+      <Section label="Display">
         <div className="flex gap-2">
           <button
-            onClick={() => update('window', 'blackman-harris')}
+            onClick={() => onScaleModeChange('db')}
             className={cn(
               'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              windowType === 'blackman-harris'
+              scaleMode === 'db'
                 ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
                 : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
             )}
           >
-            Blackman-Harris
+            dB
           </button>
           <button
-            onClick={() => update('window', 'hanning')}
+            onClick={() => onScaleModeChange('linear')}
             className={cn(
               'flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-              windowType === 'hanning'
+              scaleMode === 'linear'
                 ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
                 : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
             )}
           >
-            Hanning
+            Linear
           </button>
         </div>
-      </Section>
-
-      <Section label="Image Grid">
-        <div className="grid grid-cols-2 gap-2">
-          <EditableField
-            label="Lateral px"
-            value={pixelsX}
-            unit="px"
-            onChange={(v) => update('pixelsX', Math.round(v))}
-            min={20}
-            max={500}
-          />
-          <EditableField
-            label="Depth px"
-            value={pixelsZ}
-            unit="px"
-            onChange={(v) => update('pixelsZ', Math.round(v))}
-            min={20}
-            max={500}
-          />
-        </div>
-      </Section>
-
-
-      <Section label="Wall">
-        <div className="grid grid-cols-2 gap-2">
-          <EditableField
-            label="Standoff"
-            value={wallStandoff}
-            unit="cm"
-            onChange={(v) => onWallParamsChange('wallStandoff', v)}
-            min={0}
-            max={100}
-          />
-          <EditableField
-            label="Thickness"
-            value={wallThickness}
-            unit="cm"
-            onChange={(v) => onWallParamsChange('wallThickness', v)}
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] uppercase tracking-wider text-[#555555] font-medium">Nearby positions</span>
+            <span className="text-[10px] font-mono text-white/60">{aperture}</span>
+          </div>
+          <input
+            type="range"
             min={1}
-            max={100}
+            max={Math.max(1, numPositions - 1)}
+            value={aperture}
+            onChange={(e) => onApertureChange(parseInt(e.target.value))}
+            className="w-full h-1 rounded-full appearance-none bg-white/10 accent-emerald-500 cursor-pointer"
           />
+          <div className="flex justify-between text-[9px] font-mono text-white/30">
+            <span>1</span>
+            <span>{Math.max(1, numPositions - 1)}</span>
+          </div>
         </div>
-        <div className="grid grid-cols-1 gap-2">
-          <EditableField
-            label="Permittivity εr"
-            value={wallPermittivity}
-            unit=""
-            onChange={(v) => onWallParamsChange('wallPermittivity', v)}
-            min={1}
-            max={20}
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] uppercase tracking-wider text-[#555555] font-medium">Dynamic range</span>
+            <span className="text-[10px] font-mono text-white/60">{dynRange} dB</span>
+          </div>
+          <input
+            type="range"
+            min={5}
+            max={60}
+            value={dynRange}
+            onChange={(e) => onDynRangeChange(parseInt(e.target.value))}
+            className="w-full h-1 rounded-full appearance-none bg-white/10 accent-emerald-500 cursor-pointer"
           />
-        </div>
-        <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
-          v_wall = c/√εr = {(299792458 / Math.sqrt(wallPermittivity) / 1e6).toFixed(1)} m/ms.
-          {' '}Depth: {wallStandoff + wallThickness} cm.
+          <div className="flex justify-between text-[9px] font-mono text-white/30">
+            <span>5</span>
+            <span>60</span>
+          </div>
         </div>
       </Section>
-
     </>
   );
 }
@@ -207,12 +216,12 @@ function EditableField({ label, value, unit, onChange, min, max }) {
             onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }}
             className="bg-transparent text-base font-bold font-mono text-white outline-none w-14"
           />
-          <span className="text-xs font-semibold text-[#888888]">{unit}</span>
+          {unit && <span className="text-xs font-semibold text-[#888888]">{unit}</span>}
         </div>
       ) : (
         <div className="flex items-baseline gap-1">
           <span className="text-base font-bold font-mono text-white">{value}</span>
-          <span className="text-xs font-semibold text-[#888888]">{unit}</span>
+          {unit && <span className="text-xs font-semibold text-[#888888]">{unit}</span>}
         </div>
       )}
       {editing && (

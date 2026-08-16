@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import SarWorker from '../lib/sar.worker.js?worker';
 
-export function useSarWorker(bscanData, bscanParams, sarParams) {
+export function useSarWorker(bscanData, bscanParams) {
   const [sarResult, setSarResult] = useState(null);
   const [sarProgress, setSarProgress] = useState(null);
   const workerRef = useRef(null);
@@ -47,9 +47,9 @@ export function useSarWorker(bscanData, bscanParams, sarParams) {
           setSarProgress(null);
         }
       };
-      worker.postMessage({ bscanData, bscanParams, sarParams });
+      worker.postMessage({ bscanData, bscanParams });
     }, 300);
-  }, [bscanData, bscanParams, sarParams]);
+  }, [bscanData, bscanParams]);
 
   return { sarResult, sarProgress };
 }
