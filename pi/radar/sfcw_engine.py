@@ -26,7 +26,7 @@ class SFCWEngine:
         self.stop_freq = 5_000_000_000
         self.step_size = 20_000_000
         self.settle_time = 0.003
-        self.num_buffers = 4
+        self.num_buffers = 1
         self.tx1_gain = 30
         self.rx1_gain = 30
         self.tx2_gain = 30
@@ -356,20 +356,21 @@ class SFCWEngine:
         self.driver.rx_gain = self.rx1_gain
         self.driver.tx2_gain = self.tx2_gain
         self.driver.rx2_gain = self.rx2_gain
-        self.driver.sample_rate = 2_000_000
-        self.driver.bandwidth = 1_500_000
+        self.driver.sample_rate = 10_000_000
+        self.driver.bandwidth = 8_000_000
         self.driver.set_waveform('cw', offset=100_000, amplitude=0.9)
         self.driver._configure_channels_dual()
         self.driver.set_tuning_mode_fpga()
         self._fpga_tuning = True
 
     def _start_tx_rx(self):
-        self._rx_lock = threading.Lock()
+        self._rx_cond = threading.Condition()
         self._rx_latest = None
         self._rx_seq = 0
-        n = 1024
+        n = 4096
         t = np.arange(n, dtype=np.float64) / self.driver.sample_rate
         self._ref_tone = np.exp(-1j * 2 * np.pi * self.driver.cw_offset * t)
+        self._ref_tone_scaled = self._ref_tone / 2047.0
         self.driver.start_tx_dual()
         self.driver.start_rx_dual(self._rx_capture, num_samples=n)
         time.sleep(0.05)
@@ -400,9 +401,10 @@ class SFCWEngine:
 
 
     def _rx_capture(self, rx1_iq, rx2_iq):
-        with self._rx_lock:
+        with self._rx_cond:
             self._rx_latest = (rx1_iq, rx2_iq)
             self._rx_seq += 1
+            self._rx_cond.notify_all()
 
     def _perform_sweep(self):
         with self._lock:
@@ -433,63 +435,43 @@ class SFCWEngine:
                 return None
 
             f = int(freqs[i])
-
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
 
             # Wait for settle: skip buffers that arrived before/during retune.
-            # Read the current seq, then wait for 2 new buffers past that point.
-            with self._rx_lock:
-                seq_after_retune = self._rx_seq
-            target_seq = seq_after_retune + 2
-            deadline = time.monotonic() + 1.0
-            while True:
-                with self._rx_lock:
-                    if self._rx_seq >= target_seq:
+            with self._rx_cond:
+                target_seq = self._rx_seq + 2
+                while self._rx_seq < target_seq:
+                    if not self._rx_cond.wait(timeout=1.0):
                         break
-                if time.monotonic() > deadline:
-                    break
-                time.sleep(0.0002)
 
             # Capture num_buffers fresh samples, each waiting for a new seq tick
-            sig_accum = 0j
-            ref_accum = 0j
-            captured = 0
-            with self._rx_lock:
+            rx1_bufs = []
+            rx2_bufs = []
+            with self._rx_cond:
                 last_seq = self._rx_seq
 
             for _ in range(num_buffers):
-                # Wait for the next fresh buffer
-                deadline = time.monotonic() + 1.0
-                while True:
-                    with self._rx_lock:
-                        if self._rx_seq > last_seq:
-                            rx1, rx2 = self._rx_latest
-                            last_seq = self._rx_seq
+                with self._rx_cond:
+                    while self._rx_seq <= last_seq:
+                        if not self._rx_cond.wait(timeout=1.0):
                             break
-                    if time.monotonic() > deadline:
-                        rx1, rx2 = None, None
-                        break
-                    time.sleep(0.0002)
+                    if self._rx_seq > last_seq:
+                        rx1_bufs.append(self._rx_latest[0])
+                        rx2_bufs.append(self._rx_latest[1])
+                        last_seq = self._rx_seq
 
-                if rx1 is None or rx2 is None:
-                    continue
-
-                i1 = rx1[0::2].astype(np.float64) / 2047.0
-                q1 = rx1[1::2].astype(np.float64) / 2047.0
-                sig_accum += np.mean((i1 + 1j * q1) * self._ref_tone)
-
-                i2 = rx2[0::2].astype(np.float64) / 2047.0
-                q2 = rx2[1::2].astype(np.float64) / 2047.0
-                ref_accum += np.mean((i2 + 1j * q2) * self._ref_tone)
-
-                captured += 1
-
-            if captured < num_buffers:
+            captured = len(rx1_bufs)
+            if captured > 0:
+                # Batch deinterleave + complex conversion + ref_tone correlation
+                sig_arr = np.array(rx1_bufs, dtype=np.float64)
+                ref_arr = np.array(rx2_bufs, dtype=np.float64)
+                sig_cplx = (sig_arr[:, 0::2] + 1j * sig_arr[:, 1::2]) * self._ref_tone_scaled
+                ref_cplx = (ref_arr[:, 0::2] + 1j * ref_arr[:, 1::2]) * self._ref_tone_scaled
+                h_signal[i] = sig_cplx.mean()
+                h_reference[i] = ref_cplx.mean()
+            else:
                 dropped_steps += 1
-
-            h_signal[i] = sig_accum / max(captured, 1)
-            h_reference[i] = ref_accum / max(captured, 1)
 
             if self._callback and i % 10 == 0:
                 self._callback({
@@ -542,59 +524,40 @@ class SFCWEngine:
                 return None
 
             f = int(freqs[i])
-
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
 
-            with self._rx_lock:
-                seq_after_retune = self._rx_seq
-            target_seq = seq_after_retune + 2
-            deadline = time.monotonic() + 1.0
-            while True:
-                with self._rx_lock:
-                    if self._rx_seq >= target_seq:
+            with self._rx_cond:
+                target_seq = self._rx_seq + 2
+                while self._rx_seq < target_seq:
+                    if not self._rx_cond.wait(timeout=1.0):
                         break
-                if time.monotonic() > deadline:
-                    break
-                time.sleep(0.0002)
 
-            sig_accum = 0j
-            ref_accum = 0j
-            captured = 0
-            with self._rx_lock:
+            rx1_bufs = []
+            rx2_bufs = []
+            with self._rx_cond:
                 last_seq = self._rx_seq
 
             for _ in range(num_buffers):
-                deadline = time.monotonic() + 1.0
-                while True:
-                    with self._rx_lock:
-                        if self._rx_seq > last_seq:
-                            rx1, rx2 = self._rx_latest
-                            last_seq = self._rx_seq
+                with self._rx_cond:
+                    while self._rx_seq <= last_seq:
+                        if not self._rx_cond.wait(timeout=1.0):
                             break
-                    if time.monotonic() > deadline:
-                        rx1, rx2 = None, None
-                        break
-                    time.sleep(0.0002)
+                    if self._rx_seq > last_seq:
+                        rx1_bufs.append(self._rx_latest[0])
+                        rx2_bufs.append(self._rx_latest[1])
+                        last_seq = self._rx_seq
 
-                if rx1 is None or rx2 is None:
-                    continue
-
-                i1 = rx1[0::2].astype(np.float64) / 2047.0
-                q1 = rx1[1::2].astype(np.float64) / 2047.0
-                sig_accum += np.mean((i1 + 1j * q1) * self._ref_tone)
-
-                i2 = rx2[0::2].astype(np.float64) / 2047.0
-                q2 = rx2[1::2].astype(np.float64) / 2047.0
-                ref_accum += np.mean((i2 + 1j * q2) * self._ref_tone)
-
-                captured += 1
-
-            if captured < num_buffers:
+            captured = len(rx1_bufs)
+            if captured > 0:
+                sig_arr = np.array(rx1_bufs, dtype=np.float64)
+                ref_arr = np.array(rx2_bufs, dtype=np.float64)
+                sig_cplx = (sig_arr[:, 0::2] + 1j * sig_arr[:, 1::2]) * self._ref_tone_scaled
+                ref_cplx = (ref_arr[:, 0::2] + 1j * ref_arr[:, 1::2]) * self._ref_tone_scaled
+                h_signal[i] = sig_cplx.mean()
+                h_reference[i] = ref_cplx.mean()
+            else:
                 dropped_steps += 1
-
-            h_signal[i] = sig_accum / max(captured, 1)
-            h_reference[i] = ref_accum / max(captured, 1)
 
         ref_mag = np.abs(h_reference)
         valid = ref_mag > 1e-10
