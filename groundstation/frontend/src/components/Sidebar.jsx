@@ -124,6 +124,7 @@ export default function Sidebar({
   onMapSvdStrengthChange,
   bgModelCaptures,
   bgModelCapturing,
+  bgModelAccumCount,
   onBgModelAction,
 }) {
   return (
@@ -265,6 +266,7 @@ export default function Sidebar({
                   sfcwRunning={sfcwRunning}
                   modelCaptures={bgModelCaptures}
                   modelCapturing={bgModelCapturing}
+                  accumCount={bgModelAccumCount}
                   onModelAction={onBgModelAction}
                   lidarMm={lidarMm}
                 />

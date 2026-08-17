@@ -131,6 +131,8 @@ export default function App() {
   // Background Model state
   const [bgModelCaptures, setBgModelCaptures] = useState([]);
   const [bgModelCapturing, setBgModelCapturing] = useState(false);
+  const [bgModelAccumCount, setBgModelAccumCount] = useState(0);
+  const bgModelAccumRef = useRef(null);
 
   // B-Scan state
   const [bscanData, setBscanData] = useState([]);
@@ -483,18 +485,40 @@ export default function App() {
         });
         setBscanCapturing(false);
       }
-      if (msg.bgmodel_capture) {
-        const captureData = {
+      if (bgModelAccumRef.current) {
+        const accum = bgModelAccumRef.current;
+        accum.sweeps.push({
           h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
           h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
-          num_steps: msg.num_steps,
-          step_size: msg.step_size,
-          range_offset: msg.range_offset,
-          lidar_standoff_mm: standoffMm,
-          timestamp: msg.timestamp,
-        };
-        setBgModelCaptures(prev => [...prev, captureData]);
-        setBgModelCapturing(false);
+        });
+        accum.lidarDistances.push(standoffMm);
+        setBgModelAccumCount(accum.sweeps.length);
+
+        if (accum.sweeps.length >= 4) {
+          const numSteps = accum.sweeps[0].h_cal_real.length;
+          const avgReal = new Array(numSteps).fill(0);
+          const avgImag = new Array(numSteps).fill(0);
+          for (const sw of accum.sweeps) {
+            for (let i = 0; i < numSteps; i++) {
+              avgReal[i] += sw.h_cal_real[i] / 4;
+              avgImag[i] += sw.h_cal_imag[i] / 4;
+            }
+          }
+          const captureData = {
+            h_cal_real: avgReal,
+            h_cal_imag: avgImag,
+            num_steps: msg.num_steps,
+            step_size: msg.step_size,
+            range_offset: msg.range_offset,
+            lidar_distances: accum.lidarDistances,
+            lidar_standoff_mm: accum.lidarDistances.reduce((s, v) => s + v, 0) / accum.lidarDistances.length,
+            timestamp: msg.timestamp,
+          };
+          setBgModelCaptures(prev => [...prev, captureData]);
+          bgModelAccumRef.current = null;
+          setBgModelCapturing(false);
+          setBgModelAccumCount(0);
+        }
       }
       setSfcwProgress(null);
     } else if (msg.type === 'sfcw_progress') {
@@ -596,7 +620,7 @@ export default function App() {
       sendSdr({ cmd: 'sfcw_stop' });
     } else if (action === 'capture') {
       setBgModelCapturing(true);
-      sendSdr({ cmd: 'bgmodel_capture' });
+      bgModelAccumRef.current = { sweeps: [], lidarDistances: [] };
     } else if (action === 'undo') {
       setBgModelCaptures(prev => prev.slice(0, -1));
     } else if (action === 'clear') {
@@ -790,6 +814,7 @@ export default function App() {
         onMapSvdStrengthChange={setMapSvdStrength}
         bgModelCaptures={bgModelCaptures}
         bgModelCapturing={bgModelCapturing}
+        bgModelAccumCount={bgModelAccumCount}
         onBgModelAction={handleBgModelAction}
       />
       <Viewport
