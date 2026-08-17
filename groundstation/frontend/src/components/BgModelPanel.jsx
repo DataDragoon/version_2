@@ -154,19 +154,22 @@ export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, m
         )}
         {captureCount > 0 && (
           <div className="flex flex-col gap-1 max-h-32 overflow-y-auto px-2">
-            {modelCaptures.map((c, i) => (
-              <div key={i} className="flex flex-col gap-0.5">
-                <div className="flex justify-between text-[10px] text-white/50">
-                  <span>#{i + 1}</span>
-                  <span className="font-mono">{c.lidar_standoff_mm.toFixed(1)} mm avg</span>
-                </div>
-                {c.lidar_distances && (
-                  <div className="text-[9px] text-white/30 font-mono pl-4">
-                    [{c.lidar_distances.map(d => d != null ? d.toFixed(1) : '?').join(', ')}]
+            {[...modelCaptures].reverse().map((c, ri) => {
+              const i = captureCount - 1 - ri;
+              return (
+                <div key={i} className="flex flex-col gap-0.5">
+                  <div className="flex justify-between text-[10px] text-white/50">
+                    <span>#{i + 1}</span>
+                    <span className="font-mono">{c.lidar_standoff_mm.toFixed(1)} mm avg</span>
                   </div>
-                )}
-              </div>
-            ))}
+                  {c.lidar_distances && (
+                    <div className="text-[9px] text-white/30 font-mono pl-4">
+                      [{c.lidar_distances.map(d => d != null ? d.toFixed(1) : '?').join(', ')}]
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </Section>
