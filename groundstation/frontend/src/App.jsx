@@ -487,34 +487,19 @@ export default function App() {
       }
       if (bgModelAccumRef.current) {
         const accum = bgModelAccumRef.current;
-        accum.sweeps.push({
+        accum.samples.push({
           h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
           h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
+          lidar_standoff_mm: standoffMm,
+          num_steps: msg.num_steps,
+          step_size: msg.step_size,
+          range_offset: msg.range_offset,
+          timestamp: msg.timestamp,
         });
-        accum.lidarDistances.push(standoffMm);
-        setBgModelAccumCount(accum.sweeps.length);
+        setBgModelAccumCount(accum.samples.length);
 
-        if (accum.sweeps.length >= 4) {
-          const numSteps = accum.sweeps[0].h_cal_real.length;
-          const avgReal = new Array(numSteps).fill(0);
-          const avgImag = new Array(numSteps).fill(0);
-          for (const sw of accum.sweeps) {
-            for (let i = 0; i < numSteps; i++) {
-              avgReal[i] += sw.h_cal_real[i] / 4;
-              avgImag[i] += sw.h_cal_imag[i] / 4;
-            }
-          }
-          const captureData = {
-            h_cal_real: avgReal,
-            h_cal_imag: avgImag,
-            num_steps: msg.num_steps,
-            step_size: msg.step_size,
-            range_offset: msg.range_offset,
-            lidar_distances: accum.lidarDistances,
-            lidar_standoff_mm: accum.lidarDistances.reduce((s, v) => s + v, 0) / accum.lidarDistances.length,
-            timestamp: msg.timestamp,
-          };
-          setBgModelCaptures(prev => [...prev, captureData]);
+        if (accum.samples.length >= 5) {
+          setBgModelCaptures(prev => [...prev, { samples: accum.samples }]);
           bgModelAccumRef.current = null;
           setBgModelCapturing(false);
           setBgModelAccumCount(0);
@@ -620,7 +605,7 @@ export default function App() {
       sendSdr({ cmd: 'sfcw_stop' });
     } else if (action === 'capture') {
       setBgModelCapturing(true);
-      bgModelAccumRef.current = { sweeps: [], lidarDistances: [] };
+      bgModelAccumRef.current = { samples: [] };
     } else if (action === 'undo') {
       setBgModelCaptures(prev => prev.slice(0, -1));
     } else if (action === 'clear') {

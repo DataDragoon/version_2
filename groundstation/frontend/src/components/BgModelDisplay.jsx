@@ -32,9 +32,12 @@ export default function BgModelDisplay({ captures, capturing, sfcwProgress }) {
 
     if (!captures || captures.length === 0) return;
 
-    const distances = captures.map(c => c.lidar_standoff_mm);
-    const minD = Math.min(...distances);
-    const maxD = Math.max(...distances);
+    const allSamples = captures.flatMap(c => c.samples);
+    const allDists = allSamples.map(s => s.lidar_standoff_mm).filter(d => d != null);
+    if (allDists.length === 0) return;
+
+    const minD = Math.min(...allDists);
+    const maxD = Math.max(...allDists);
     const rangeD = maxD - minD || 1;
 
     const pad = { top: 40, bottom: 50, left: 60, right: 30 };
@@ -64,7 +67,7 @@ export default function BgModelDisplay({ captures, capturing, sfcwProgress }) {
     }
     ctx.fillText('Standoff Distance (mm)', pad.left + plotW / 2, pad.top + plotH + 40);
 
-    // Y axis: sample index
+    // Y axis: capture group index
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
     for (let i = 0; i < captures.length; i++) {
@@ -73,47 +76,34 @@ export default function BgModelDisplay({ captures, capturing, sfcwProgress }) {
       ctx.fillText(`#${i + 1}`, pad.left - 10, y);
     }
 
-    // Draw each capture as a dot with magnitude preview
+    // Draw each capture group — 5 dots per row
     captures.forEach((cap, i) => {
-      const x = pad.left + ((cap.lidar_standoff_mm - minD) / rangeD) * plotW;
       const y = captures.length === 1
         ? pad.top + plotH / 2
         : pad.top + (i / (captures.length - 1)) * plotH;
 
-      // Draw dot
-      ctx.beginPath();
-      ctx.arc(x, y, 5, 0, Math.PI * 2);
-      ctx.fillStyle = '#a78bfa';
-      ctx.fill();
+      cap.samples.forEach((sample) => {
+        if (sample.lidar_standoff_mm == null) return;
+        const x = pad.left + ((sample.lidar_standoff_mm - minD) / rangeD) * plotW;
 
-      // Draw small magnitude sparkline next to dot
-      if (cap.h_cal_real && cap.h_cal_imag) {
-        const numSteps = cap.h_cal_real.length;
-        const sparkW = Math.min(80, plotW * 0.3);
-        const sparkH = 16;
-        const sparkX = x + 10;
-        const sparkY = y - sparkH / 2;
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = '#a78bfa';
+        ctx.fill();
+      });
 
-        const mags = [];
-        let maxMag = 0;
-        for (let j = 0; j < numSteps; j++) {
-          const mag = Math.sqrt(cap.h_cal_real[j] ** 2 + cap.h_cal_imag[j] ** 2);
-          mags.push(mag);
-          if (mag > maxMag) maxMag = mag;
-        }
-
-        if (maxMag > 0 && sparkX + sparkW < w - pad.right) {
-          ctx.beginPath();
-          ctx.strokeStyle = 'rgba(167, 139, 250, 0.5)';
-          ctx.lineWidth = 1;
-          for (let j = 0; j < numSteps; j++) {
-            const sx = sparkX + (j / (numSteps - 1)) * sparkW;
-            const sy = sparkY + sparkH - (mags[j] / maxMag) * sparkH;
-            if (j === 0) ctx.moveTo(sx, sy);
-            else ctx.lineTo(sx, sy);
-          }
-          ctx.stroke();
-        }
+      // Draw connecting line between the 5 dots in this capture
+      const validSamples = cap.samples.filter(s => s.lidar_standoff_mm != null);
+      if (validSamples.length > 1) {
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(167, 139, 250, 0.3)';
+        ctx.lineWidth = 1;
+        validSamples.forEach((s, j) => {
+          const x = pad.left + ((s.lidar_standoff_mm - minD) / rangeD) * plotW;
+          if (j === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
       }
     });
 
@@ -122,7 +112,7 @@ export default function BgModelDisplay({ captures, capturing, sfcwProgress }) {
     ctx.font = 'bold 11px sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.fillText(`${captures.length} capture${captures.length !== 1 ? 's' : ''} — ${rangeD.toFixed(1)} mm range`, pad.left, 12);
+    ctx.fillText(`${captures.length} captures (${allDists.length} samples) — ${rangeD.toFixed(1)} mm range`, pad.left, 12);
 
   }, [captures, size]);
 

@@ -20,11 +20,10 @@ export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, m
   const canActivate = isConnected && sdrConnected;
   const captureCount = modelCaptures.length;
 
-  const distRange = captureCount > 0
-    ? {
-        min: Math.min(...modelCaptures.map(c => c.lidar_standoff_mm)),
-        max: Math.max(...modelCaptures.map(c => c.lidar_standoff_mm)),
-      }
+  const allDistances = modelCaptures.flatMap(c => c.samples.map(s => s.lidar_standoff_mm));
+  const totalSamples = allDistances.length;
+  const distRange = totalSamples > 0
+    ? { min: Math.min(...allDistances), max: Math.max(...allDistances) }
     : null;
 
   return (
@@ -93,7 +92,7 @@ export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, m
           </div>
           <div className="flex flex-col gap-0.5 text-left min-w-0">
             <span className="text-sm font-semibold text-white">
-              {modelCapturing ? `Averaging ${accumCount}/4` : 'Capture Background'}
+              {modelCapturing ? `Capturing ${accumCount}/5` : 'Capture Background'}
             </span>
             <span className="text-xs text-[#555555] leading-relaxed">
               {modelCapturing ? 'Collecting sweeps...' :
@@ -144,7 +143,7 @@ export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, m
 
       <Section label="Training Data">
         <div className="grid grid-cols-2 gap-2">
-          <InfoTile label="Samples" value={captureCount} />
+          <InfoTile label="Captures" value={`${captureCount} (${totalSamples})`} />
           <InfoTile label="Range" value={distRange ? `${((distRange.max - distRange.min) / 10).toFixed(1)} cm` : '—'} />
         </div>
         {distRange && (
@@ -156,17 +155,17 @@ export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, m
           <div className="flex flex-col gap-1 max-h-32 overflow-y-auto px-2">
             {[...modelCaptures].reverse().map((c, ri) => {
               const i = captureCount - 1 - ri;
+              const dists = c.samples.map(s => s.lidar_standoff_mm);
+              const avg = dists.reduce((s, v) => s + v, 0) / dists.length;
               return (
                 <div key={i} className="flex flex-col gap-0.5">
                   <div className="flex justify-between text-[10px] text-white/50">
                     <span>#{i + 1}</span>
-                    <span className="font-mono">{c.lidar_standoff_mm.toFixed(1)} mm avg</span>
+                    <span className="font-mono">{avg.toFixed(1)} mm</span>
                   </div>
-                  {c.lidar_distances && (
-                    <div className="text-[9px] text-white/30 font-mono pl-4">
-                      [{c.lidar_distances.map(d => d != null ? d.toFixed(1) : '?').join(', ')}]
-                    </div>
-                  )}
+                  <div className="text-[9px] text-white/30 font-mono pl-4">
+                    [{dists.map(d => d != null ? d.toFixed(1) : '?').join(', ')}]
+                  </div>
                 </div>
               );
             })}
