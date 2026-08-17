@@ -54,6 +54,9 @@ export default function Sidebar({
   coherenceResult,
   sfcwRangeScale,
   onSfcwRangeScaleChange,
+  sfcwBgModel,
+  onLoadSfcwBgModel,
+  onClearSfcwBgModel,
   bscanData,
   bscanCapturing,
   bscanBgCaptured,
@@ -128,6 +131,10 @@ export default function Sidebar({
   bgModelTesting,
   bgModelTestCount,
   bgModelTestResult,
+  bgModelTraining,
+  bgModelTrainProgress,
+  bgModelTrainResult,
+  bgModelTrainError,
   onBgModelAction,
 }) {
   return (
@@ -273,6 +280,10 @@ export default function Sidebar({
                   testing={bgModelTesting}
                   testCount={bgModelTestCount}
                   testResult={bgModelTestResult}
+                  trainingState={bgModelTraining}
+                  trainProgress={bgModelTrainProgress}
+                  trainResult={bgModelTrainResult}
+                  trainError={bgModelTrainError}
                   onModelAction={onBgModelAction}
                   lidarMm={lidarMm}
                 />
@@ -291,6 +302,9 @@ export default function Sidebar({
                   rangeScale={sfcwRangeScale}
                   onRangeScaleChange={onSfcwRangeScaleChange}
                   lidarMm={lidarMm}
+                  bgModel={sfcwBgModel}
+                  onLoadBgModel={onLoadSfcwBgModel}
+                  onClearBgModel={onClearSfcwBgModel}
                 />
               )}
               {activePanel === 'bscan' && (

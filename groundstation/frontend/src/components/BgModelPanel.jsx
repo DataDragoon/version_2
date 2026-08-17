@@ -4,7 +4,8 @@ import { Section, InfoTile } from './Sidebar';
 
 const LIDAR_AVG_WINDOW = 20;
 
-export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, modelCaptures, modelCapturing, accumCount, testing, testCount, testResult, onModelAction, lidarMm }) {
+export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, modelCaptures, modelCapturing, accumCount, testing, testCount, testResult, trainingState, trainProgress, trainResult, trainError, onModelAction, lidarMm }) {
+  const [modelName, setModelName] = useState('');
   const lidarBuf = useRef([]);
   const [lidarAvg, setLidarAvg] = useState(null);
 
@@ -219,26 +220,14 @@ export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, m
         )}
       </Section>
 
-      <Section label="Model">
-        <button
-          onClick={() => onModelAction('finish')}
-          disabled={captureCount < 3}
-          className={cn(
-            'w-full px-3 py-2.5 rounded-lg text-xs font-medium transition-all border',
-            captureCount >= 3
-              ? 'bg-[#a78bfa]/10 border-[#a78bfa]/30 text-[#a78bfa] hover:bg-[#a78bfa]/20'
-              : 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
-          )}
-        >
-          Finish & Train Model
-        </button>
+      <Section label="Data">
         <div className="grid grid-cols-2 gap-2">
           <button
             onClick={() => onModelAction('export')}
-            disabled={captureCount === 0}
+            disabled={captureCount === 0 || sfcwRunning}
             className={cn(
               'px-3 py-2 rounded-lg text-xs font-medium transition-all',
-              captureCount > 0
+              captureCount > 0 && !sfcwRunning
                 ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
                 : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
             )}
@@ -247,11 +236,99 @@ export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, m
           </button>
           <button
             onClick={() => onModelAction('import')}
-            className="px-3 py-2 rounded-lg text-xs font-medium bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
+            disabled={sfcwRunning}
+            className={cn(
+              'px-3 py-2 rounded-lg text-xs font-medium transition-all',
+              !sfcwRunning
+                ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+                : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
+            )}
           >
             Import
           </button>
         </div>
+      </Section>
+
+      <Section label="Model">
+        <button
+          onClick={() => onModelAction('build')}
+          disabled={totalSamples < 5 || trainingState === 'training'}
+          className={cn(
+            'w-full px-3 py-2.5 rounded-lg text-xs font-medium transition-all border',
+            trainingState === 'training'
+              ? 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400'
+              : totalSamples >= 5
+                ? 'bg-[#a78bfa]/10 border-[#a78bfa]/30 text-[#a78bfa] hover:bg-[#a78bfa]/20'
+                : 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
+          )}
+        >
+          {trainingState === 'training' ? 'Training...' : 'Build Model'}
+        </button>
+
+        {trainingState === 'training' && trainProgress && (
+          <div className="flex flex-col gap-2 p-3 rounded-xl border border-yellow-500/20 bg-yellow-500/5">
+            <div className="flex justify-between text-[10px]">
+              <span className="text-[#555]">Epoch</span>
+              <span className="font-mono text-white">{trainProgress.epoch} / {trainProgress.totalEpochs}</span>
+            </div>
+            <div className="relative h-1.5 rounded-full bg-white/5 overflow-hidden">
+              <div
+                className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-yellow-500 to-yellow-300 transition-all duration-300"
+                style={{ width: `${(trainProgress.epoch / trainProgress.totalEpochs) * 100}%` }}
+              />
+            </div>
+            <div className="flex justify-between text-[10px]">
+              <span className="text-[#555]">Loss</span>
+              <span className="font-mono text-white">{trainProgress.loss.toExponential(3)}</span>
+            </div>
+          </div>
+        )}
+
+        {trainingState === 'error' && trainError && (
+          <div className="p-3 rounded-xl border border-red-500/20 bg-red-500/5">
+            <span className="text-xs text-red-400">{trainError}</span>
+          </div>
+        )}
+
+        {trainingState === 'complete' && trainResult && (
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-1 p-3 rounded-xl border border-green-500/20 bg-green-500/5">
+              <div className="flex justify-between text-[10px]">
+                <span className="text-[#555]">Final loss</span>
+                <span className="font-mono text-green-400">{trainResult.finalLoss.toExponential(3)}</span>
+              </div>
+              <div className="flex justify-between text-[10px]">
+                <span className="text-[#555]">Samples</span>
+                <span className="font-mono text-white">{trainResult.numSamples}</span>
+              </div>
+            </div>
+            <input
+              type="text"
+              value={modelName}
+              onChange={e => setModelName(e.target.value)}
+              placeholder="Model name..."
+              className="w-full px-3 py-2 rounded-lg text-xs bg-[#0a0a0a] border border-white/10 text-white outline-none focus:border-[#a78bfa]/50 placeholder:text-[#333]"
+              spellCheck={false}
+            />
+            <button
+              onClick={() => {
+                if (modelName.trim()) {
+                  onModelAction('save_model', modelName.trim());
+                  setModelName('');
+                }
+              }}
+              disabled={!modelName.trim()}
+              className={cn(
+                'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+                modelName.trim()
+                  ? 'bg-green-500/10 border-green-500/30 text-green-400 hover:bg-green-500/20'
+                  : 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
+              )}
+            >
+              Save Model
+            </button>
+          </div>
+        )}
       </Section>
     </>
   );

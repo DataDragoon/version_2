@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile, ToggleButton } from './Sidebar';
 
@@ -8,11 +8,13 @@ const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
 const LIDAR_AVG_WINDOW = 20;
 
-export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, bgSubtractMode, rangeScale, onRangeScaleChange, lidarMm }) {
+export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, bgSubtractMode, rangeScale, onRangeScaleChange, lidarMm, bgModel, onLoadBgModel, onClearBgModel }) {
   const { startFreq, stopFreq, stepSize, settleTime, numBuffers, tx1Gain, rx1Gain, rangeOffset } = params;
   const [coherenceRunning, setCoherenceRunning] = useState(false);
   const lidarBuf = useRef([]);
   const [lidarAvg, setLidarAvg] = useState(null);
+  const [modelList, setModelList] = useState(null);
+  const [modelListOpen, setModelListOpen] = useState(false);
 
   useEffect(() => {
     if (coherenceResult) setCoherenceRunning(false);
@@ -30,6 +32,24 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
   };
+
+  const fetchModels = useCallback(() => {
+    fetch('/api/models')
+      .then(r => r.json())
+      .then(data => { setModelList(Array.isArray(data) ? data : []); setModelListOpen(true); })
+      .catch(() => setModelList([]));
+  }, []);
+
+  const loadModel = useCallback((filename) => {
+    fetch(`/api/models/${filename}`)
+      .then(r => r.json())
+      .then(model => {
+        sendSdr({ cmd: 'sfcw_clear_bg' });
+        onLoadBgModel(model);
+        setModelListOpen(false);
+      })
+      .catch(err => console.error('Failed to load model:', err));
+  }, [onLoadBgModel, sendSdr]);
 
   const canActivate = isConnected && sdrConnected;
 
@@ -191,11 +211,46 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             Capture BG
           </button>
           <button
-            onClick={() => sendSdr({ cmd: 'sfcw_clear_bg' })}
+            onClick={() => { sendSdr({ cmd: 'sfcw_clear_bg' }); onClearBgModel(); }}
             className="px-3 py-2 rounded-lg text-xs font-medium bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
           >
             Clear BG
           </button>
+        </div>
+        <div className="mt-2 flex flex-col gap-2">
+          <button
+            onClick={fetchModels}
+            className={cn(
+              'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              bgModel
+                ? 'bg-[#a78bfa]/10 border-[#a78bfa]/30 text-[#a78bfa]'
+                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+            )}
+          >
+            {bgModel ? `Model: ${bgModel.name || 'loaded'}` : 'Load Model'}
+          </button>
+          {modelListOpen && modelList && (
+            <div className="flex flex-col gap-1 max-h-32 overflow-y-auto rounded-lg border border-white/10 bg-[#0a0a0a] p-2">
+              {modelList.length === 0 && (
+                <span className="text-[10px] text-white/30 px-1">No models saved</span>
+              )}
+              {modelList.map((m) => (
+                <button
+                  key={m.filename}
+                  onClick={() => loadModel(m.filename)}
+                  className="text-left px-2 py-1.5 rounded text-[11px] text-white/70 hover:bg-white/10 hover:text-white transition-all"
+                >
+                  {m.name || m.filename}
+                </button>
+              ))}
+              <button
+                onClick={() => setModelListOpen(false)}
+                className="text-[10px] text-white/30 hover:text-white/60 mt-1 px-1"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2 mt-2">
           <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">BG Sub</span>

@@ -4,6 +4,8 @@ import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
 import { svdFilter, powerIteration } from './lib/svd';
 import { useSarWorker } from './hooks/useSarWorker';
+import { useBgModelWorker } from './hooks/useBgModelWorker';
+import { inferBgModel } from './lib/bgModelInfer';
 
 const SPEED_OF_LIGHT = 299792458;
 
@@ -237,6 +239,11 @@ export default function App() {
   const [bgModelTestCount, setBgModelTestCount] = useState(0);
   const [bgModelTestResult, setBgModelTestResult] = useState(null);
   const bgModelTestRef = useRef(null);
+  const bgModelWorker = useBgModelWorker();
+
+  // Loaded BG model for SFCW live subtraction
+  const [sfcwBgModel, setSfcwBgModel] = useState(null);
+  const [sfcwStandoffMm, setSfcwStandoffMm] = useState(null);
 
   // B-Scan state
   const [bscanData, setBscanData] = useState([]);
@@ -512,6 +519,28 @@ export default function App() {
     return svdFilter(processedBscanData, mapSvdK, mapSvdStrength);
   }, [processedBscanData, mapSvdEnabled, mapSvdK, mapSvdStrength]);
 
+  // Apply loaded BG model to live SFCW result
+  const processedSfcwResult = useMemo(() => {
+    if (!sfcwResult || !sfcwBgModel) return sfcwResult;
+    if (!sfcwResult.h_cal_real || !sfcwResult.h_cal_imag) return sfcwResult;
+
+    const numSteps = sfcwResult.h_cal_real.length;
+    if (numSteps !== sfcwBgModel.sfcwParams.numSteps) return sfcwResult;
+    if (sfcwStandoffMm == null) return sfcwResult;
+
+    const { bgReal, bgImag } = inferBgModel(sfcwBgModel, sfcwStandoffMm, numSteps);
+
+    const subReal = new Array(numSteps);
+    const subImag = new Array(numSteps);
+    for (let i = 0; i < numSteps; i++) {
+      subReal[i] = sfcwResult.h_cal_real[i] - bgReal[i];
+      subImag[i] = sfcwResult.h_cal_imag[i] - bgImag[i];
+    }
+
+    const rp = computeRangeProfile(subReal, subImag, numSteps, sfcwResult.step_size, sfcwResult.range_offset);
+    return { ...sfcwResult, magnitudes: rp.magnitudes, distances: rp.distances };
+  }, [sfcwResult, sfcwBgModel, sfcwStandoffMm]);
+
   // IMU WebSocket
   const handleImuMessage = useCallback((msg) => {
     imuCountRef.current++;
@@ -562,6 +591,7 @@ export default function App() {
 
       // Always update live display
       setSfcwResult(msg);
+      setSfcwStandoffMm(standoffMm);
 
       // Flag-based B-scan capture: sweep itself carries the flag
       if (msg.bscan_capture) {
@@ -720,7 +750,7 @@ export default function App() {
     }
   }, [sendSdr, sfcwRunning, bscanData, bscanParams, sfcwParams]);
 
-  const handleBgModelAction = useCallback((action) => {
+  const handleBgModelAction = useCallback((action, payload) => {
     if (action === 'start_session') {
       if (sfcwRunning) return;
       sendSdr({ cmd: 'sfcw_start' });
@@ -733,9 +763,24 @@ export default function App() {
       setBgModelCaptures(prev => prev.slice(0, -1));
     } else if (action === 'clear') {
       setBgModelCaptures([]);
-    } else if (action === 'finish') {
-      sendSdr({ cmd: 'sfcw_stop' });
-      // TODO: model training pipeline
+    } else if (action === 'build') {
+      const allSamples = bgModelCaptures.flatMap(c => c.samples);
+      if (allSamples.length < 5) return;
+      bgModelWorker.startTraining(allSamples, sfcwParams);
+    } else if (action === 'save_model') {
+      if (!bgModelWorker.resultRef.current || !payload) return;
+      const modelData = {
+        ...bgModelWorker.resultRef.current,
+        name: payload,
+        created: new Date().toISOString(),
+      };
+      fetch('/api/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(modelData),
+      }).then(r => r.json()).then(res => {
+        if (res.success) bgModelWorker.reset();
+      }).catch(err => console.error('Failed to save model:', err));
     } else if (action === 'export') {
       const exportData = {
         version: 1,
@@ -778,7 +823,7 @@ export default function App() {
       setBgModelTestResult(null);
       bgModelTestRef.current = { samples: [] };
     }
-  }, [sendSdr, sfcwRunning, bgModelCaptures, sfcwParams]);
+  }, [sendSdr, sfcwRunning, bgModelCaptures, sfcwParams, bgModelWorker.startTraining, bgModelWorker.reset, bgModelWorker.resultRef]);
 
   // Rate counter interval
   const rateIntervalRef = useRef(null);
@@ -852,10 +897,13 @@ export default function App() {
         sfcwStatus={sfcwStatus}
         sfcwParams={sfcwParams}
         onSfcwParamsChange={setSfcwParams}
-        sfcwResult={sfcwResult}
+        sfcwResult={processedSfcwResult}
         coherenceResult={coherenceResult}
         sfcwRangeScale={sfcwRangeScale}
         onSfcwRangeScaleChange={setSfcwRangeScale}
+        sfcwBgModel={sfcwBgModel}
+        onLoadSfcwBgModel={setSfcwBgModel}
+        onClearSfcwBgModel={() => setSfcwBgModel(null)}
         bscanData={bscanData}
         bscanCapturing={bscanCapturing}
         bscanBgCaptured={bscanBgRef !== null}
@@ -930,6 +978,10 @@ export default function App() {
         bgModelTesting={bgModelTesting}
         bgModelTestCount={bgModelTestCount}
         bgModelTestResult={bgModelTestResult}
+        bgModelTraining={bgModelWorker.trainingState}
+        bgModelTrainProgress={bgModelWorker.progress}
+        bgModelTrainResult={bgModelWorker.result}
+        bgModelTrainError={bgModelWorker.error}
         onBgModelAction={handleBgModelAction}
       />
       <Viewport
@@ -944,7 +996,7 @@ export default function App() {
         fftData={fftData}
         showFFT={showFFT}
         graphPaused={graphPaused}
-        sfcwResult={sfcwResult}
+        sfcwResult={processedSfcwResult}
         sfcwProgress={sfcwProgress}
         sfcwRunning={sfcwRunning}
         sfcwRangeScale={sfcwRangeScale}
