@@ -525,8 +525,14 @@ export default function App() {
     if (!sfcwResult.h_cal_real || !sfcwResult.h_cal_imag) return sfcwResult;
 
     const numSteps = sfcwResult.h_cal_real.length;
-    if (numSteps !== sfcwBgModel.sfcwParams.numSteps) return sfcwResult;
-    if (sfcwStandoffMm == null) return sfcwResult;
+    if (numSteps !== sfcwBgModel.sfcwParams.numSteps) {
+      console.warn('[BG Model] numSteps mismatch:', numSteps, 'vs model:', sfcwBgModel.sfcwParams.numSteps);
+      return sfcwResult;
+    }
+    if (sfcwStandoffMm == null) {
+      console.warn('[BG Model] no lidar standoff available');
+      return sfcwResult;
+    }
 
     const { bgReal, bgImag } = inferBgModel(sfcwBgModel, sfcwStandoffMm, numSteps);
 
