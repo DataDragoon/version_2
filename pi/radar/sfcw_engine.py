@@ -45,6 +45,7 @@ class SFCWEngine:
         self._capture_background = False
         self._capture_bscan = False
         self._capture_bscan_bg = False
+        self._capture_bgmodel = False
         self._bg_subtract_mode = 'complex'  # 'complex' or 'magnitude'
         self._last_h_cal = None
         self._fpga_tuning = False
@@ -143,6 +144,9 @@ class SFCWEngine:
 
     def capture_bscan_bg(self):
         self._capture_bscan_bg = True
+
+    def capture_bgmodel(self):
+        self._capture_bgmodel = True
 
     def clear_background(self):
         self._background = None
@@ -666,6 +670,9 @@ class SFCWEngine:
         bscan_bg_flag = self._capture_bscan_bg
         if bscan_bg_flag:
             self._capture_bscan_bg = False
+        bgmodel_flag = self._capture_bgmodel
+        if bgmodel_flag:
+            self._capture_bgmodel = False
 
         return {
             'type': 'range_profile',
@@ -681,6 +688,7 @@ class SFCWEngine:
             'timestamp': time.time(),
             'bscan_capture': bscan_flag,
             'bscan_bg_capture': bscan_bg_flag,
+            'bgmodel_capture': bgmodel_flag,
             'phase_coherence': {
                 'phase_std_rad': phase_std,
                 'phase_std_deg': float(np.degrees(phase_std)),

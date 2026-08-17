@@ -155,6 +155,9 @@ class SDRServer:
             elif action == 'bscan_bg_capture':
                 self.sfcw.capture_bscan_bg()
 
+            elif action == 'bgmodel_capture':
+                self.sfcw.capture_bgmodel()
+
             elif action == 'sfcw_clear_bg':
                 self.sfcw.clear_background()
 

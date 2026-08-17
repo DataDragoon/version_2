@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import { Activity, Eye, Radio, Radar, ScanLine, AlignVerticalSpaceBetween, Grid3x3, Map, Zap } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ScanLine, AlignVerticalSpaceBetween, Grid3x3, Map, Zap, Brain } from 'lucide-react';
 import ImuDisplay from './ImuDisplay';
 import OptiFlowDisplay from './OptiFlowDisplay';
 import WaveformDisplay from './WaveformDisplay';
@@ -10,6 +10,7 @@ import SfcwDisplay from './SfcwDisplay';
 import BscanDisplay from './BscanDisplay';
 import SarDisplay from './SarDisplay';
 import MapDisplay from './MapDisplay';
+import BgModelDisplay from './BgModelDisplay';
 
 export default function Viewport({
   activePanel,
@@ -47,6 +48,8 @@ export default function Viewport({
   mapStepSize,
   mapFocusEnabled,
   mapFocusAperture,
+  bgModelCaptures,
+  bgModelCapturing,
 }) {
   const [bscanLiveRange, setBscanLiveRange] = useState({ min: 0, max: 0.3 });
 
@@ -151,6 +154,45 @@ export default function Viewport({
           </div>
         </div>
 
+      </div>
+    );
+  }
+
+  if (activePanel === 'bgmodel') {
+    const showLiveSweep = sfcwRunning || sfcwResult;
+    return (
+      <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
+        {showLiveSweep && (
+          <div className="relative flex flex-col border-b border-white/5" style={{ flex: '0 0 40%' }}>
+            <PaneHeader icon={Radar} label="Live Sweep" active={sfcwRunning} color="orange" />
+            <div className="flex-1 min-h-0 relative overflow-hidden">
+              <SfcwDisplay
+                sfcwResult={sfcwResult}
+                sfcwProgress={sfcwProgress}
+                sfcwRunning={sfcwRunning}
+                rangeScale={{ min: 0, max: 0.3 }}
+                hideWaterfall
+                defaultScaleMode="linear"
+              />
+            </div>
+          </div>
+        )}
+        <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
+          <PaneHeader icon={Brain} label="Background Model" active={bgModelCaptures && bgModelCaptures.length > 0} color="orange" />
+          <div className="flex-1 min-h-0 relative overflow-hidden">
+            {bgModelCaptures && bgModelCaptures.length > 0 && (
+              <div className="absolute inset-0 pointer-events-none">
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#a78bfa]/4 blur-[80px] rounded-full" />
+              </div>
+            )}
+            <BgModelDisplay captures={bgModelCaptures} capturing={bgModelCapturing} sfcwProgress={sfcwProgress} />
+            {(!bgModelCaptures || bgModelCaptures.length === 0) && !showLiveSweep && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No captures yet</span>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     );
   }

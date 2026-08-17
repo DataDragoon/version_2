@@ -128,6 +128,10 @@ export default function App() {
     rangeOffset: 0.5,
   });
 
+  // Background Model state
+  const [bgModelCaptures, setBgModelCaptures] = useState([]);
+  const [bgModelCapturing, setBgModelCapturing] = useState(false);
+
   // B-Scan state
   const [bscanData, setBscanData] = useState([]);
   const [bscanCapturing, setBscanCapturing] = useState(false);
@@ -479,6 +483,19 @@ export default function App() {
         });
         setBscanCapturing(false);
       }
+      if (msg.bgmodel_capture) {
+        const captureData = {
+          h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
+          h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
+          num_steps: msg.num_steps,
+          step_size: msg.step_size,
+          range_offset: msg.range_offset,
+          lidar_standoff_mm: standoffMm,
+          timestamp: msg.timestamp,
+        };
+        setBgModelCaptures(prev => [...prev, captureData]);
+        setBgModelCapturing(false);
+      }
       setSfcwProgress(null);
     } else if (msg.type === 'sfcw_progress') {
       setSfcwProgress(msg);
@@ -570,6 +587,62 @@ export default function App() {
       input.click();
     }
   }, [sendSdr, sfcwRunning, bscanData, bscanParams, sfcwParams]);
+
+  const handleBgModelAction = useCallback((action) => {
+    if (action === 'start_session') {
+      if (sfcwRunning) return;
+      sendSdr({ cmd: 'sfcw_start' });
+    } else if (action === 'stop_session') {
+      sendSdr({ cmd: 'sfcw_stop' });
+    } else if (action === 'capture') {
+      setBgModelCapturing(true);
+      sendSdr({ cmd: 'bgmodel_capture' });
+    } else if (action === 'undo') {
+      setBgModelCaptures(prev => prev.slice(0, -1));
+    } else if (action === 'clear') {
+      setBgModelCaptures([]);
+    } else if (action === 'finish') {
+      sendSdr({ cmd: 'sfcw_stop' });
+      // TODO: model training pipeline
+    } else if (action === 'export') {
+      const exportData = {
+        version: 1,
+        type: 'bgmodel_training_data',
+        timestamp: new Date().toISOString(),
+        sfcwParams: sfcwParams,
+        lidarAntennaOffsetMm: LIDAR_ANTENNA_OFFSET_MM,
+        captures: bgModelCaptures,
+      };
+      const blob = new Blob([JSON.stringify(exportData)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `bgmodel_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } else if (action === 'import') {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json';
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const imported = JSON.parse(ev.target.result);
+            if (imported.type === 'bgmodel_training_data' && Array.isArray(imported.captures)) {
+              setBgModelCaptures(imported.captures);
+            }
+          } catch (err) {
+            console.error('Failed to import BG model data:', err);
+          }
+        };
+        reader.readAsText(file);
+      };
+      input.click();
+    }
+  }, [sendSdr, sfcwRunning, bgModelCaptures, sfcwParams]);
 
   // Rate counter interval
   const rateIntervalRef = useRef(null);
@@ -715,6 +788,9 @@ export default function App() {
         onMapSvdEnabledChange={setMapSvdEnabled}
         onMapSvdKChange={setMapSvdK}
         onMapSvdStrengthChange={setMapSvdStrength}
+        bgModelCaptures={bgModelCaptures}
+        bgModelCapturing={bgModelCapturing}
+        onBgModelAction={handleBgModelAction}
       />
       <Viewport
         activePanel={activePanel}
@@ -752,6 +828,8 @@ export default function App() {
         mapStepSize={bscanParams.stepSize}
         mapFocusEnabled={mapFocusEnabled}
         mapFocusAperture={mapFocusAperture}
+        bgModelCaptures={bgModelCaptures}
+        bgModelCapturing={bgModelCapturing}
       />
     </div>
   );

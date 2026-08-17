@@ -1,8 +1,9 @@
-import { Activity, Eye, Radio, Radar, ScanLine, AlignVerticalSpaceBetween, Grid3x3, Map, ChevronLeft, Wifi, WifiOff } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ScanLine, AlignVerticalSpaceBetween, Grid3x3, Map, ChevronLeft, Wifi, WifiOff, Brain } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ImuPanel from './ImuPanel';
 import OptiFlowPanel from './OptiFlowPanel';
 import RfCalibPanel from './RfCalibPanel';
+import BgModelPanel from './BgModelPanel';
 import SfcwPanel from './SfcwPanel';
 import BscanPanel from './BscanPanel';
 import AlignedPanel from './AlignedPanel';
@@ -13,6 +14,7 @@ const PANELS = [
   { id: 'imu',       label: 'IMU',       icon: Activity },
   { id: 'optiflow',  label: 'OptiFlow',  icon: Eye },
   { id: 'rfcalib',   label: 'RF Calibrate', icon: Radio },
+  { id: 'bgmodel',   label: 'BG Model',  icon: Brain },
   { id: 'sfcw',      label: 'SFCW',      icon: Radar },
   { id: 'bscan',     label: 'B-Scan',    icon: ScanLine },
   { id: 'aligned',   label: 'Aligned',   icon: AlignVerticalSpaceBetween },
@@ -120,6 +122,9 @@ export default function Sidebar({
   onMapSvdEnabledChange,
   onMapSvdKChange,
   onMapSvdStrengthChange,
+  bgModelCaptures,
+  bgModelCapturing,
+  onBgModelAction,
 }) {
   return (
     <div className="flex h-screen shrink-0">
@@ -251,6 +256,17 @@ export default function Sidebar({
                   graphPaused={graphPaused}
                   onTogglePause={onTogglePause}
                   sendSdr={sendSdr}
+                />
+              )}
+              {activePanel === 'bgmodel' && (
+                <BgModelPanel
+                  isConnected={isConnected}
+                  sdrConnected={sdrConnected}
+                  sfcwRunning={sfcwRunning}
+                  modelCaptures={bgModelCaptures}
+                  modelCapturing={bgModelCapturing}
+                  onModelAction={onBgModelAction}
+                  lidarMm={lidarMm}
                 />
               )}
               {activePanel === 'sfcw' && (
