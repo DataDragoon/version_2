@@ -79,7 +79,104 @@ function computeRangeProfile(hCalReal, hCalImag, numSteps, stepSize, rangeOffset
   return { magnitudes, distances };
 }
 
+function runPhaseUnwindTest(samples, sfcwParams) {
+  const startHz = sfcwParams.startFreq * 1e6;
+  const stopHz = sfcwParams.stopFreq * 1e6;
+  const numSteps = samples[0].num_steps;
 
+  const freqs = [];
+  for (let i = 0; i < numSteps; i++) {
+    freqs.push(startHz + (i / (numSteps - 1)) * (stopHz - startHz));
+  }
+
+  const residuals = [];
+  const reconstructionErrors = [];
+
+  for (const sample of samples) {
+    const d = sample.lidar_standoff_mm / 1000;
+    const residualReal = new Array(numSteps);
+    const residualImag = new Array(numSteps);
+    let maxErr = 0;
+    let sumErrSq = 0;
+
+    for (let i = 0; i < numSteps; i++) {
+      // Unwind: multiply by exp(+j * 4π * f * d / c)
+      const phase = 4 * Math.PI * freqs[i] * d / SPEED_OF_LIGHT;
+      const cosP = Math.cos(phase);
+      const sinP = Math.sin(phase);
+      const origR = sample.h_cal_real[i];
+      const origI = sample.h_cal_imag[i];
+      residualReal[i] = origR * cosP - origI * sinP;
+      residualImag[i] = origR * sinP + origI * cosP;
+
+      // Rewind: multiply by exp(-j * 4π * f * d / c)
+      const reconR = residualReal[i] * cosP + residualImag[i] * sinP;
+      const reconI = -residualReal[i] * sinP + residualImag[i] * cosP;
+
+      const errR = reconR - origR;
+      const errI = reconI - origI;
+      const errMag = Math.sqrt(errR * errR + errI * errI);
+      sumErrSq += errMag * errMag;
+      if (errMag > maxErr) maxErr = errMag;
+    }
+
+    residuals.push({ real: residualReal, imag: residualImag, distance: d });
+    reconstructionErrors.push({
+      maxError: maxErr,
+      rmsError: Math.sqrt(sumErrSq / numSteps),
+    });
+  }
+
+  // Cross-sweep residual consistency: how similar are the 5 residuals to each other?
+  const meanResidualReal = new Array(numSteps).fill(0);
+  const meanResidualImag = new Array(numSteps).fill(0);
+  for (const r of residuals) {
+    for (let i = 0; i < numSteps; i++) {
+      meanResidualReal[i] += r.real[i] / residuals.length;
+      meanResidualImag[i] += r.imag[i] / residuals.length;
+    }
+  }
+
+  let totalVariance = 0;
+  let totalSignalPower = 0;
+  for (const r of residuals) {
+    for (let i = 0; i < numSteps; i++) {
+      const diffR = r.real[i] - meanResidualReal[i];
+      const diffI = r.imag[i] - meanResidualImag[i];
+      totalVariance += diffR * diffR + diffI * diffI;
+      totalSignalPower += meanResidualReal[i] ** 2 + meanResidualImag[i] ** 2;
+    }
+  }
+  const snrLinear = totalSignalPower / (totalVariance || 1e-30);
+  const snrDb = 10 * Math.log10(snrLinear);
+
+  // Correlation between consecutive residuals
+  let corrSum = 0;
+  for (let k = 0; k < residuals.length - 1; k++) {
+    let dotRe = 0, dotIm = 0, magA = 0, magB = 0;
+    for (let i = 0; i < numSteps; i++) {
+      const aR = residuals[k].real[i], aI = residuals[k].imag[i];
+      const bR = residuals[k + 1].real[i], bI = residuals[k + 1].imag[i];
+      dotRe += aR * bR + aI * bI;
+      dotIm += aI * bR - aR * bI;
+      magA += aR * aR + aI * aI;
+      magB += bR * bR + bI * bI;
+    }
+    corrSum += Math.sqrt(dotRe * dotRe + dotIm * dotIm) / (Math.sqrt(magA) * Math.sqrt(magB) + 1e-30);
+  }
+  const avgCorrelation = corrSum / (residuals.length - 1);
+
+  return {
+    reconstructionErrors,
+    maxErrorOverall: Math.max(...reconstructionErrors.map(e => e.maxError)),
+    rmsErrorOverall: Math.sqrt(reconstructionErrors.reduce((s, e) => s + e.rmsError ** 2, 0) / reconstructionErrors.length),
+    residualSnrDb: snrDb,
+    residualCorrelation: avgCorrelation,
+    residuals,
+    freqs,
+    distances: samples.map(s => s.lidar_standoff_mm),
+  };
+}
 
 export default function App() {
   const [activePanel, setActivePanel] = useState(null);
@@ -128,11 +225,18 @@ export default function App() {
     rangeOffset: 0.5,
   });
 
+  const sfcwParamsRef = useRef(sfcwParams);
+  sfcwParamsRef.current = sfcwParams;
+
   // Background Model state
   const [bgModelCaptures, setBgModelCaptures] = useState([]);
   const [bgModelCapturing, setBgModelCapturing] = useState(false);
   const [bgModelAccumCount, setBgModelAccumCount] = useState(0);
   const bgModelAccumRef = useRef(null);
+  const [bgModelTesting, setBgModelTesting] = useState(false);
+  const [bgModelTestCount, setBgModelTestCount] = useState(0);
+  const [bgModelTestResult, setBgModelTestResult] = useState(null);
+  const bgModelTestRef = useRef(null);
 
   // B-Scan state
   const [bscanData, setBscanData] = useState([]);
@@ -505,6 +609,25 @@ export default function App() {
           setBgModelAccumCount(0);
         }
       }
+      if (bgModelTestRef.current) {
+        const test = bgModelTestRef.current;
+        test.samples.push({
+          h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
+          h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
+          lidar_standoff_mm: standoffMm,
+          num_steps: msg.num_steps,
+          step_size: msg.step_size,
+        });
+        setBgModelTestCount(test.samples.length);
+
+        if (test.samples.length >= 5) {
+          const result = runPhaseUnwindTest(test.samples, sfcwParamsRef.current);
+          setBgModelTestResult(result);
+          bgModelTestRef.current = null;
+          setBgModelTesting(false);
+          setBgModelTestCount(0);
+        }
+      }
       setSfcwProgress(null);
     } else if (msg.type === 'sfcw_progress') {
       setSfcwProgress(msg);
@@ -650,6 +773,10 @@ export default function App() {
         reader.readAsText(file);
       };
       input.click();
+    } else if (action === 'test_phase') {
+      setBgModelTesting(true);
+      setBgModelTestResult(null);
+      bgModelTestRef.current = { samples: [] };
     }
   }, [sendSdr, sfcwRunning, bgModelCaptures, sfcwParams]);
 
@@ -800,6 +927,9 @@ export default function App() {
         bgModelCaptures={bgModelCaptures}
         bgModelCapturing={bgModelCapturing}
         bgModelAccumCount={bgModelAccumCount}
+        bgModelTesting={bgModelTesting}
+        bgModelTestCount={bgModelTestCount}
+        bgModelTestResult={bgModelTestResult}
         onBgModelAction={handleBgModelAction}
       />
       <Viewport

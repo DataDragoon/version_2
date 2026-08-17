@@ -125,6 +125,9 @@ export default function Sidebar({
   bgModelCaptures,
   bgModelCapturing,
   bgModelAccumCount,
+  bgModelTesting,
+  bgModelTestCount,
+  bgModelTestResult,
   onBgModelAction,
 }) {
   return (
@@ -267,6 +270,9 @@ export default function Sidebar({
                   modelCaptures={bgModelCaptures}
                   modelCapturing={bgModelCapturing}
                   accumCount={bgModelAccumCount}
+                  testing={bgModelTesting}
+                  testCount={bgModelTestCount}
+                  testResult={bgModelTestResult}
                   onModelAction={onBgModelAction}
                   lidarMm={lidarMm}
                 />

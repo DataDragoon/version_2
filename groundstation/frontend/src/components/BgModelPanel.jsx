@@ -4,7 +4,7 @@ import { Section, InfoTile } from './Sidebar';
 
 const LIDAR_AVG_WINDOW = 20;
 
-export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, modelCaptures, modelCapturing, accumCount, onModelAction, lidarMm }) {
+export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, modelCaptures, modelCapturing, accumCount, testing, testCount, testResult, onModelAction, lidarMm }) {
   const lidarBuf = useRef([]);
   const [lidarAvg, setLidarAvg] = useState(null);
 
@@ -169,6 +169,52 @@ export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, m
                 </div>
               );
             })}
+          </div>
+        )}
+      </Section>
+
+      <Section label="Phase Test">
+        <button
+          onClick={() => onModelAction('test_phase')}
+          disabled={!sfcwRunning || testing || modelCapturing}
+          className={cn(
+            'w-full px-3 py-2.5 rounded-lg text-xs font-medium transition-all border',
+            testing
+              ? 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400'
+              : sfcwRunning && !modelCapturing
+                ? 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+                : 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
+          )}
+        >
+          {testing ? `Testing ${testCount}/5...` : 'Test Phase Unwind'}
+        </button>
+        {testResult && (
+          <div className="flex flex-col gap-2 p-3 rounded-xl border border-white/8 bg-[#0a0a0a]/60">
+            <div className="flex justify-between text-[10px]">
+              <span className="text-[#555]">Round-trip error</span>
+              <span className={cn('font-mono font-bold', testResult.maxErrorOverall < 1e-10 ? 'text-green-400' : 'text-red-400')}>
+                {testResult.maxErrorOverall.toExponential(2)}
+              </span>
+            </div>
+            <div className="flex justify-between text-[10px]">
+              <span className="text-[#555]">Residual SNR</span>
+              <span className="font-mono font-bold text-white">{testResult.residualSnrDb.toFixed(1)} dB</span>
+            </div>
+            <div className="flex justify-between text-[10px]">
+              <span className="text-[#555]">Sweep correlation</span>
+              <span className={cn('font-mono font-bold', testResult.residualCorrelation > 0.95 ? 'text-green-400' : testResult.residualCorrelation > 0.8 ? 'text-yellow-400' : 'text-red-400')}>
+                {testResult.residualCorrelation.toFixed(4)}
+              </span>
+            </div>
+            <div className="flex justify-between text-[10px]">
+              <span className="text-[#555]">Lidar spread</span>
+              <span className="font-mono font-bold text-white">
+                {(Math.max(...testResult.distances) - Math.min(...testResult.distances)).toFixed(1)} mm
+              </span>
+            </div>
+            <div className="text-[9px] text-white/30 leading-relaxed pt-1 border-t border-white/5">
+              Round-trip should be ~0 (lossless). High correlation = residuals are consistent across sweeps (good for model learning).
+            </div>
           </div>
         )}
       </Section>
