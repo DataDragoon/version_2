@@ -283,6 +283,8 @@ class SDRServer:
                     result_msg['bscan_capture'] = True
                 if data.get('bscan_bg_capture'):
                     result_msg['bscan_bg_capture'] = True
+                if data.get('bgmodel_capture'):
+                    result_msg['bgmodel_capture'] = True
                 msg = json.dumps(result_msg)
             else:
                 continue
