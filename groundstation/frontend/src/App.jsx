@@ -544,7 +544,15 @@ export default function App() {
     }
 
     const rp = computeRangeProfile(subReal, subImag, numSteps, sfcwResult.step_size, sfcwResult.range_offset);
-    return { ...sfcwResult, magnitudes: rp.magnitudes, distances: rp.distances };
+    // SfcwDisplay recomputes its own profile from h_cal_* (windowing/range comp),
+    // so the subtracted spectrum must replace them or the subtraction is discarded.
+    return {
+      ...sfcwResult,
+      h_cal_real: subReal,
+      h_cal_imag: subImag,
+      magnitudes: rp.magnitudes,
+      distances: rp.distances,
+    };
   }, [sfcwResult, sfcwBgModel, sfcwStandoffMm]);
 
   // IMU WebSocket
