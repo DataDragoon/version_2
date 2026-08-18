@@ -245,9 +245,18 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
                 <button
                   key={m.filename}
                   onClick={() => loadModel(m.filename)}
-                  className="text-left px-2 py-1.5 rounded text-[11px] text-white/70 hover:bg-white/10 hover:text-white transition-all"
+                  className="flex items-baseline justify-between gap-2 text-left px-2 py-1.5 rounded text-[11px] text-white/70 hover:bg-white/10 hover:text-white transition-all"
                 >
-                  {m.name || m.filename}
+                  <span className="truncate">{m.name || m.filename}</span>
+                  {m.suppressionDb != null ? (
+                    <span className={cn('font-mono shrink-0 text-[10px]',
+                      m.suppressionDb > 15 ? 'text-green-400/70'
+                      : m.suppressionDb > 8 ? 'text-yellow-400/70' : 'text-red-400/70')}>
+                      {m.suppressionDb.toFixed(1)} dB
+                    </span>
+                  ) : (
+                    <span className="font-mono shrink-0 text-[10px] text-white/25">legacy</span>
+                  )}
                 </button>
               ))}
               <button

@@ -121,42 +121,63 @@ standoff error = 12° of phase error**. 20 dB of coherent suppression needs the 
 ~0.5 mm; the TF-LC02 is a ±few-mm sensor. Comparing `radarRangeM` against `standoffMm` across
 the new dataset is the cheap test of whether a radar-derived standoff beats the lidar.
 
-**Planned direction** — physics-parameterized phase + learned amplitude:
-`H_bg(f,d) = Σ_k A_k(f,d) · exp(−j·4πf·(α_k·d + β_k)/c)`. Delay is pure geometry and exact even
-in the near field (2 params per echo); `A_k(f,d)` is where near-field coupling lives, so it is
-learned but smooth in `d` because the exponential absorbs all the fast oscillation. ~330 params
-vs 23,918. Extrapolation is a free byproduct, not a goal — operation stays inside the trained
-near-field range. Evaluation: leave-one-position-out, scored as clutter suppression in dB inside
-the target range gate, against a linear-interpolation baseline.
+**Result on the 30-position bench set (2026-08-18) — the MLP was replaced.**
+Leave-one-position-out suppression, `10*log10(signal/error)` on each held-out position's
+measured spectrum, 30 positions over 155.8 mm, median gap 5.5 mm, 15 sweeps each:
 
-## SFCW Phase Coherence — Known Constraints
+| estimator | LOO suppression |
+|---|---|
+| **Akima interpolation, unwind α=0.80** (shipped) | **20.2 dB** (median 20.3, worst 4.0) |
+| cubic spline, α=0.80 | 20.3 dB — best mean, but −12.3 dB on a bad knot |
+| physics model, K=5 echoes, free A(f) | 18.7 dB |
+| linear interpolation | 12.4 dB |
+| Fourier-feature MLP (tanh, k=8..64) | 11.9 dB |
+| nearest position | 7.4 dB |
+| physics model, K=3, Chebyshev A(f) | 6.8 dB |
+| **old 1-64-64-302 MLP** | **4.9 dB** |
+| global mean | 0.9 dB |
 
-The bladeRF2 (AD9361 RFIC) has **separate TX and RX synthesizers**. After each frequency
-retune, both PLLs relock to independent random phases. We compensate via dual-channel
-reference: TX2→RX2 loopback cable captures the random offset, then h_cal = h_signal / h_reference
-cancels it. This gets us ~0.80 sweep-to-sweep correlation — good enough for SAR averaging.
+The captures are dense relative to how fast the background varies, so interpolation wins
+outright and needs no parameters. `bgModelInterp.js` ships Akima: it gives up 0.6 dB of mean
+for a 16 dB better worst case, because it does not propagate a bad capture into neighbouring
+intervals. Inference is 3.1 µs (320k/s, ~10,000× headroom at 30 fps); model file ~360 KB.
+Models are `type: 'interp'`; `bgModelInfer.js` keeps the MLP path for previously saved files.
 
-**Why gain must stay constant during a sweep:**
-The AD9361 RX gain table uses different analog stage combinations (LNA, mixer, TIA) at each
-gain index. Switching gain literally routes the signal through different physical paths with
-different parasitic capacitances → non-deterministic phase shifts between RX1 and RX2.
-This is an inherent hardware characteristic with NO known software fix (confirmed via AD9361
-driver source, bladeRF GitHub issues, Analog Devices forums). Frequency-dependent power
-rolloff is handled in post-processing instead.
+**Things that turned out differently than expected:**
+- **The old MLP was underfitting, not overfitting.** 2000 full-batch epochs reached only
+  7.97 dB in-sample; 10k → 12.0 dB, 40k → 13.3 dB. Its `finalLoss` looked small only because
+  targets were normalized by a single pooled scalar. Its loss curve was still falling 7.4%
+  per 100 epochs at epoch 1999. Verified by scoring the saved `models/model 3.json` weights
+  directly: 8.6 dB in-sample, matching the numpy re-implementation used for the LOO sweep.
+- **The unwind is better with α ≈ 0.80 than α = 1.0** (20.5 dB vs 19.1 dB), a broad plateau
+  over 0.70–0.85. Unwinding removes fast phase but injects the lidar's own error into the
+  target; 0.8 is the trade-off point. The α matched filter puts the wall echo at 0.93–0.95,
+  consistent with the lidar over-reporting standoff *change* by 5–20%. Worth a calibration
+  check, but not required — the interpolator absorbs it.
+- **The `radarRangeM` diagnostic is unusable**: correlation 0.36 with lidar standoff, 39.9 mm
+  scatter after a linear fit. Dominant-peak picking hops between echoes in the near field.
+  Radar-derived standoff is not a usable input; the near-field skepticism was correct.
+- **Echo structure is dominated by two components**: α≈0.0 (static cable/coupling reflection,
+  strongest) and α≈0.93 (wall face, −3.4 dB). Everything else is ≥13 dB down. But a smooth
+  (Chebyshev) `A_k(f)` caps the physics model at ~7 dB; with `A_k(f)` free per frequency it
+  reaches 18.7 dB. The unmodelled echoes get absorbed into `A_k(f)` as fast frequency
+  structure, so `A_k(f)` is *not* smooth.
+- **A physics + spline hybrid gives exactly no gain** over the spline alone (20.60 vs 20.59 dB).
+- **Measurement noise is not the limit.** The 15-sweep coherent mean sits 47.1 dB below signal.
+  Position density is the limit.
 
-**Optimizations applied:**
-- FPGA tuning mode (`BLADERF_TUNING_MODE_FPGA`) — deterministic retune timing
-- Buffer-discard settle (2× 1024-sample buffers = 1.024ms) instead of time.sleep()
-- Flat gain throughout sweep; gains set once after enable_module
+**Position density is the dominant lever** (cleaned 22-position set, subsampled):
 
-**Why ~0.80 is the ceiling without architectural change:**
-- Reference-channel division inherently amplifies noise (dividing two noisy measurements)
-- Thermal drift in PLL/VCO between frequency steps
-- USB FIFO timing jitter (non-deterministic buffer boundaries)
+| median gap | LOO suppression |
+|---|---|
+| 5.9 mm | 19.3 dB |
+| 11.8 mm | 6.9 dB |
+| 17.7 mm | −3.3 dB |
 
-**Path to 1.0: shared-LO architecture.**
-A single local oscillator feeding both TX and RX mixers would eliminate the random phase
-offset entirely — no reference channel needed. The bladeRF2/AD9361 cannot do this.
-Hardware that can: NI USRP X310 + UBX daughterboards (LO export/import ports), or a
-custom discrete design (single wideband PLL + power splitter + two mixers + FPGA).
-This is a future hardware upgrade path, not a software fix.
+Roughly 12 dB lost per doubling of gap. Capture as densely as patience allows; this matters
+far more than any modelling choice.
+
+**Range gating cannot separate in-wall targets from the wall face at this bandwidth.** The
+entire background sits within 2–6 cm of range, and 3 GHz of bandwidth gives ~50 mm range
+resolution. The "gated" metric therefore tracks the full-band metric closely. Separating a
+target from the face needs more bandwidth or aperture, not better background subtraction.

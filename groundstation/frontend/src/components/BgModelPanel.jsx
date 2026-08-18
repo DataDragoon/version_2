@@ -5,6 +5,11 @@ import { analyzeCoverage } from '@/lib/bgCaptureStats';
 
 const LIDAR_AVG_WINDOW = 20;
 
+function weakestKnotMm(q) {
+  const w = q.per.filter(p => p.suppDb != null).reduce((a, b) => (b.suppDb < a.suppDb ? b : a));
+  return w.d.toFixed(0);
+}
+
 export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, modelCaptures, modelCapturing, accumCount, testing, testCount, testResult, trainingState, trainProgress, trainResult, trainError, sweepsPerCapture = 40, onSweepsChange, stopFreq, onModelAction, lidarMm }) {
   const [modelName, setModelName] = useState('');
   const lidarBuf = useRef([]);
@@ -317,25 +322,15 @@ export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, m
                 : 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
           )}
         >
-          {trainingState === 'training' ? 'Training...' : 'Build Model'}
+          {trainingState === 'training' ? 'Building...' : 'Build Model'}
         </button>
 
         {trainingState === 'training' && trainProgress && (
-          <div className="flex flex-col gap-2 p-3 rounded-xl border border-yellow-500/20 bg-yellow-500/5">
-            <div className="flex justify-between text-[10px]">
-              <span className="text-[#555]">Epoch</span>
-              <span className="font-mono text-white">{trainProgress.epoch} / {trainProgress.totalEpochs}</span>
-            </div>
-            <div className="relative h-1.5 rounded-full bg-white/5 overflow-hidden">
-              <div
-                className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-yellow-500 to-yellow-300 transition-all duration-300"
-                style={{ width: `${(trainProgress.epoch / trainProgress.totalEpochs) * 100}%` }}
-              />
-            </div>
-            <div className="flex justify-between text-[10px]">
-              <span className="text-[#555]">Loss</span>
-              <span className="font-mono text-white">{trainProgress.loss.toExponential(3)}</span>
-            </div>
+          <div className="flex items-center gap-2 p-3 rounded-xl border border-yellow-500/20 bg-yellow-500/5">
+            <div className="w-3 h-3 rounded-full border-2 border-yellow-400 border-t-transparent animate-spin" />
+            <span className="text-[10px] text-yellow-400 capitalize">
+              {trainProgress.stage === 'evaluating' ? 'Scoring leave-one-out...' : 'Building interpolant...'}
+            </span>
           </div>
         )}
 
@@ -348,14 +343,48 @@ export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, m
         {trainingState === 'complete' && trainResult && (
           <div className="flex flex-col gap-2">
             <div className="flex flex-col gap-1 p-3 rounded-xl border border-green-500/20 bg-green-500/5">
-              <div className="flex justify-between text-[10px]">
-                <span className="text-[#555]">Final loss</span>
-                <span className="font-mono text-green-400">{trainResult.finalLoss.toExponential(3)}</span>
-              </div>
-              <div className="flex justify-between text-[10px]">
-                <span className="text-[#555]">Samples</span>
-                <span className="font-mono text-white">{trainResult.numSamples}</span>
-              </div>
+              {trainResult.quality ? (
+                <>
+                  <div className="flex justify-between text-[10px]">
+                    <span className="text-[#555]">Suppression (LOO)</span>
+                    <span className={cn('font-mono font-bold',
+                      trainResult.quality.meanSuppDb > 15 ? 'text-green-400'
+                      : trainResult.quality.meanSuppDb > 8 ? 'text-yellow-400' : 'text-red-400')}>
+                      {trainResult.quality.meanSuppDb.toFixed(1)} dB
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-[10px]">
+                    <span className="text-[#555]">Median / worst</span>
+                    <span className="font-mono text-white/70">
+                      {trainResult.quality.medianSuppDb.toFixed(1)} / {trainResult.quality.worstSuppDb.toFixed(1)} dB
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-[10px]">
+                    <span className="text-[#555]">Knots</span>
+                    <span className="font-mono text-white">
+                      {trainResult.numPositions}
+                      {trainResult.mergedPositions > 0 && (
+                        <span className="text-white/30"> ({trainResult.mergedPositions} merged)</span>
+                      )}
+                    </span>
+                  </div>
+                  {trainResult.quality.worstSuppDb < 8 && (
+                    <div className="text-[9px] text-yellow-400/80 leading-relaxed pt-1 border-t border-white/5">
+                      Weakest knot at {weakestKnotMm(trainResult.quality)} mm. A position that
+                      predicts poorly from its neighbours is usually a bumped capture or an
+                      oversized gap — recapture around there.
+                    </div>
+                  )}
+                  <div className="text-[9px] text-white/30 leading-relaxed pt-1 border-t border-white/5">
+                    Held-out suppression: each position predicted from the others only.
+                  </div>
+                </>
+              ) : (
+                <div className="flex justify-between text-[10px]">
+                  <span className="text-[#555]">Positions</span>
+                  <span className="font-mono text-white">{trainResult.numSamples}</span>
+                </div>
+              )}
             </div>
             <input
               type="text"

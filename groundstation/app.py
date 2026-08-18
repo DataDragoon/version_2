@@ -36,6 +36,10 @@ def list_models():
                     'name': data.get('name', fname.replace('.json', '')),
                     'created': data.get('created'),
                     'numSamples': data.get('numSamples'),
+                    # interp models carry held-out suppression; the legacy MLP
+                    # models only have a training loss, which is not comparable
+                    'type': data.get('type', 'mlp'),
+                    'suppressionDb': (data.get('quality') or {}).get('meanSuppDb'),
                     'finalLoss': data.get('finalLoss'),
                 })
             except (json.JSONDecodeError, IOError):

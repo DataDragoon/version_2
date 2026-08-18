@@ -1,6 +1,15 @@
+import { inferInterpModel } from './bgModelInterp';
+
 const SPEED_OF_LIGHT = 299792458;
 
 export function inferBgModel(model, distanceMm, numSteps) {
+  if (model.type === 'interp') return inferInterpModel(model, distanceMm, numSteps);
+  return inferMlpModel(model, distanceMm, numSteps);
+}
+
+// Legacy path: the 1-64-64-302 MLP. Kept so models saved before the switch to
+// interpolation still load. New models are always type 'interp'.
+function inferMlpModel(model, distanceMm, numSteps) {
   const { weights, normalization, freqs } = model;
   const { dMin, dRange, tMean, tStd } = normalization;
   const { w1, b1, w2, b2, w3, b3 } = weights;
@@ -9,14 +18,12 @@ export function inferBgModel(model, distanceMm, numSteps) {
 
   const normD = (distanceMm - dMin) / dRange;
 
-  // Layer 1: input -> hidden1 (ReLU)
   const a1 = new Float64Array(hiddenSize);
   for (let j = 0; j < hiddenSize; j++) {
     const z = w1[j] * normD + b1[j];
     a1[j] = z > 0 ? z : 0;
   }
 
-  // Layer 2: hidden1 -> hidden2 (ReLU)
   const a2 = new Float64Array(hiddenSize);
   for (let j = 0; j < hiddenSize; j++) {
     let sum = b2[j];
@@ -24,7 +31,6 @@ export function inferBgModel(model, distanceMm, numSteps) {
     a2[j] = sum > 0 ? sum : 0;
   }
 
-  // Layer 3: hidden2 -> output (linear)
   const out = new Float64Array(outputSize);
   for (let j = 0; j < outputSize; j++) {
     let sum = b3[j];
@@ -32,16 +38,12 @@ export function inferBgModel(model, distanceMm, numSteps) {
     out[j] = sum;
   }
 
-  // Denormalize
-  for (let i = 0; i < outputSize; i++) {
-    out[i] = out[i] * tStd + tMean;
-  }
+  for (let i = 0; i < outputSize; i++) out[i] = out[i] * tStd + tMean;
 
-  // Split into real and imag residuals
   const resReal = out.subarray(0, numSteps);
   const resImag = out.subarray(numSteps, numSteps * 2);
 
-  // Phase-rewind: multiply by exp(-j * 4π * f * d / c) to reconstruct background
+  // Phase-rewind: multiply by exp(-j * 4pi * f * d / c) to reconstruct background
   const d = distanceMm / 1000;
   const bgReal = new Array(numSteps);
   const bgImag = new Array(numSteps);
