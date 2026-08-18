@@ -1,7 +1,8 @@
 """Groundstation web application. Serves the Vite-built frontend.
 
-For development: run `npm run dev` in groundstation/frontend/ (port 5173).
-For production: run `npm run build` then `python app.py` (port 5000).
+For development: run `python run.py` from groundstation/ to start this
+Flask API (port 5000) and the Vite dev server (port 5173) together.
+For production: run `npm run build` in frontend/, then `python app.py`.
 """
 
 from flask import Flask, send_from_directory, request, jsonify

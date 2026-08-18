@@ -44,6 +44,28 @@ IMU, LiDAR, Camera, and bladeRF SDR integrated. All stream to groundstation debu
 RF Calib panel provides signal generator + oscilloscope for bladeRF calibration (TX1/RX1).
 SFCW panel performs stepped-frequency sweeps (1–6 GHz default) with range profile + waterfall display.
 Both RF panels share port 9003 — starting an SFCW sweep auto-stops any active TX/RX in RF Calib.
+
+## SFCW Background Subtraction — Groundstation Only
+
+All SFCW background subtraction happens on the groundstation. The Pi ships raw `h_cal`
+and holds no background state; `sfcw_capture_bg`, `sfcw_clear_bg`, `sfcw_bg_mode`, and
+`bscan_clear_bg` no longer exist as commands.
+
+Two mutually exclusive sources, both in `App.jsx` `processedSfcwResult`:
+- **Captured reference** — "Capture BG" tags the next sweep as `sfcwBgRef`.
+- **ML model** — "Load Model" infers a background from lidar standoff (`bgModelInfer.js`).
+
+Selecting either clears the other; "Clear BG" clears both. Subtraction is always complex
+(vector) — the old complex/magnitude toggle is gone, complex was the default and is now
+the only mode.
+
+**Why groundstation-side:** Pi-side subtraction ran before transmission, so it silently
+contaminated B-scan captures, SAR, and BG-model *training* data, which all read
+`msg.h_cal_*`. Keeping the wire raw means only the SFCW live display is affected.
+
+Note `SfcwDisplay` recomputes its own range profile from `h_cal_real/imag` for
+windowing/range-comp, so any subtraction must write back into those fields — replacing
+only `magnitudes`/`distances` gets silently discarded.
 Pi-side architecture: bladerf_driver.py (HAL) → sfcw_engine.py (sweep logic) → sdr_server.py (WebSocket).
 Next steps: OptiFlow pipeline, SAR reconstruction integration.
 

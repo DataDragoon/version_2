@@ -241,9 +241,34 @@ export default function App() {
   const bgModelTestRef = useRef(null);
   const bgModelWorker = useBgModelWorker();
 
-  // Loaded BG model for SFCW live subtraction
+  // SFCW background subtraction. Two mutually exclusive sources, both applied
+  // groundstation-side: a captured reference sweep, or a trained ML model.
   const [sfcwBgModel, setSfcwBgModel] = useState(null);
+  const [sfcwBgRef, setSfcwBgRef] = useState(null);
+  const [sfcwBgCapturing, setSfcwBgCapturing] = useState(false);
+  const sfcwBgCaptureRef = useRef(false);
   const [sfcwStandoffMm, setSfcwStandoffMm] = useState(null);
+
+  // Capturing a reference drops any loaded model, and vice versa.
+  const handleSfcwCaptureBg = useCallback(() => {
+    setSfcwBgModel(null);
+    setSfcwBgCapturing(true);
+    sfcwBgCaptureRef.current = true;
+  }, []);
+
+  const handleSfcwLoadBgModel = useCallback((model) => {
+    setSfcwBgRef(null);
+    sfcwBgCaptureRef.current = false;
+    setSfcwBgCapturing(false);
+    setSfcwBgModel(model);
+  }, []);
+
+  const handleSfcwClearBg = useCallback(() => {
+    setSfcwBgModel(null);
+    setSfcwBgRef(null);
+    sfcwBgCaptureRef.current = false;
+    setSfcwBgCapturing(false);
+  }, []);
 
   // B-Scan state
   const [bscanData, setBscanData] = useState([]);
@@ -519,22 +544,36 @@ export default function App() {
     return svdFilter(processedBscanData, mapSvdK, mapSvdStrength);
   }, [processedBscanData, mapSvdEnabled, mapSvdK, mapSvdStrength]);
 
-  // Apply loaded BG model to live SFCW result
+  // Apply BG subtraction to the live SFCW result: model or captured reference,
+  // never both. Complex (vector) subtraction in all cases.
   const processedSfcwResult = useMemo(() => {
-    if (!sfcwResult || !sfcwBgModel) return sfcwResult;
+    if (!sfcwResult) return sfcwResult;
     if (!sfcwResult.h_cal_real || !sfcwResult.h_cal_imag) return sfcwResult;
 
     const numSteps = sfcwResult.h_cal_real.length;
-    if (numSteps !== sfcwBgModel.sfcwParams.numSteps) {
-      console.warn('[BG Model] numSteps mismatch:', numSteps, 'vs model:', sfcwBgModel.sfcwParams.numSteps);
-      return sfcwResult;
-    }
-    if (sfcwStandoffMm == null) {
-      console.warn('[BG Model] no lidar standoff available');
-      return sfcwResult;
-    }
+    let bgReal = null;
+    let bgImag = null;
 
-    const { bgReal, bgImag } = inferBgModel(sfcwBgModel, sfcwStandoffMm, numSteps);
+    if (sfcwBgModel) {
+      if (numSteps !== sfcwBgModel.sfcwParams.numSteps) {
+        console.warn('[BG Model] numSteps mismatch:', numSteps, 'vs model:', sfcwBgModel.sfcwParams.numSteps);
+        return sfcwResult;
+      }
+      if (sfcwStandoffMm == null) {
+        console.warn('[BG Model] no lidar standoff available');
+        return sfcwResult;
+      }
+      ({ bgReal, bgImag } = inferBgModel(sfcwBgModel, sfcwStandoffMm, numSteps));
+    } else if (sfcwBgRef) {
+      if (sfcwBgRef.h_cal_real.length !== numSteps) {
+        console.warn('[BG Ref] numSteps mismatch:', numSteps, 'vs ref:', sfcwBgRef.h_cal_real.length);
+        return sfcwResult;
+      }
+      bgReal = sfcwBgRef.h_cal_real;
+      bgImag = sfcwBgRef.h_cal_imag;
+    } else {
+      return sfcwResult;
+    }
 
     const subReal = new Array(numSteps);
     const subImag = new Array(numSteps);
@@ -553,7 +592,7 @@ export default function App() {
       magnitudes: rp.magnitudes,
       distances: rp.distances,
     };
-  }, [sfcwResult, sfcwBgModel, sfcwStandoffMm]);
+  }, [sfcwResult, sfcwBgModel, sfcwBgRef, sfcwStandoffMm]);
 
   // IMU WebSocket
   const handleImuMessage = useCallback((msg) => {
@@ -606,6 +645,20 @@ export default function App() {
       // Always update live display
       setSfcwResult(msg);
       setSfcwStandoffMm(standoffMm);
+
+      // SFCW BG reference: first sweep after the button press becomes the reference
+      if (sfcwBgCaptureRef.current && msg.h_cal_real && msg.h_cal_imag) {
+        setSfcwBgRef({
+          h_cal_real: [...msg.h_cal_real],
+          h_cal_imag: [...msg.h_cal_imag],
+          num_steps: msg.num_steps,
+          step_size: msg.step_size,
+          range_offset: msg.range_offset,
+          lidar_standoff_mm: standoffMm,
+        });
+        sfcwBgCaptureRef.current = false;
+        setSfcwBgCapturing(false);
+      }
 
       // Flag-based B-scan capture: sweep itself carries the flag
       if (msg.bscan_capture) {
@@ -916,8 +969,11 @@ export default function App() {
         sfcwRangeScale={sfcwRangeScale}
         onSfcwRangeScaleChange={setSfcwRangeScale}
         sfcwBgModel={sfcwBgModel}
-        onLoadSfcwBgModel={setSfcwBgModel}
-        onClearSfcwBgModel={() => setSfcwBgModel(null)}
+        sfcwBgRef={sfcwBgRef}
+        sfcwBgCapturing={sfcwBgCapturing}
+        onCaptureSfcwBg={handleSfcwCaptureBg}
+        onLoadSfcwBgModel={handleSfcwLoadBgModel}
+        onClearSfcwBg={handleSfcwClearBg}
         bscanData={bscanData}
         bscanCapturing={bscanCapturing}
         bscanBgCaptured={bscanBgRef !== null}

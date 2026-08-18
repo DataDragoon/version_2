@@ -146,9 +146,6 @@ class SDRServer:
                 self.sfcw.stop()
                 await self._broadcast_sfcw_status()
 
-            elif action == 'sfcw_capture_bg':
-                self.sfcw.capture_background()
-
             elif action == 'bscan_capture':
                 self.sfcw.capture_bscan()
 
@@ -157,13 +154,6 @@ class SDRServer:
 
             elif action == 'bgmodel_capture':
                 self.sfcw.capture_bgmodel()
-
-            elif action == 'sfcw_clear_bg':
-                self.sfcw.clear_background()
-
-            elif action == 'sfcw_bg_mode':
-                self.sfcw.set_bg_subtract_mode(cmd.get('mode', 'complex'))
-                await self._broadcast_sfcw_status()
 
             elif action == 'sfcw_coherence_test':
                 if self.sfcw.running:
@@ -206,10 +196,6 @@ class SDRServer:
                     self._stop_all_streams()
                     await self._broadcast_status()
                 self.sfcw.run_single(self._sfcw_callback)
-                await self._broadcast_sfcw_status()
-
-            elif action == 'bscan_clear_bg':
-                self.sfcw.clear_background()
                 await self._broadcast_sfcw_status()
 
             elif action == 'device_reset':

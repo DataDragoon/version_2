@@ -55,8 +55,11 @@ export default function Sidebar({
   sfcwRangeScale,
   onSfcwRangeScaleChange,
   sfcwBgModel,
+  sfcwBgRef,
+  sfcwBgCapturing,
+  onCaptureSfcwBg,
   onLoadSfcwBgModel,
-  onClearSfcwBgModel,
+  onClearSfcwBg,
   bscanData,
   bscanCapturing,
   bscanBgCaptured,
@@ -298,13 +301,15 @@ export default function Sidebar({
                   params={sfcwParams}
                   onParamsChange={onSfcwParamsChange}
                   coherenceResult={coherenceResult}
-                  bgSubtractMode={sfcwStatus?.bg_subtract_mode || 'complex'}
                   rangeScale={sfcwRangeScale}
                   onRangeScaleChange={onSfcwRangeScaleChange}
                   lidarMm={lidarMm}
                   bgModel={sfcwBgModel}
+                  bgRef={sfcwBgRef}
+                  bgCapturing={sfcwBgCapturing}
+                  onCaptureBg={onCaptureSfcwBg}
                   onLoadBgModel={onLoadSfcwBgModel}
-                  onClearBgModel={onClearSfcwBgModel}
+                  onClearBg={onClearSfcwBg}
                 />
               )}
               {activePanel === 'bscan' && (

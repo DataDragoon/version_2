@@ -41,13 +41,9 @@ class SFCWEngine:
         self._thread = None
         self._callback = None
         self._lock = threading.Lock()
-        self._background = None
-        self._capture_background = False
         self._capture_bscan = False
         self._capture_bscan_bg = False
         self._capture_bgmodel = False
-        self._bg_subtract_mode = 'complex'  # 'complex' or 'magnitude'
-        self._last_h_cal = None
         self._fpga_tuning = False
         self._gains_dirty = False
         self._warm = False
@@ -132,12 +128,7 @@ class SFCWEngine:
             'max_range': self.max_range,
             'bscan_avg_count': self.bscan_avg_count,
             'bscan_primer': self.bscan_primer,
-            'background_active': self._background is not None,
-            'bg_subtract_mode': self._bg_subtract_mode,
         }
-
-    def capture_background(self):
-        self._capture_background = True
 
     def capture_bscan(self):
         self._capture_bscan = True
@@ -147,18 +138,6 @@ class SFCWEngine:
 
     def capture_bgmodel(self):
         self._capture_bgmodel = True
-
-    def clear_background(self):
-        self._background = None
-        self._capture_background = False
-
-    def set_bg_subtract_mode(self, mode):
-        if mode in ('complex', 'magnitude'):
-            self._bg_subtract_mode = mode
-            if self._last_h_cal is not None and self._background is not None:
-                result = self._process_h_cal(self._last_h_cal.copy())
-                if self._callback and result:
-                    self._callback(result)
 
     def run_coherence_test(self, callback=None):
         """Run 3 consecutive sweeps and compute repeatability + correlation metrics.
@@ -266,7 +245,6 @@ class SFCWEngine:
                         result = None
                     else:
                         h_cal_avg = h_cal_accum / completed
-                        self._last_h_cal = h_cal_avg.copy()
                         result = self._process_h_cal(h_cal_avg)
                 if result is not None and callback:
                     callback(result)
@@ -296,8 +274,6 @@ class SFCWEngine:
         if self._warm or self.running:
             return
         self._stop_event.clear()
-        self._background = None
-        self._capture_background = False
         self._configure_hardware()
         self._start_tx_rx()
         time.sleep(0.1)
@@ -541,13 +517,8 @@ class SFCWEngine:
         h_cal = np.zeros(num_steps, dtype=np.complex128)
         h_cal[valid] = h_signal[valid] / h_reference[valid]
 
-        # Background subtraction: removes TX->RX coupling and static clutter
-        if self._capture_background:
-            self._background = h_cal.copy()
-            self._capture_background = False
-
-        self._last_h_cal = h_cal.copy()
-
+        # Background subtraction is performed groundstation-side (see App.jsx),
+        # so h_cal goes out raw. Keeps captured B-scan / BG-model data uncontaminated.
         return self._process_h_cal(h_cal)
 
     def _perform_sweep_raw(self):
@@ -630,13 +601,6 @@ class SFCWEngine:
         start = self.start_freq
         stop = self.stop_freq
         step = self.step_size
-
-        if self._background is not None and len(self._background) == num_steps:
-            if self._bg_subtract_mode == 'magnitude':
-                mag_diff = np.abs(h_cal) - np.abs(self._background)
-                h_cal = mag_diff * np.exp(1j * np.angle(h_cal))
-            else:
-                h_cal = h_cal - self._background
 
         phase_raw = np.angle(h_cal)
         phase_unwrapped = np.unwrap(phase_raw)

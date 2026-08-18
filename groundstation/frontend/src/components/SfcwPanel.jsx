@@ -8,7 +8,7 @@ const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
 const LIDAR_AVG_WINDOW = 20;
 
-export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, bgSubtractMode, rangeScale, onRangeScaleChange, lidarMm, bgModel, onLoadBgModel, onClearBgModel }) {
+export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, rangeScale, onRangeScaleChange, lidarMm, bgModel, bgRef, bgCapturing, onCaptureBg, onLoadBgModel, onClearBg }) {
   const { startFreq, stopFreq, stepSize, settleTime, numBuffers, tx1Gain, rx1Gain, rangeOffset } = params;
   const [coherenceRunning, setCoherenceRunning] = useState(false);
   const lidarBuf = useRef([]);
@@ -44,12 +44,11 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
     fetch(`/api/models/${filename}`)
       .then(r => r.json())
       .then(model => {
-        sendSdr({ cmd: 'sfcw_clear_bg' });
         onLoadBgModel(model);
         setModelListOpen(false);
       })
       .catch(err => console.error('Failed to load model:', err));
-  }, [onLoadBgModel, sendSdr]);
+  }, [onLoadBgModel]);
 
   const canActivate = isConnected && sdrConnected;
 
@@ -199,20 +198,28 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
         />
         <div className="grid grid-cols-2 gap-2 mt-2">
           <button
-            onClick={() => sendSdr({ cmd: 'sfcw_capture_bg' })}
-            disabled={!sfcwRunning}
+            onClick={onCaptureBg}
+            disabled={!sfcwRunning || bgCapturing}
             className={cn(
-              'px-3 py-2 rounded-lg text-xs font-medium transition-all',
-              sfcwRunning
-                ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
+              'px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              bgRef
+                ? 'bg-[#f59e0b]/10 border-[#f59e0b]/30 text-[#f59e0b]'
+                : sfcwRunning && !bgCapturing
+                  ? 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+                  : 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
             )}
           >
-            Capture BG
+            {bgCapturing ? 'Capturing...' : bgRef ? 'BG Ref Active' : 'Capture BG'}
           </button>
           <button
-            onClick={() => { sendSdr({ cmd: 'sfcw_clear_bg' }); onClearBgModel(); }}
-            className="px-3 py-2 rounded-lg text-xs font-medium bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
+            onClick={onClearBg}
+            disabled={!bgRef && !bgModel && !bgCapturing}
+            className={cn(
+              'px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+              bgRef || bgModel || bgCapturing
+                ? 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+                : 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
+            )}
           >
             Clear BG
           </button>
@@ -251,33 +258,6 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
               </button>
             </div>
           )}
-        </div>
-        <div className="flex items-center gap-2 mt-2">
-          <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">BG Sub</span>
-          <div className="flex rounded-lg overflow-hidden border border-white/10">
-            <button
-              onClick={() => sendSdr({ cmd: 'sfcw_bg_mode', mode: 'complex' })}
-              className={cn(
-                'px-2 py-1 text-[10px] font-medium transition-all',
-                bgSubtractMode === 'complex'
-                  ? 'bg-white/15 text-white'
-                  : 'bg-white/2 text-white/40 hover:text-white/70'
-              )}
-            >
-              Complex
-            </button>
-            <button
-              onClick={() => sendSdr({ cmd: 'sfcw_bg_mode', mode: 'magnitude' })}
-              className={cn(
-                'px-2 py-1 text-[10px] font-medium transition-all',
-                bgSubtractMode === 'magnitude'
-                  ? 'bg-white/15 text-white'
-                  : 'bg-white/2 text-white/40 hover:text-white/70'
-              )}
-            >
-              Magnitude
-            </button>
-          </div>
         </div>
       </Section>
 
