@@ -2,85 +2,15 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
-import { svdFilter, powerIteration } from './lib/svd';
+import { svdFilter } from './lib/svd';
 import { useSarWorker } from './hooks/useSarWorker';
 import { useBgModelWorker } from './hooks/useBgModelWorker';
 import { inferBgModel } from './lib/bgModelInfer';
 import { computeCaptureStats } from './lib/bgCaptureStats';
+import { computeRangeProfile } from './lib/rangeProfile';
+import { applyBscanBg, bgForStandoff, freqGrid } from './lib/bscanBg';
 
 const SPEED_OF_LIGHT = 299792458;
-
-function fftInPlace(re, im) {
-  const n = re.length;
-  for (let i = 1, j = 0; i < n; i++) {
-    let bit = n >> 1;
-    for (; j & bit; bit >>= 1) j ^= bit;
-    j ^= bit;
-    if (i < j) {
-      [re[i], re[j]] = [re[j], re[i]];
-      [im[i], im[j]] = [im[j], im[i]];
-    }
-  }
-  for (let len = 2; len <= n; len <<= 1) {
-    const halfLen = len >> 1;
-    const angle = -2 * Math.PI / len;
-    const wRe = Math.cos(angle);
-    const wIm = Math.sin(angle);
-    for (let i = 0; i < n; i += len) {
-      let curRe = 1, curIm = 0;
-      for (let j = 0; j < halfLen; j++) {
-        const uRe = re[i + j], uIm = im[i + j];
-        const vRe = re[i + j + halfLen] * curRe - im[i + j + halfLen] * curIm;
-        const vIm = re[i + j + halfLen] * curIm + im[i + j + halfLen] * curRe;
-        re[i + j] = uRe + vRe;
-        im[i + j] = uIm + vIm;
-        re[i + j + halfLen] = uRe - vRe;
-        im[i + j + halfLen] = uIm - vIm;
-        const newCurRe = curRe * wRe - curIm * wIm;
-        curIm = curRe * wIm + curIm * wRe;
-        curRe = newCurRe;
-      }
-    }
-  }
-}
-
-function ifftInPlace(re, im) {
-  const n = re.length;
-  for (let i = 0; i < n; i++) im[i] = -im[i];
-  fftInPlace(re, im);
-  for (let i = 0; i < n; i++) {
-    re[i] /= n;
-    im[i] = -im[i] / n;
-  }
-}
-
-function computeRangeProfile(hCalReal, hCalImag, numSteps, stepSize, rangeOffset) {
-  const nfftMin = numSteps * 4;
-  const nfft = 1 << Math.ceil(Math.log2(nfftMin));
-
-  const re = new Float64Array(nfft);
-  const im = new Float64Array(nfft);
-  for (let i = 0; i < numSteps; i++) {
-    re[i] = hCalReal[i];
-    im[i] = hCalImag[i];
-  }
-
-  ifftInPlace(re, im);
-
-  const maxRange = SPEED_OF_LIGHT / (2 * stepSize);
-  const half = nfft / 2;
-  const magnitudes = [];
-  const distances = [];
-  for (let i = 0; i < half; i++) {
-    const d = (i / nfft) * maxRange - rangeOffset;
-    if (d >= 0) {
-      const mag = Math.sqrt(re[i] * re[i] + im[i] * im[i]);
-      magnitudes.push(20 * Math.log10(mag + 1e-12));
-      distances.push(d);
-    }
-  }
-  return { magnitudes, distances };
-}
 
 function runPhaseUnwindTest(samples, sfcwParams) {
   const startHz = sfcwParams.startFreq * 1e6;
@@ -282,12 +212,18 @@ export default function App() {
     setSfcwBgCapturing(false);
   }, []);
 
-  // B-Scan state
+  // B-Scan state. Background subtraction has the same two mutually exclusive
+  // sources as the SFCW panel — a captured reference sweep or a trained model —
+  // and both are applied groundstation-side. The Pi only ships raw h_cal.
   const [bscanData, setBscanData] = useState([]);
   const [bscanCapturing, setBscanCapturing] = useState(false);
   const [bscanBgRef, setBscanBgRef] = useState(null);
+  const [bscanBgModel, setBscanBgModel] = useState(null);
+  const [bscanBgCapturing, setBscanBgCapturing] = useState(false);
   const [bgApplied, setBgApplied] = useState(true);
-  const bscanPendingRef = useRef(null);
+  // The next sweep to arrive is tagged as a position / as the BG reference.
+  const bscanCaptureRef = useRef(false);
+  const bscanBgCaptureRef = useRef(false);
 
   // Lidar accumulator for averaging during SFCW sweeps
   const LIDAR_ANTENNA_OFFSET_MM = 315;
@@ -295,106 +231,109 @@ export default function App() {
   const [bscanParams, setBscanParams] = useState({
     stepSize: 5,
     numPositions: 20,
-    wallStandoff: 0,
-    wallThickness: 30,
-    wallPermittivity: 1,
+    maxDepth: 30,
   });
 
   // B-scan display toggles
   const [bscanScaleMode, setBscanScaleMode] = useState('linear');
   const [bscanDisplayMode, setBscanDisplayMode] = useState('color');
-  const [bgStandoffMm, setBgStandoffMm] = useState(null);
 
-  // B-scan SVD filter state (used by bscan panel + sar)
-  const [svdEnabled, setSvdEnabled] = useState(false);
-  const [svdK, setSvdK] = useState(1);
-  const [svdStrength, setSvdStrength] = useState(0.5);
+  const bscanBgSource = useMemo(
+    () => ({ bgRef: bscanBgRef, bgModel: bscanBgModel }),
+    [bscanBgRef, bscanBgModel],
+  );
 
-  // B-scan BG reference as displayable range profile (no subtraction — raw BG)
+  // Capturing a reference drops any loaded model, and vice versa.
+  const handleBscanCaptureBg = useCallback(() => {
+    setBscanBgModel(null);
+    setBscanBgCapturing(true);
+    bscanBgCaptureRef.current = true;
+  }, []);
+
+  const handleBscanLoadBgModel = useCallback((model) => {
+    setBscanBgRef(null);
+    bscanBgCaptureRef.current = false;
+    setBscanBgCapturing(false);
+    setBscanBgModel(model);
+  }, []);
+
+  const handleBscanClearBg = useCallback(() => {
+    setBscanBgRef(null);
+    setBscanBgModel(null);
+    bscanBgCaptureRef.current = false;
+    setBscanBgCapturing(false);
+  }, []);
+
+  // The background as a displayable range profile (no subtraction — raw BG).
+  // With a model there is no single reference sweep, so it is evaluated at the
+  // first captured position's standoff to give the same visual sanity check.
   const bscanBgDisplay = useMemo(() => {
-    if (!bscanBgRef || !bscanBgRef.h_cal_real || !bscanBgRef.h_cal_imag) return null;
-    const numSteps = bscanBgRef.h_cal_real.length;
-    const rp = computeRangeProfile(bscanBgRef.h_cal_real, bscanBgRef.h_cal_imag, numSteps, bscanBgRef.step_size, bscanBgRef.range_offset);
-    return { magnitudes: rp.magnitudes, distances: rp.distances };
-  }, [bscanBgRef]);
+    let real = null;
+    let imag = null;
+    let stepSize = null;
+    let rangeOffset = null;
+    let standoffMm = null;
 
-
-  // B-scan frontend processing: lidar-aligned complex BG subtract → IFFT
-  const processedBscanData = useMemo(() => {
-    if (bscanData.length === 0) return bscanData;
-    const startHz = sfcwParams.startFreq * 1e6;
-    const stopHz = sfcwParams.stopFreq * 1e6;
-
-    return bscanData.map((pos) => {
-      if (!pos.h_cal_real || !pos.h_cal_imag) return pos;
+    if (bscanBgModel) {
+      const pos = bscanData.find(p => p.h_cal_real && p.lidar_standoff_mm != null);
+      if (!pos) return null;
       const numSteps = pos.h_cal_real.length;
-      let real = pos.h_cal_real;
-      let imag = pos.h_cal_imag;
+      const bg = bgForStandoff(bscanBgSource, pos.lidar_standoff_mm, numSteps,
+        freqGrid(sfcwParams.startFreq, sfcwParams.stopFreq, numSteps));
+      if (!bg) return null;
+      real = bg.bgReal;
+      imag = bg.bgImag;
+      stepSize = pos.step_size;
+      rangeOffset = pos.range_offset;
+      standoffMm = pos.lidar_standoff_mm;
+    } else if (bscanBgRef && bscanBgRef.h_cal_real && bscanBgRef.h_cal_imag) {
+      real = bscanBgRef.h_cal_real;
+      imag = bscanBgRef.h_cal_imag;
+      stepSize = bscanBgRef.step_size;
+      rangeOffset = bscanBgRef.range_offset;
+      standoffMm = bscanBgRef.lidar_standoff_mm;
+    } else {
+      return null;
+    }
 
-      if (bgApplied && bscanBgRef && bscanBgRef.h_cal_real && bscanBgRef.h_cal_imag) {
-        // Use lidar distance offset for phase alignment; direct subtraction if no lidar
-        let deltaD = 0;
-        if (pos.lidar_standoff_mm != null && bscanBgRef.lidar_standoff_mm != null) {
-          deltaD = (pos.lidar_standoff_mm - bscanBgRef.lidar_standoff_mm) / 1000;
-        }
-        const deltaPhasePerHz = 2 * Math.PI * 2 * deltaD / SPEED_OF_LIGHT;
+    const rp = computeRangeProfile(real, imag, real.length, stepSize, rangeOffset);
+    return { magnitudes: rp.magnitudes, distances: rp.distances, standoffMm, isModel: !!bscanBgModel };
+  }, [bscanBgRef, bscanBgModel, bscanBgSource, bscanData, sfcwParams.startFreq, sfcwParams.stopFreq]);
 
-        real = new Array(numSteps);
-        imag = new Array(numSteps);
-        for (let i = 0; i < numSteps; i++) {
-          const freq = startHz + (i / (numSteps - 1)) * (stopHz - startHz);
-          const phase = deltaPhasePerHz * freq;
-          const cosP = Math.cos(phase);
-          const sinP = Math.sin(phase);
-          const bgR = bscanBgRef.h_cal_real[i];
-          const bgI = bscanBgRef.h_cal_imag[i];
-          const alignedBgR = bgR * cosP - bgI * sinP;
-          const alignedBgI = bgR * sinP + bgI * cosP;
-          real[i] = pos.h_cal_real[i] - alignedBgR;
-          imag[i] = pos.h_cal_imag[i] - alignedBgI;
-        }
-      }
 
-      const rp = computeRangeProfile(real, imag, numSteps, pos.step_size, pos.range_offset);
-      const freqs = [];
-      for (let i = 0; i < numSteps; i++) {
-        freqs.push(startHz + (i / (numSteps - 1)) * (stopHz - startHz));
-      }
-      return { ...pos, magnitudes: rp.magnitudes, distances: rp.distances, h_cal_real: real, h_cal_imag: imag, freqs };
-    });
-  }, [bscanData, bscanBgRef, bgApplied, sfcwParams.startFreq, sfcwParams.stopFreq]);
-
-  const filteredBscanData = useMemo(() => {
-    if (!svdEnabled || processedBscanData.length < 2) return processedBscanData;
-    return svdFilter(processedBscanData, svdK, svdStrength);
-  }, [processedBscanData, svdEnabled, svdK, svdStrength]);
+  // B-scan processing: complex BG subtract (model or reference) → IFFT
+  const processedBscanData = useMemo(
+    () => applyBscanBg(bscanData, { enabled: bgApplied, ...bscanBgSource }, sfcwParams),
+    [bscanData, bscanBgSource, bgApplied, sfcwParams],
+  );
 
   // Compute spatial alignment bin shifts using lidar standoff data
   const alignShifts = useMemo(() => {
-    if (filteredBscanData.length < 2) {
-      return { scanShifts: filteredBscanData.map(() => 0), bgShift: 0 };
+    if (processedBscanData.length < 2) {
+      return { scanShifts: processedBscanData.map(() => 0), bgShift: 0 };
     }
 
-    const distances = filteredBscanData[0].distances;
+    const distances = processedBscanData[0].distances;
     if (!distances || distances.length < 2) {
-      return { scanShifts: filteredBscanData.map(() => 0), bgShift: 0 };
+      return { scanShifts: processedBscanData.map(() => 0), bgShift: 0 };
     }
     const binSpacingM = distances[1] - distances[0];
 
-    const hasLidar = filteredBscanData.every(pos => pos.lidar_standoff_mm != null);
+    const hasLidar = processedBscanData.every(pos => pos.lidar_standoff_mm != null);
     if (!hasLidar) {
-      return { scanShifts: filteredBscanData.map(() => 0), bgShift: 0 };
+      return { scanShifts: processedBscanData.map(() => 0), bgShift: 0 };
     }
 
-    const standoffs = filteredBscanData.map(pos => pos.lidar_standoff_mm / 1000);
+    const standoffs = processedBscanData.map(pos => pos.lidar_standoff_mm / 1000);
     const maxStandoff = Math.max(...standoffs);
 
     const scanShifts = standoffs.map(s => (maxStandoff - s) / binSpacingM);
 
+    // The BG row is drawn at whatever standoff it was evaluated at — the
+    // reference sweep's, or the position the model was sampled at.
     let bgShift = 0;
-    if (bscanBgRef && bscanBgRef.lidar_standoff_mm != null) {
-      const bgStandoff = bscanBgRef.lidar_standoff_mm / 1000;
-      bgShift = (maxStandoff - bgStandoff) / binSpacingM;
+    if (bscanBgDisplay && bscanBgDisplay.standoffMm != null) {
+      bgShift = (maxStandoff - bscanBgDisplay.standoffMm / 1000) / binSpacingM;
     } else if (bscanBgDisplay && bscanBgDisplay.magnitudes) {
       let bgPeakIdx = 0, maxVal = -Infinity;
       for (let i = 0; i < bscanBgDisplay.magnitudes.length; i++) {
@@ -402,7 +341,7 @@ export default function App() {
       }
       const maxStandoffScanPeak = (() => {
         const idx = standoffs.indexOf(maxStandoff);
-        const mags = filteredBscanData[idx].magnitudes;
+        const mags = processedBscanData[idx].magnitudes;
         let pk = 0, mv = -Infinity;
         for (let i = 0; i < mags.length; i++) { if (mags[i] > mv) { mv = mags[i]; pk = i; } }
         return pk;
@@ -412,79 +351,7 @@ export default function App() {
     }
 
     return { scanShifts, bgShift };
-  }, [filteredBscanData, bscanBgDisplay, bscanBgRef, bscanParams]);
-
-  // Aligned panel state
-  const [alignEnabled, setAlignEnabled] = useState(true);
-  const [alignNormEnabled, setAlignNormEnabled] = useState(false);
-  const [alignSvdEnabled, setAlignSvdEnabled] = useState(false);
-  const [alignSvdK, setAlignSvdK] = useState(1);
-  const [alignSvdStrength, setAlignSvdStrength] = useState(0.5);
-
-  // Aligned panel pipeline: align scans to common reference in freq domain → BG subtract → IFFT → SVD
-  // This ensures background subtraction happens AFTER spatial alignment, so reflections
-  // from the same physical location subtract correctly across all scan positions.
-  const alignedSvdData = useMemo(() => {
-    if (bscanData.length < 2) return null;
-    const startHz = sfcwParams.startFreq * 1e6;
-    const stopHz = sfcwParams.stopFreq * 1e6;
-
-    const hasLidar = bscanData.every(pos => pos.lidar_standoff_mm != null);
-    if (!hasLidar) return null;
-
-    const standoffs = bscanData.map(pos => pos.lidar_standoff_mm / 1000);
-    const maxStandoff = Math.max(...standoffs);
-
-    // Phase-shift each scan to the reference position (max standoff),
-    // then subtract BG (also phase-shifted to reference), then IFFT
-    const processed = bscanData.map((pos, idx) => {
-      if (!pos.h_cal_real || !pos.h_cal_imag) return pos;
-      const numSteps = pos.h_cal_real.length;
-
-      const alignD = maxStandoff - standoffs[idx];
-      const alignPhasePerHz = 2 * Math.PI * 2 * alignD / SPEED_OF_LIGHT;
-
-      let real = new Array(numSteps);
-      let imag = new Array(numSteps);
-      for (let i = 0; i < numSteps; i++) {
-        const freq = startHz + (i / (numSteps - 1)) * (stopHz - startHz);
-        const phase = alignPhasePerHz * freq;
-        const cosP = Math.cos(phase);
-        const sinP = Math.sin(phase);
-        real[i] = pos.h_cal_real[i] * cosP - pos.h_cal_imag[i] * sinP;
-        imag[i] = pos.h_cal_real[i] * sinP + pos.h_cal_imag[i] * cosP;
-      }
-
-      if (bgApplied && bscanBgRef && bscanBgRef.h_cal_real && bscanBgRef.h_cal_imag
-          && bscanBgRef.h_cal_real.length === numSteps) {
-        let bgAlignD = 0;
-        if (bscanBgRef.lidar_standoff_mm != null) {
-          bgAlignD = maxStandoff - (bscanBgRef.lidar_standoff_mm / 1000);
-        }
-        const bgPhasePerHz = 2 * Math.PI * 2 * bgAlignD / SPEED_OF_LIGHT;
-
-        for (let i = 0; i < numSteps; i++) {
-          const freq = startHz + (i / (numSteps - 1)) * (stopHz - startHz);
-          const phase = bgPhasePerHz * freq;
-          const cosP = Math.cos(phase);
-          const sinP = Math.sin(phase);
-          const bgR = bscanBgRef.h_cal_real[i] * cosP - bscanBgRef.h_cal_imag[i] * sinP;
-          const bgI = bscanBgRef.h_cal_real[i] * sinP + bscanBgRef.h_cal_imag[i] * cosP;
-          real[i] -= bgR;
-          imag[i] -= bgI;
-        }
-      }
-
-      const rp = computeRangeProfile(real, imag, numSteps, pos.step_size, pos.range_offset);
-      return { ...pos, magnitudes: rp.magnitudes, distances: rp.distances };
-    });
-
-    if (alignSvdEnabled && processed.length >= 2) {
-      return svdFilter(processed, alignSvdK, alignSvdStrength);
-    }
-    return processed;
-  }, [bscanData, sfcwParams.startFreq, sfcwParams.stopFreq, bgApplied, bscanBgRef, alignSvdEnabled, alignSvdK, alignSvdStrength]);
-
+  }, [processedBscanData, bscanBgDisplay]);
   // 2D Map state
   const [mapGateStart, setMapGateStart] = useState(2);
   const [mapGateEnd, setMapGateEnd] = useState(15);
@@ -506,41 +373,10 @@ export default function App() {
   const [sarCoherent, setSarCoherent] = useState(true);
   const [sarDynRange, setSarDynRange] = useState(20);
 
-  const sarProcessedData = useMemo(() => {
-    if (bscanData.length === 0) return bscanData;
-    const startHz = sfcwParams.startFreq * 1e6;
-    const stopHz = sfcwParams.stopFreq * 1e6;
-
-    return bscanData.map((pos) => {
-      if (!pos.h_cal_real || !pos.h_cal_imag) return pos;
-      const numSteps = pos.h_cal_real.length;
-      let real = pos.h_cal_real;
-      let imag = pos.h_cal_imag;
-
-      if (sarBgEnabled && bscanBgRef && bscanBgRef.h_cal_real && bscanBgRef.h_cal_imag) {
-        let deltaD = 0;
-        if (pos.lidar_standoff_mm != null && bscanBgRef.lidar_standoff_mm != null) {
-          deltaD = (pos.lidar_standoff_mm - bscanBgRef.lidar_standoff_mm) / 1000;
-        }
-        const deltaPhasePerHz = 2 * Math.PI * 2 * deltaD / SPEED_OF_LIGHT;
-        real = new Array(numSteps);
-        imag = new Array(numSteps);
-        for (let i = 0; i < numSteps; i++) {
-          const freq = startHz + (i / (numSteps - 1)) * (stopHz - startHz);
-          const phase = deltaPhasePerHz * freq;
-          const cosP = Math.cos(phase);
-          const sinP = Math.sin(phase);
-          const bgR = bscanBgRef.h_cal_real[i];
-          const bgI = bscanBgRef.h_cal_imag[i];
-          real[i] = pos.h_cal_real[i] - (bgR * cosP - bgI * sinP);
-          imag[i] = pos.h_cal_imag[i] - (bgR * sinP + bgI * cosP);
-        }
-      }
-
-      const rp = computeRangeProfile(real, imag, numSteps, pos.step_size, pos.range_offset);
-      return { ...pos, magnitudes: rp.magnitudes, distances: rp.distances, h_cal_real: Array.from(real), h_cal_imag: Array.from(imag) };
-    });
-  }, [bscanData, bscanBgRef, sarBgEnabled, sfcwParams.startFreq, sfcwParams.stopFreq]);
+  const sarProcessedData = useMemo(
+    () => applyBscanBg(bscanData, { enabled: sarBgEnabled, ...bscanBgSource }, sfcwParams),
+    [bscanData, bscanBgSource, sarBgEnabled, sfcwParams],
+  );
 
   const sarBscanInput = useMemo(() => {
     if (!sarSvdEnabled || sarProcessedData.length < 2) return sarProcessedData;
@@ -672,8 +508,8 @@ export default function App() {
         setSfcwBgCapturing(false);
       }
 
-      // Flag-based B-scan capture: sweep itself carries the flag
-      if (msg.bscan_capture) {
+      // B-scan capture: the first sweep after the button press is the position
+      if (bscanCaptureRef.current) {
         const posData = {
           magnitudes: [...msg.magnitudes],
           distances: [...msg.distances],
@@ -685,18 +521,22 @@ export default function App() {
           lidar_standoff_mm: standoffMm,
         };
         setBscanData(prev => [...prev, posData]);
+        bscanCaptureRef.current = false;
         setBscanCapturing(false);
       }
-      if (msg.bscan_bg_capture) {
+
+      // B-scan BG reference: likewise tagged groundstation-side
+      if (bscanBgCaptureRef.current && msg.h_cal_real && msg.h_cal_imag) {
         setBscanBgRef({
-          h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
-          h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
+          h_cal_real: [...msg.h_cal_real],
+          h_cal_imag: [...msg.h_cal_imag],
           num_steps: msg.num_steps,
           step_size: msg.step_size,
           range_offset: msg.range_offset,
           lidar_standoff_mm: standoffMm,
         });
-        setBscanCapturing(false);
+        bscanBgCaptureRef.current = false;
+        setBscanBgCapturing(false);
       }
       if (bgModelAccumRef.current) {
         const accum = bgModelAccumRef.current;
@@ -744,10 +584,10 @@ export default function App() {
     } else if (msg.type === 'sfcw_error') {
       setSfcwRunning(false);
       setSfcwProgress(null);
-      if (bscanPendingRef.current) {
-        bscanPendingRef.current = null;
-        setBscanCapturing(false);
-      }
+      bscanCaptureRef.current = false;
+      bscanBgCaptureRef.current = false;
+      setBscanCapturing(false);
+      setBscanBgCapturing(false);
     } else if (msg.type === 'coherence_result') {
       setCoherenceResult(msg);
       setSfcwRunning(false);
@@ -764,26 +604,23 @@ export default function App() {
     } else if (action === 'stop_session') {
       sendSdr({ cmd: 'sfcw_stop' });
     } else if (action === 'add_scan') {
+      // The Pi has no notion of a B-scan; the next sweep it sends is the capture.
       setBscanCapturing(true);
-      sendSdr({ cmd: 'bscan_capture' });
-    } else if (action === 'capture_bg') {
-      setBscanCapturing(true);
-      sendSdr({ cmd: 'bscan_bg_capture' });
-    } else if (action === 'clear_bg') {
-      setBscanBgRef(null);
+      bscanCaptureRef.current = true;
     } else if (action === 'new') {
       setBscanData([]);
     } else if (action === 'undo') {
       setBscanData(prev => prev.slice(0, -1));
     } else if (action === 'export') {
       const exportData = {
-        version: 3,
+        version: 4,
         timestamp: new Date().toISOString(),
         params: bscanParams,
         sfcwParams: sfcwParams,
         lidarAntennaOffsetMm: LIDAR_ANTENNA_OFFSET_MM,
         data: bscanData,
         bgRef: bscanBgRef,
+        bgModelName: bscanBgModel ? (bscanBgModel.name || null) : null,
       };
       const blob = new Blob([JSON.stringify(exportData)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -806,17 +643,18 @@ export default function App() {
             if (imported.data && Array.isArray(imported.data)) {
               setBscanData(imported.data);
               if (imported.bgRef) {
+                setBscanBgModel(null);
                 setBscanBgRef(imported.bgRef);
               }
               if (imported.params) {
-                const { stepSize, numPositions, wallStandoff, wallThickness, wallPermittivity } = imported.params;
+                // v3 and earlier stored the depth extent as a wall thickness.
+                const { stepSize, numPositions, maxDepth, wallThickness } = imported.params;
+                const depth = maxDepth != null ? maxDepth : wallThickness;
                 setBscanParams(prev => ({
                   ...prev,
                   ...(stepSize != null && { stepSize }),
                   ...(numPositions != null && { numPositions }),
-                  ...(wallStandoff != null && { wallStandoff }),
-                  ...(wallThickness != null && { wallThickness }),
-                  ...(wallPermittivity != null && { wallPermittivity }),
+                  ...(depth != null && { maxDepth: depth }),
                 }));
               }
             }
@@ -828,7 +666,7 @@ export default function App() {
       };
       input.click();
     }
-  }, [sendSdr, sfcwRunning, bscanData, bscanParams, sfcwParams]);
+  }, [sendSdr, sfcwRunning, bscanData, bscanParams, sfcwParams, bscanBgRef, bscanBgModel]);
 
   const handleBgModelAction = useCallback((action, payload) => {
     if (action === 'start_session') {
@@ -1030,34 +868,22 @@ export default function App() {
         onClearSfcwBg={handleSfcwClearBg}
         bscanData={bscanData}
         bscanCapturing={bscanCapturing}
-        bscanBgCaptured={bscanBgRef !== null}
+        bscanBgRef={bscanBgRef}
+        bscanBgModel={bscanBgModel}
+        bscanBgCapturing={bscanBgCapturing}
+        onCaptureBscanBg={handleBscanCaptureBg}
+        onLoadBscanBgModel={handleBscanLoadBgModel}
+        onClearBscanBg={handleBscanClearBg}
+        lidarOffsetMm={LIDAR_ANTENNA_OFFSET_MM}
         bgApplied={bgApplied}
         onBgAppliedChange={setBgApplied}
         bscanParams={bscanParams}
         onBscanParamsChange={setBscanParams}
         onBscanAction={handleBscanAction}
-        svdEnabled={svdEnabled}
-        svdK={svdK}
-        svdStrength={svdStrength}
-        onSvdEnabledChange={setSvdEnabled}
-        onSvdKChange={setSvdK}
-        onSvdStrengthChange={setSvdStrength}
         bscanScaleMode={bscanScaleMode}
         onBscanScaleModeChange={setBscanScaleMode}
         bscanDisplayMode={bscanDisplayMode}
         onBscanDisplayModeChange={setBscanDisplayMode}
-        bgStandoffMm={bgStandoffMm}
-        onBgStandoffMmChange={setBgStandoffMm}
-        alignEnabled={alignEnabled}
-        onAlignEnabledChange={setAlignEnabled}
-        alignNormEnabled={alignNormEnabled}
-        onAlignNormEnabledChange={setAlignNormEnabled}
-        alignSvdEnabled={alignSvdEnabled}
-        alignSvdK={alignSvdK}
-        alignSvdStrength={alignSvdStrength}
-        onAlignSvdEnabledChange={setAlignSvdEnabled}
-        onAlignSvdKChange={setAlignSvdK}
-        onAlignSvdStrengthChange={setAlignSvdStrength}
         sarBscanData={sarBscanInput}
         sarResult={sarResult}
         sarProgress={sarProgress}
@@ -1126,8 +952,7 @@ export default function App() {
         sfcwProgress={sfcwProgress}
         sfcwRunning={sfcwRunning}
         sfcwRangeScale={sfcwRangeScale}
-        bscanData={filteredBscanData}
-        bscanAlignedSvdData={alignedSvdData}
+        bscanData={processedBscanData}
         bscanBgDisplay={bscanBgDisplay}
         bscanAlignShifts={alignShifts}
         bscanParams={bscanParams}

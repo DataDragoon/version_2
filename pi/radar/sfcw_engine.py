@@ -41,9 +41,6 @@ class SFCWEngine:
         self._thread = None
         self._callback = None
         self._lock = threading.Lock()
-        self._capture_bscan = False
-        self._capture_bscan_bg = False
-        self._capture_bgmodel = False
         self._fpga_tuning = False
         self._gains_dirty = False
         self._warm = False
@@ -129,15 +126,6 @@ class SFCWEngine:
             'bscan_avg_count': self.bscan_avg_count,
             'bscan_primer': self.bscan_primer,
         }
-
-    def capture_bscan(self):
-        self._capture_bscan = True
-
-    def capture_bscan_bg(self):
-        self._capture_bscan_bg = True
-
-    def capture_bgmodel(self):
-        self._capture_bgmodel = True
 
     def run_coherence_test(self, callback=None):
         """Run 3 consecutive sweeps and compute repeatability + correlation metrics.
@@ -628,16 +616,6 @@ class SFCWEngine:
         h_cal_real = h_cal.real.tolist()
         h_cal_imag = h_cal.imag.tolist()
 
-        bscan_flag = self._capture_bscan
-        if bscan_flag:
-            self._capture_bscan = False
-        bscan_bg_flag = self._capture_bscan_bg
-        if bscan_bg_flag:
-            self._capture_bscan_bg = False
-        bgmodel_flag = self._capture_bgmodel
-        if bgmodel_flag:
-            self._capture_bgmodel = False
-
         return {
             'type': 'range_profile',
             'distances': distances.tolist(),
@@ -650,9 +628,6 @@ class SFCWEngine:
             'step_size': step,
             'range_offset': self.range_offset,
             'timestamp': time.time(),
-            'bscan_capture': bscan_flag,
-            'bscan_bg_capture': bscan_bg_flag,
-            'bgmodel_capture': bgmodel_flag,
             'phase_coherence': {
                 'phase_std_rad': phase_std,
                 'phase_std_deg': float(np.degrees(phase_std)),

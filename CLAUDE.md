@@ -44,28 +44,55 @@ IMU, LiDAR, Camera, and bladeRF SDR integrated. All stream to groundstation debu
 RF Calib panel provides signal generator + oscilloscope for bladeRF calibration (TX1/RX1).
 SFCW panel performs stepped-frequency sweeps (1–6 GHz default) with range profile + waterfall display.
 Both RF panels share port 9003 — starting an SFCW sweep auto-stops any active TX/RX in RF Calib.
+B-scan panel captures positions along an aperture and shares the SFCW panel's background
+model machinery (see below).
 
-## SFCW Background Subtraction — Groundstation Only
+## Background Subtraction — Groundstation Only (SFCW + B-scan)
 
-All SFCW background subtraction happens on the groundstation. The Pi ships raw `h_cal`
-and holds no background state; `sfcw_capture_bg`, `sfcw_clear_bg`, `sfcw_bg_mode`, and
-`bscan_clear_bg` no longer exist as commands.
+All background subtraction happens on the groundstation. The Pi ships raw `h_cal`,
+holds no background state, and has no notion of a B-scan at all. These commands no
+longer exist: `sfcw_capture_bg`, `sfcw_clear_bg`, `sfcw_bg_mode`, `bscan_clear_bg`,
+`bscan_capture`, `bscan_bg_capture`, `bgmodel_capture`. Every "capture" now works by
+tagging the next `sfcw_result` to arrive, groundstation-side, with a ref flag.
 
-Two mutually exclusive sources, both in `App.jsx` `processedSfcwResult`:
-- **Captured reference** — "Capture BG" tags the next sweep as `sfcwBgRef`.
+Both panels offer the same two mutually exclusive sources:
+- **Captured reference** — "Capture BG" tags the next sweep as `sfcwBgRef` / `bscanBgRef`.
 - **ML model** — "Load Model" infers a background from lidar standoff (`bgModelInfer.js`).
 
 Selecting either clears the other; "Clear BG" clears both. Subtraction is always complex
 (vector) — the old complex/magnitude toggle is gone, complex was the default and is now
 the only mode.
 
+- SFCW live display: `App.jsx` `processedSfcwResult`.
+- B-scan: `lib/bscanBg.js` `applyBscanBg()`, shared by `processedBscanData` (B-scan +
+  2D Map), `sarProcessedData` (SAR), and `alignedSvdData` (Aligned).
+
+**The model path is strictly better for B-scans.** A captured reference is only valid
+near the standoff it was taken at, so B-scan positions are corrected by phase-aligning
+it with the lidar standoff difference — a fudge that degrades as the hand-held standoff
+drifts. A model is evaluated at *each position's own* standoff, so no alignment is
+needed and it stays valid across the whole captured span. Outside that span the Akima
+interpolator clamps, so the panel flags standoffs beyond the model's `d` range.
+
+The Aligned panel subtracts first and rotates the residual to the common reference
+position. That is identical to rotating both and subtracting (the alignment ramp is a
+common factor) and it lets the model see each position's true standoff.
+
 **Why groundstation-side:** Pi-side subtraction ran before transmission, so it silently
 contaminated B-scan captures, SAR, and BG-model *training* data, which all read
-`msg.h_cal_*`. Keeping the wire raw means only the SFCW live display is affected.
+`msg.h_cal_*`. Keeping the wire raw means only the live display is affected.
 
 Note `SfcwDisplay` recomputes its own range profile from `h_cal_real/imag` for
 windowing/range-comp, so any subtraction must write back into those fields — replacing
-only `magnitudes`/`distances` gets silently discarded.
+only `magnitudes`/`distances` gets silently discarded. `applyBscanBg` does this.
+
+**Removed from the B-scan panel:** the SVD filter (the Aligned, SAR and 2D Map panels
+keep their own; `lib/svd.js` stays) and the Wall section. Wall standoff / thickness /
+permittivity were never doing refraction work in practice — εr defaulted to 1, so the
+distance correction was the identity and the only live effect was capping display depth
+at the wall thickness. That is now a single `maxDepth` field (cm, default 30) under
+Display, used by both `BscanDisplay` and `sar.worker.js`. B-scan export is v4; import
+still reads v3 and maps the old `wallThickness` onto `maxDepth`.
 Pi-side architecture: bladerf_driver.py (HAL) → sfcw_engine.py (sweep logic) → sdr_server.py (WebSocket).
 Next steps: OptiFlow pipeline, SAR reconstruction integration.
 

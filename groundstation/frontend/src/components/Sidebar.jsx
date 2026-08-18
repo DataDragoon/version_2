@@ -1,4 +1,4 @@
-import { Activity, Eye, Radio, Radar, ScanLine, AlignVerticalSpaceBetween, Grid3x3, Map, ChevronLeft, Wifi, WifiOff, Brain } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ScanLine, Grid3x3, Map, ChevronLeft, Wifi, WifiOff, Brain } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ImuPanel from './ImuPanel';
 import OptiFlowPanel from './OptiFlowPanel';
@@ -6,7 +6,6 @@ import RfCalibPanel from './RfCalibPanel';
 import BgModelPanel from './BgModelPanel';
 import SfcwPanel from './SfcwPanel';
 import BscanPanel from './BscanPanel';
-import AlignedPanel from './AlignedPanel';
 import SarPanel from './SarPanel';
 import MapPanel from './MapPanel';
 
@@ -17,7 +16,6 @@ const PANELS = [
   { id: 'sfcw',      label: 'SFCW',      icon: Radar },
   { id: 'bgmodel',   label: 'BG Model',  icon: Brain },
   { id: 'bscan',     label: 'B-Scan',    icon: ScanLine },
-  { id: 'aligned',   label: 'Aligned',   icon: AlignVerticalSpaceBetween },
   { id: 'sar',       label: 'SAR',       icon: Grid3x3 },
   { id: 'map',       label: '2D Map',    icon: Map },
 ];
@@ -62,34 +60,22 @@ export default function Sidebar({
   onClearSfcwBg,
   bscanData,
   bscanCapturing,
-  bscanBgCaptured,
+  bscanBgRef,
+  bscanBgModel,
+  bscanBgCapturing,
+  onCaptureBscanBg,
+  onLoadBscanBgModel,
+  onClearBscanBg,
+  lidarOffsetMm,
   bgApplied,
   onBgAppliedChange,
   bscanParams,
   onBscanParamsChange,
   onBscanAction,
-  svdEnabled,
-  svdK,
-  svdStrength,
-  onSvdEnabledChange,
-  onSvdKChange,
-  onSvdStrengthChange,
   bscanScaleMode,
   onBscanScaleModeChange,
   bscanDisplayMode,
   onBscanDisplayModeChange,
-  bgStandoffMm,
-  onBgStandoffMmChange,
-  alignEnabled,
-  onAlignEnabledChange,
-  alignNormEnabled,
-  onAlignNormEnabledChange,
-  alignSvdEnabled,
-  alignSvdK,
-  alignSvdStrength,
-  onAlignSvdEnabledChange,
-  onAlignSvdKChange,
-  onAlignSvdStrengthChange,
   sarBscanData,
   sarResult,
   sarProgress,
@@ -324,42 +310,23 @@ export default function Sidebar({
                   sfcwRunning={sfcwRunning}
                   scanData={bscanData}
                   scanCapturing={bscanCapturing}
-                  bgCaptured={bscanBgCaptured}
                   bgApplied={bgApplied}
                   onBgAppliedChange={onBgAppliedChange}
                   onScanAction={onBscanAction}
                   params={bscanParams}
                   onParamsChange={onBscanParamsChange}
-                  svdEnabled={svdEnabled}
-                  svdK={svdK}
-                  svdStrength={svdStrength}
-                  onSvdEnabledChange={onSvdEnabledChange}
-                  onSvdKChange={onSvdKChange}
-                  onSvdStrengthChange={onSvdStrengthChange}
                   scaleMode={bscanScaleMode}
                   onScaleModeChange={onBscanScaleModeChange}
                   displayMode={bscanDisplayMode}
                   onDisplayModeChange={onBscanDisplayModeChange}
                   lidarMm={lidarMm}
-                  bgStandoffMm={bgStandoffMm}
-                  onBgStandoffMmChange={onBgStandoffMmChange}
-                />
-              )}
-              {activePanel === 'aligned' && (
-                <AlignedPanel
-                  scanData={bscanData}
-                  alignEnabled={alignEnabled}
-                  onAlignEnabledChange={onAlignEnabledChange}
-                  normEnabled={alignNormEnabled}
-                  onNormEnabledChange={onAlignNormEnabledChange}
-                  svdEnabled={alignSvdEnabled}
-                  svdK={alignSvdK}
-                  svdStrength={alignSvdStrength}
-                  onSvdEnabledChange={onAlignSvdEnabledChange}
-                  onSvdKChange={onAlignSvdKChange}
-                  onSvdStrengthChange={onAlignSvdStrengthChange}
-                  isConnected={isConnected}
-                  sdrConnected={sdrConnected}
+                  lidarOffsetMm={lidarOffsetMm}
+                  bgRef={bscanBgRef}
+                  bgModel={bscanBgModel}
+                  bgCapturing={bscanBgCapturing}
+                  onCaptureBg={onCaptureBscanBg}
+                  onLoadBgModel={onLoadBscanBgModel}
+                  onClearBg={onClearBscanBg}
                 />
               )}
               {activePanel === 'sar' && (

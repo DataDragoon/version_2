@@ -1,11 +1,11 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
 
 const LIDAR_AVG_WINDOW = 20;
 
-export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, scanData, scanCapturing, bgCaptured, bgApplied, onBgAppliedChange, onScanAction, params, onParamsChange, svdEnabled, svdK, svdStrength, onSvdEnabledChange, onSvdKChange, onSvdStrengthChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange, lidarMm, bgStandoffMm, onBgStandoffMmChange }) {
-  const { stepSize, numPositions, wallStandoff, wallThickness, wallPermittivity } = params;
+export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, scanData, scanCapturing, bgApplied, onBgAppliedChange, onScanAction, params, onParamsChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange, lidarMm, lidarOffsetMm, bgRef, bgModel, bgCapturing, onCaptureBg, onLoadBgModel, onClearBg }) {
+  const { stepSize, numPositions, maxDepth } = params;
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
@@ -13,6 +13,8 @@ export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sca
 
   const lidarBuf = useRef([]);
   const [lidarAvg, setLidarAvg] = useState(null);
+  const [modelList, setModelList] = useState(null);
+  const [modelListOpen, setModelListOpen] = useState(false);
 
   useEffect(() => {
     if (lidarMm == null) return;
@@ -23,17 +25,34 @@ export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sca
     setLidarAvg(avg);
   }, [lidarMm]);
 
-  const handleAction = (action) => {
-    if (action === 'capture_bg' && lidarAvg != null) {
-      onBgStandoffMmChange(lidarAvg);
-    } else if (action === 'clear_bg') {
-      onBgStandoffMmChange(null);
-    }
-    onScanAction(action);
-  };
+  const fetchModels = useCallback(() => {
+    fetch('/api/models')
+      .then(r => r.json())
+      .then(data => { setModelList(Array.isArray(data) ? data : []); setModelListOpen(true); })
+      .catch(() => setModelList([]));
+  }, []);
 
-  const deltaMm = (bgStandoffMm != null && lidarAvg != null) ? lidarAvg - bgStandoffMm : null;
+  const loadModel = useCallback((filename) => {
+    fetch(`/api/models/${filename}`)
+      .then(r => r.json())
+      .then(model => { onLoadBgModel(model); setModelListOpen(false); })
+      .catch(err => console.error('Failed to load model:', err));
+  }, [onLoadBgModel]);
+
+  // Both the model and the captured reference live in standoff, so compare the
+  // live lidar on the same basis the sweeps are tagged with.
+  const standoffNow = lidarAvg != null ? lidarAvg - (lidarOffsetMm || 0) : null;
+
+  // Reference: how far the current standoff has drifted from where it was taken.
+  const deltaMm = (bgRef && bgRef.lidar_standoff_mm != null && standoffNow != null)
+    ? standoffNow - bgRef.lidar_standoff_mm : null;
   const deltaOk = deltaMm != null && Math.abs(deltaMm) <= 5;
+
+  // Model: Akima inference clamps outside the captured span, so flag it.
+  const modelSpan = (bgModel && Array.isArray(bgModel.d) && bgModel.d.length > 1)
+    ? { min: bgModel.d[0], max: bgModel.d[bgModel.d.length - 1] } : null;
+  const outOfSpan = modelSpan != null && standoffNow != null
+    && (standoffNow < modelSpan.min || standoffNow > modelSpan.max);
 
   const canActivate = isConnected && sdrConnected;
   const captured = scanData.length;
@@ -182,25 +201,41 @@ export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sca
       <Section label="Standoff">
         <div className="flex flex-col gap-2">
           <div className="flex items-baseline justify-between px-3 py-2 rounded-xl border border-white/8 bg-[#0a0a0a]/60">
-            <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">Distance</span>
+            <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">Standoff</span>
             <span className="text-base font-bold font-mono text-white">
-              {lidarAvg != null ? lidarAvg.toFixed(1) : '—'} <span className="text-xs font-semibold text-[#888888]">mm</span>
+              {standoffNow != null ? standoffNow.toFixed(1) : '—'} <span className="text-xs font-semibold text-[#888888]">mm</span>
             </span>
           </div>
-          {bgStandoffMm != null && (
+          {deltaMm != null && (
             <div className={cn(
               'flex items-baseline justify-between px-3 py-2 rounded-xl border',
               deltaOk
                 ? 'border-green-500/30 bg-green-500/5'
                 : 'border-red-500/30 bg-red-500/5'
             )}>
-              <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">Delta</span>
+              <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">Delta vs BG</span>
               <span className={cn(
                 'text-base font-bold font-mono',
                 deltaOk ? 'text-green-400' : 'text-red-400'
               )}>
-                {deltaMm != null ? (deltaMm >= 0 ? '+' : '') + deltaMm.toFixed(1) : '—'} <span className="text-xs font-semibold text-[#888888]">mm</span>
+                {(deltaMm >= 0 ? '+' : '') + deltaMm.toFixed(1)} <span className="text-xs font-semibold text-[#888888]">mm</span>
               </span>
+            </div>
+          )}
+          {modelSpan && (
+            <div className={cn(
+              'flex items-baseline justify-between px-3 py-2 rounded-xl border',
+              outOfSpan ? 'border-red-500/30 bg-red-500/5' : 'border-white/8 bg-[#0a0a0a]/60'
+            )}>
+              <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">Model span</span>
+              <span className={cn('text-xs font-bold font-mono', outOfSpan ? 'text-red-400' : 'text-white')}>
+                {modelSpan.min.toFixed(0)} – {modelSpan.max.toFixed(0)} mm
+              </span>
+            </div>
+          )}
+          {outOfSpan && (
+            <div className="px-2 text-[9px] text-red-400/70 leading-relaxed">
+              Standoff is outside the captured span — the model clamps to the nearest end.
             </div>
           )}
         </div>
@@ -221,30 +256,91 @@ export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sca
             {displayMode === 'color' ? 'Color' : 'Profile'}
           </button>
         </div>
+        <EditableField
+          label="Max Depth"
+          value={maxDepth}
+          unit="cm"
+          onChange={(v) => update('maxDepth', v)}
+          min={1}
+          max={500}
+        />
       </Section>
 
+      {/* Background — same two mutually exclusive sources as the SFCW panel */}
       <Section label="Background">
         <div className="grid grid-cols-2 gap-2">
           <button
-            onClick={() => handleAction('capture_bg')}
-            disabled={!sfcwRunning}
+            onClick={onCaptureBg}
+            disabled={!sfcwRunning || bgCapturing}
             className={cn(
-              'px-3 py-2.5 rounded-lg text-xs font-medium transition-all',
-              sfcwRunning
-                ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-                : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
+              'px-3 py-2.5 rounded-lg text-xs font-medium transition-all border',
+              bgRef
+                ? 'bg-[#f59e0b]/10 border-[#f59e0b]/30 text-[#f59e0b]'
+                : sfcwRunning && !bgCapturing
+                  ? 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+                  : 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
             )}
           >
-            Capture BG
+            {bgCapturing ? 'Capturing...' : bgRef ? 'BG Ref Active' : 'Capture BG'}
           </button>
           <button
-            onClick={() => handleAction('clear_bg')}
-            className="px-3 py-2.5 rounded-lg text-xs font-medium bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
+            onClick={onClearBg}
+            disabled={!bgRef && !bgModel && !bgCapturing}
+            className={cn(
+              'px-3 py-2.5 rounded-lg text-xs font-medium transition-all border',
+              bgRef || bgModel || bgCapturing
+                ? 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+                : 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
+            )}
           >
             Clear BG
           </button>
         </div>
-        {bgCaptured && (
+
+        <button
+          onClick={fetchModels}
+          className={cn(
+            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
+            bgModel
+              ? 'bg-[#a78bfa]/10 border-[#a78bfa]/30 text-[#a78bfa]'
+              : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+          )}
+        >
+          {bgModel ? `Model: ${bgModel.name || 'loaded'}` : 'Load Model'}
+        </button>
+        {modelListOpen && modelList && (
+          <div className="flex flex-col gap-1 max-h-32 overflow-y-auto rounded-lg border border-white/10 bg-[#0a0a0a] p-2">
+            {modelList.length === 0 && (
+              <span className="text-[10px] text-white/30 px-1">No models saved</span>
+            )}
+            {modelList.map((m) => (
+              <button
+                key={m.filename}
+                onClick={() => loadModel(m.filename)}
+                className="flex items-baseline justify-between gap-2 text-left px-2 py-1.5 rounded text-[11px] text-white/70 hover:bg-white/10 hover:text-white transition-all"
+              >
+                <span className="truncate">{m.name || m.filename}</span>
+                {m.suppressionDb != null ? (
+                  <span className={cn('font-mono shrink-0 text-[10px]',
+                    m.suppressionDb > 15 ? 'text-green-400/70'
+                    : m.suppressionDb > 8 ? 'text-yellow-400/70' : 'text-red-400/70')}>
+                    {m.suppressionDb.toFixed(1)} dB
+                  </span>
+                ) : (
+                  <span className="font-mono shrink-0 text-[10px] text-white/25">legacy</span>
+                )}
+              </button>
+            ))}
+            <button
+              onClick={() => setModelListOpen(false)}
+              className="text-[10px] text-white/30 hover:text-white/60 mt-1 px-1"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {(bgRef || bgModel) && (
           <button
             onClick={() => onBgAppliedChange(!bgApplied)}
             className={cn(
@@ -257,6 +353,13 @@ export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sca
             {bgApplied ? '● BG Applied' : 'BG Not Applied'}
           </button>
         )}
+        <div className="px-2 text-[9px] text-white/40 leading-relaxed">
+          {bgModel
+            ? 'Model background, inferred per position from that position’s own lidar standoff.'
+            : bgRef
+              ? 'Reference sweep, phase-aligned to each position by lidar standoff.'
+              : 'Capture a reference sweep or load a model to subtract the background.'}
+        </div>
       </Section>
 
       <Section label="Data">
@@ -282,75 +385,6 @@ export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sca
         </div>
       </Section>
 
-      <Section label="SVD Filter">
-        <button
-          onClick={() => onSvdEnabledChange(!svdEnabled)}
-          disabled={scanData.length < 2}
-          className={cn(
-            'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-            scanData.length < 2
-              ? 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
-              : svdEnabled
-                ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
-                : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
-          )}
-        >
-          {svdEnabled ? '● SVD ON' : 'SVD OFF'}
-        </button>
-        <div className="grid grid-cols-2 gap-2">
-          <EditableField
-            label="k (remove)"
-            value={svdK}
-            unit=""
-            onChange={(v) => onSvdKChange(Math.round(v))}
-            min={1}
-            max={Math.max(1, scanData.length - 1)}
-          />
-          <EditableField
-            label="Strength"
-            value={svdStrength}
-            unit=""
-            onChange={(v) => onSvdStrengthChange(v)}
-            min={0.01}
-            max={1}
-          />
-        </div>
-      </Section>
-
-      <Section label="Wall">
-        <div className="grid grid-cols-2 gap-2">
-          <EditableField
-            label="Standoff"
-            value={wallStandoff}
-            unit="cm"
-            onChange={(v) => update('wallStandoff', v)}
-            min={0}
-            max={100}
-          />
-          <EditableField
-            label="Thickness"
-            value={wallThickness}
-            unit="cm"
-            onChange={(v) => update('wallThickness', v)}
-            min={1}
-            max={100}
-          />
-        </div>
-        <div className="grid grid-cols-1 gap-2">
-          <EditableField
-            label="Permittivity εr"
-            value={wallPermittivity}
-            unit=""
-            onChange={(v) => update('wallPermittivity', v)}
-            min={1}
-            max={20}
-          />
-        </div>
-        <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
-          v_wall = c/√εr = {(299792458 / Math.sqrt(wallPermittivity) / 1e6).toFixed(1)} m/ms.
-          {' '}Display: {wallStandoff} cm standoff + {wallThickness} cm wall = {wallStandoff + wallThickness} cm total depth.
-        </div>
-      </Section>
     </>
   );
 }

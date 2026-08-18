@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import { Activity, Eye, Radio, Radar, ScanLine, AlignVerticalSpaceBetween, Grid3x3, Map, Zap, Brain } from 'lucide-react';
+import { Activity, Eye, Radio, Radar, ScanLine, Grid3x3, Map, Zap, Brain } from 'lucide-react';
 import ImuDisplay from './ImuDisplay';
 import OptiFlowDisplay from './OptiFlowDisplay';
 import WaveformDisplay from './WaveformDisplay';
@@ -29,7 +29,6 @@ export default function Viewport({
   sfcwRunning,
   sfcwRangeScale,
   bscanData,
-  bscanAlignedSvdData,
   bscanBgDisplay,
   bscanAlignShifts,
   bscanParams,
@@ -226,14 +225,10 @@ export default function Viewport({
     );
   }
 
-  if (activePanel === 'bscan' || activePanel === 'aligned') {
-    const isAligned = activePanel === 'aligned';
-    const label = isAligned ? 'Aligned B-Scan' : 'B-Scan Imaging';
-    const icon = isAligned ? AlignVerticalSpaceBetween : ScanLine;
+  if (activePanel === 'bscan') {
     const targetScanShifts = bscanData.map(() => 0);
     const targetBgShift = 0;
-    const displayData = (isAligned && bscanAlignedSvdData) ? bscanAlignedSvdData : bscanData;
-    const showLiveSweep = activePanel === 'bscan' && (sfcwRunning || sfcwResult);
+    const showLiveSweep = sfcwRunning || sfcwResult;
 
     return (
       <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
@@ -258,7 +253,7 @@ export default function Viewport({
         )}
         {/* B-scan image (bottom) */}
         <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
-          <PaneHeader icon={icon} label={label} active={bscanData.length > 0} color="cyan" />
+          <PaneHeader icon={ScanLine} label="B-Scan Imaging" active={bscanData.length > 0} color="cyan" />
           <div className="flex-1 min-h-0 relative overflow-hidden">
             {bscanData.length > 0 && (
               <div className="absolute inset-0 pointer-events-none">
@@ -266,7 +261,7 @@ export default function Viewport({
               </div>
             )}
             <BscanDisplay
-              scanData={displayData}
+              scanData={bscanData}
               bgDisplay={bscanBgDisplay}
               params={bscanParams}
               capturing={bscanCapturing}

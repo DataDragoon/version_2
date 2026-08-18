@@ -146,15 +146,6 @@ class SDRServer:
                 self.sfcw.stop()
                 await self._broadcast_sfcw_status()
 
-            elif action == 'bscan_capture':
-                self.sfcw.capture_bscan()
-
-            elif action == 'bscan_bg_capture':
-                self.sfcw.capture_bscan_bg()
-
-            elif action == 'bgmodel_capture':
-                self.sfcw.capture_bgmodel()
-
             elif action == 'sfcw_coherence_test':
                 if self.sfcw.running:
                     await ws.send(json.dumps({'type': 'error', 'message': 'Stop sweep before running coherence test'}))
@@ -265,12 +256,6 @@ class SDRServer:
                 }
                 if 'phase_coherence' in data:
                     result_msg['phase_coherence'] = data['phase_coherence']
-                if data.get('bscan_capture'):
-                    result_msg['bscan_capture'] = True
-                if data.get('bscan_bg_capture'):
-                    result_msg['bscan_bg_capture'] = True
-                if data.get('bgmodel_capture'):
-                    result_msg['bgmodel_capture'] = True
                 msg = json.dumps(result_msg)
             else:
                 continue

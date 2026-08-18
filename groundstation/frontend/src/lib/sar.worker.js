@@ -186,7 +186,7 @@ self.onmessage = function (e) {
   const { bscanData, bscanParams } = e.data;
   const t0 = performance.now();
 
-  const { stepSize, wallThickness, wallStandoff, wallPermittivity, aperture, coherent } = bscanParams;
+  const { stepSize, maxDepth, aperture, coherent } = bscanParams;
   const pixelsX = 100;
   const pixelsZ = 100;
 
@@ -196,16 +196,13 @@ self.onmessage = function (e) {
     return;
   }
 
-  const standoffM = (wallStandoff || 0) / 100;
-  const thicknessM = wallThickness / 100;
-  const sqrtEr = Math.sqrt(wallPermittivity || 1);
-  const wallBackApparent = standoffM + thicknessM * sqrtEr;
+  const maxDepthM = (maxDepth || 30) / 100;
 
   const distances = bscanData[0].distances;
   const numBins = distances.length;
   let endBin = numBins - 1;
   for (let i = numBins - 1; i >= 0; i--) {
-    if (distances[i] <= wallBackApparent) { endBin = i; break; }
+    if (distances[i] <= maxDepthM) { endBin = i; break; }
   }
 
   const depthMax = distances[endBin];
@@ -251,10 +248,10 @@ self.onmessage = function (e) {
     const crpDistStart = crpDists[0];
     const crpDistStep = crpNumBins > 1 ? (crpDists[crpNumBins - 1] - crpDistStart) / (crpNumBins - 1) : 1;
 
-    // Find end bin for wall depth
+    // Find end bin for the display depth extent
     let crpEndBin = crpNumBins - 1;
     for (let i = crpNumBins - 1; i >= 0; i--) {
-      if (crpDists[i] <= wallBackApparent) { crpEndBin = i; break; }
+      if (crpDists[i] <= maxDepthM) { crpEndBin = i; break; }
     }
 
     for (let zi = 0; zi < pixelsZ; zi++) {
