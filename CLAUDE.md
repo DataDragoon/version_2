@@ -69,6 +69,66 @@ only `magnitudes`/`distances` gets silently discarded.
 Pi-side architecture: bladerf_driver.py (HAL) → sfcw_engine.py (sweep logic) → sdr_server.py (WebSocket).
 Next steps: OptiFlow pipeline, SAR reconstruction integration.
 
+## BG Model — Capture Protocol and Findings
+
+**Capture protocol (as of 2026-08-18).** One capture = N sweeps at a **static** standoff
+(N configurable in the BG Model panel, default 40, persisted to `localStorage.bgmodel_sweeps`).
+Positions are hand-placed and deliberately **irregular**; irregular beats uniform, because
+uniform undersampling folds alias energy coherently onto a single wrong spatial frequency
+while irregular spacing scatters it. Target: ~30 positions over the widest span the bench
+allows (150 mm+).
+
+`bgCaptureStats.computeCaptureStats()` runs at capture completion and stores, per position:
+coherent complex mean (`h_mean_real/imag` — this is the training target), per-frequency noise
+variance, per-sweep and post-averaging SNR, sweep-pair correlation, standoff mean/std, and
+`radarRangeM` (range of the dominant return from the coherent mean, sub-bin interpolated).
+`radarRangeM` is **diagnostic only** — nothing consumes it. It exists so the dataset carries an
+independent standoff estimate to check the lidar against.
+
+Training now uses **one sample per position** (the coherent mean), not every raw sweep. Replicas
+measure the same standoff repeatedly, so feeding them individually adds no information — MSE
+regresses to this mean anyway, at N× the epochs.
+
+**Spacing limits** (`spacingLimits()`). An echo with path multiplier α oscillates in standoff
+with period `c / (2·f·(α−1))`; worst case is α=3 (triple bounce) at the top of the band. At
+5 GHz that period is 15 mm, so:
+- ≤ 5 mm gaps — well sampled
+- 5–7.5 mm — coarse but unaliased
+- Above 7.5 mm — α=3 folds onto a wrong spatial frequency and *corrupts* a fit rather than missing detail
+
+**Span sets echo resolution:** `Δα = c / (2·f_c·span)`. At 3.5 GHz, 85 mm span → Δα = 0.50;
+150 mm → 0.29. Widest possible span is the single biggest accuracy lever.
+
+**Export format v2** (`bgmodel_<N>pos_<ts>.json`): hoists `common` (num_steps, step_size,
+range_offset) out of the per-sweep repetition and stores per-capture `stats` + column arrays
+(`standoffs`, `real`, `imag`). ~7 MB for 30 positions × 40 sweeps. Import accepts v1 and v2 and
+backfills stats when absent.
+
+**Analysis of the existing MLP** (1 → 64 → 64 → 302 ReLU, 23,918 params, `bgmodel.worker.js`):
+- Output is effectively **rank ~5** — SVD over the input domain puts 96% of energy in 5 PCs,
+  in near-equal quadrature pairs (the signature of complex sinusoids in `d`). 19,328 of its
+  parameters describe a rank-5 map.
+- Only 13/64 first-layer knots land inside the input domain; 32/64 L1 and 17/64 L2 units are
+  dead across the whole domain.
+- Per-frequency residual magnitude spans **20 dB**, so pooled scalar target normalization makes
+  MSE a silently power-weighted loss that starves the weak bins.
+- `finalLoss` is training MSE with no held-out split anywhere. Param:data ratio was 0.32:1.
+- Inference is 19.3 µs (~52k/s), ~1700× headroom at 30 fps. Sweeps run at 3–6 Hz, so the model
+  is nowhere near the bottleneck — **data, not compute, is the constraint.**
+
+**Lidar precision is the hard ceiling.** Two-way phase is `4πfd/c`, so at 5 GHz **1 mm of
+standoff error = 12° of phase error**. 20 dB of coherent suppression needs the standoff to
+~0.5 mm; the TF-LC02 is a ±few-mm sensor. Comparing `radarRangeM` against `standoffMm` across
+the new dataset is the cheap test of whether a radar-derived standoff beats the lidar.
+
+**Planned direction** — physics-parameterized phase + learned amplitude:
+`H_bg(f,d) = Σ_k A_k(f,d) · exp(−j·4πf·(α_k·d + β_k)/c)`. Delay is pure geometry and exact even
+in the near field (2 params per echo); `A_k(f,d)` is where near-field coupling lives, so it is
+learned but smooth in `d` because the exponential absorbs all the fast oscillation. ~330 params
+vs 23,918. Extrapolation is a free byproduct, not a goal — operation stays inside the trained
+near-field range. Evaluation: leave-one-position-out, scored as clutter suppression in dB inside
+the target range gate, against a linear-interpolation baseline.
+
 ## SFCW Phase Coherence — Known Constraints
 
 The bladeRF2 (AD9361 RFIC) has **separate TX and RX synthesizers**. After each frequency

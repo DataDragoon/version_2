@@ -138,6 +138,8 @@ export default function Sidebar({
   bgModelTrainProgress,
   bgModelTrainResult,
   bgModelTrainError,
+  bgModelSweepsPerCapture,
+  onBgModelSweepsChange,
   onBgModelAction,
 }) {
   return (
@@ -287,6 +289,9 @@ export default function Sidebar({
                   trainProgress={bgModelTrainProgress}
                   trainResult={bgModelTrainResult}
                   trainError={bgModelTrainError}
+                  sweepsPerCapture={bgModelSweepsPerCapture}
+                  onSweepsChange={onBgModelSweepsChange}
+                  stopFreq={sfcwParams.stopFreq}
                   onModelAction={onBgModelAction}
                   lidarMm={lidarMm}
                 />

@@ -50,6 +50,7 @@ export default function Viewport({
   mapFocusAperture,
   bgModelCaptures,
   bgModelCapturing,
+  bgModelStopFreq,
 }) {
   const [bscanLiveRange, setBscanLiveRange] = useState({ min: 0, max: 0.3 });
 
@@ -185,7 +186,7 @@ export default function Viewport({
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#a78bfa]/4 blur-[80px] rounded-full" />
               </div>
             )}
-            <BgModelDisplay captures={bgModelCaptures} capturing={bgModelCapturing} sfcwProgress={sfcwProgress} />
+            <BgModelDisplay captures={bgModelCaptures} capturing={bgModelCapturing} sfcwProgress={sfcwProgress} stopFreq={bgModelStopFreq} />
             {(!bgModelCaptures || bgModelCaptures.length === 0) && !showLiveSweep && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No captures yet</span>

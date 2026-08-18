@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
+import { analyzeCoverage } from '@/lib/bgCaptureStats';
 
 const LIDAR_AVG_WINDOW = 20;
 
-export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, modelCaptures, modelCapturing, accumCount, testing, testCount, testResult, trainingState, trainProgress, trainResult, trainError, onModelAction, lidarMm }) {
+export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, modelCaptures, modelCapturing, accumCount, testing, testCount, testResult, trainingState, trainProgress, trainResult, trainError, sweepsPerCapture = 40, onSweepsChange, stopFreq, onModelAction, lidarMm }) {
   const [modelName, setModelName] = useState('');
   const lidarBuf = useRef([]);
   const [lidarAvg, setLidarAvg] = useState(null);
@@ -21,11 +22,16 @@ export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, m
   const canActivate = isConnected && sdrConnected;
   const captureCount = modelCaptures.length;
 
-  const allDistances = modelCaptures.flatMap(c => c.samples.map(s => s.lidar_standoff_mm));
-  const totalSamples = allDistances.length;
-  const distRange = totalSamples > 0
-    ? { min: Math.min(...allDistances), max: Math.max(...allDistances) }
-    : null;
+  const totalSamples = modelCaptures.reduce((n, c) => n + c.samples.length, 0);
+  const coverage = analyzeCoverage(modelCaptures, stopFreq);
+  const { limits } = coverage;
+
+  // Spacing verdict against the alpha=3 aliasing limit at the top of the band
+  const gapVerdict = coverage.maxGap == null ? null
+    : coverage.maxGap <= limits.goodMm ? { tone: 'good', label: 'well sampled' }
+    : coverage.maxGap <= limits.aliasMm ? { tone: 'warn', label: 'coarse but unaliased' }
+    : { tone: 'bad', label: 'aliases triple-bounce' };
+  const toneClass = { good: 'text-green-400', warn: 'text-yellow-400', bad: 'text-red-400' };
 
   return (
     <>
@@ -93,15 +99,33 @@ export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, m
           </div>
           <div className="flex flex-col gap-0.5 text-left min-w-0">
             <span className="text-sm font-semibold text-white">
-              {modelCapturing ? `Capturing ${accumCount}/5` : 'Capture Background'}
+              {modelCapturing ? `Capturing ${accumCount}/${sweepsPerCapture}` : 'Capture Position'}
             </span>
             <span className="text-xs text-[#555555] leading-relaxed">
-              {modelCapturing ? 'Collecting sweeps...' :
+              {modelCapturing ? 'Hold still — averaging sweeps...' :
                !sfcwRunning ? 'Start session first' :
-               `${captureCount} sample${captureCount !== 1 ? 's' : ''} captured`}
+               `${captureCount} position${captureCount !== 1 ? 's' : ''} captured`}
             </span>
           </div>
         </button>
+
+        <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl border border-white/8 bg-[#0a0a0a]/60">
+          <div className="flex flex-col gap-0.5 min-w-0">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">Sweeps / position</span>
+            <span className="text-[9px] text-white/30">
+              +{(10 * Math.log10(sweepsPerCapture)).toFixed(1)} dB noise rejection
+            </span>
+          </div>
+          <input
+            type="number"
+            min={1}
+            max={500}
+            value={sweepsPerCapture}
+            disabled={modelCapturing}
+            onChange={e => onSweepsChange && onSweepsChange(e.target.value)}
+            className="w-16 px-2 py-1 rounded-lg text-xs font-mono text-right bg-[#0a0a0a] border border-white/10 text-white outline-none focus:border-[#a78bfa]/50 disabled:opacity-40"
+          />
+        </div>
 
         <div className="grid grid-cols-2 gap-2">
           <button
@@ -142,31 +166,62 @@ export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, m
         </div>
       </Section>
 
-      <Section label="Training Data">
+      <Section label="Coverage">
         <div className="grid grid-cols-2 gap-2">
-          <InfoTile label="Captures" value={`${captureCount} (${totalSamples})`} />
-          <InfoTile label="Range" value={distRange ? `${((distRange.max - distRange.min) / 10).toFixed(1)} cm` : '—'} />
+          <InfoTile label="Positions" value={`${captureCount} (${totalSamples})`} />
+          <InfoTile label="Span" value={coverage.spanMm ? `${(coverage.spanMm / 10).toFixed(1)} cm` : '—'} />
         </div>
-        {distRange && (
-          <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
-            {distRange.min.toFixed(1)} mm — {distRange.max.toFixed(1)} mm
+
+        {coverage.maxGap != null && (
+          <div className="flex flex-col gap-1.5 p-3 rounded-xl border border-white/8 bg-[#0a0a0a]/60">
+            <div className="flex justify-between text-[10px]">
+              <span className="text-[#555]">Median gap</span>
+              <span className="font-mono text-white">{coverage.medianGap.toFixed(1)} mm</span>
+            </div>
+            <div className="flex justify-between text-[10px]">
+              <span className="text-[#555]">Largest gap</span>
+              <span className={cn('font-mono font-bold', toneClass[gapVerdict.tone])}>
+                {coverage.maxGap.toFixed(1)} mm
+              </span>
+            </div>
+            <div className={cn('text-[9px] font-medium', toneClass[gapVerdict.tone])}>
+              {gapVerdict.label}
+            </div>
+            {gapVerdict.tone !== 'good' && (
+              <div className="text-[10px] text-[#a78bfa] font-mono pt-1 border-t border-white/5">
+                next → {coverage.worstGapAt.toFixed(1)} mm
+              </div>
+            )}
+            <div className="text-[9px] text-white/30 leading-relaxed pt-1 border-t border-white/5">
+              Keep gaps under {limits.goodMm.toFixed(1)} mm. Above {limits.aliasMm.toFixed(1)} mm
+              the triple-bounce echo aliases at {stopFreq / 1000} GHz. Irregular spacing is
+              fine — better than uniform — but avoid leaving one big hole.
+            </div>
           </div>
         )}
+
         {captureCount > 0 && (
-          <div className="flex flex-col gap-1 max-h-32 overflow-y-auto px-2">
-            {[...modelCaptures].reverse().map((c, ri) => {
-              const i = captureCount - 1 - ri;
-              const dists = c.samples.map(s => s.lidar_standoff_mm);
-              const avg = dists.reduce((s, v) => s + v, 0) / dists.length;
+          <div className="flex flex-col gap-1 max-h-40 overflow-y-auto px-1">
+            {coverage.positions.map((p) => {
+              const st = p.stats;
               return (
-                <div key={i} className="flex flex-col gap-0.5">
-                  <div className="flex justify-between text-[10px] text-white/50">
-                    <span>#{i + 1}</span>
-                    <span className="font-mono">{avg.toFixed(1)} mm</span>
-                  </div>
-                  <div className="text-[9px] text-white/30 font-mono pl-4">
-                    [{dists.map(d => d != null ? d.toFixed(1) : '?').join(', ')}]
-                  </div>
+                <div key={p.index} className="flex justify-between items-baseline gap-2 text-[10px] px-1 py-0.5 rounded hover:bg-white/5">
+                  <span className="text-white/40 shrink-0">#{p.index + 1}</span>
+                  <span className="font-mono text-white/80">
+                    {p.mm.toFixed(1)}
+                    {st && st.standoffStdMm > 0 && (
+                      <span className="text-white/25"> ±{st.standoffStdMm.toFixed(1)}</span>
+                    )}
+                  </span>
+                  <span className={cn(
+                    'font-mono shrink-0',
+                    !st ? 'text-white/20'
+                      : st.coherence > 0.95 ? 'text-green-400/70'
+                      : st.coherence > 0.85 ? 'text-yellow-400/70'
+                      : 'text-red-400/70'
+                  )}>
+                    {st ? `${st.snrDbAveraged.toFixed(0)} dB` : '—'}
+                  </span>
                 </div>
               );
             })}
@@ -252,12 +307,12 @@ export default function BgModelPanel({ isConnected, sdrConnected, sfcwRunning, m
       <Section label="Model">
         <button
           onClick={() => onModelAction('build')}
-          disabled={totalSamples < 5 || trainingState === 'training'}
+          disabled={captureCount < 5 || trainingState === 'training'}
           className={cn(
             'w-full px-3 py-2.5 rounded-lg text-xs font-medium transition-all border',
             trainingState === 'training'
               ? 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400'
-              : totalSamples >= 5
+              : captureCount >= 5
                 ? 'bg-[#a78bfa]/10 border-[#a78bfa]/30 text-[#a78bfa] hover:bg-[#a78bfa]/20'
                 : 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
           )}

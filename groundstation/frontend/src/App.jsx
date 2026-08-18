@@ -6,6 +6,7 @@ import { svdFilter, powerIteration } from './lib/svd';
 import { useSarWorker } from './hooks/useSarWorker';
 import { useBgModelWorker } from './hooks/useBgModelWorker';
 import { inferBgModel } from './lib/bgModelInfer';
+import { computeCaptureStats } from './lib/bgCaptureStats';
 
 const SPEED_OF_LIGHT = 299792458;
 
@@ -232,6 +233,17 @@ export default function App() {
 
   // Background Model state
   const [bgModelCaptures, setBgModelCaptures] = useState([]);
+  // Positions are static, so sweeps within a capture are replicas whose only
+  // job is coherent averaging. More of them buys 10*log10(N) dB of noise
+  // rejection; sweeping is cheap, repositioning by hand is not.
+  const [bgModelSweepsPerCapture, setBgModelSweepsPerCaptureState] = useState(
+    () => Number(localStorage.getItem('bgmodel_sweeps')) || 40
+  );
+  const setBgModelSweepsPerCapture = useCallback((v) => {
+    const n = Math.max(1, Math.min(500, Math.round(Number(v)) || 1));
+    localStorage.setItem('bgmodel_sweeps', String(n));
+    setBgModelSweepsPerCaptureState(n);
+  }, []);
   const [bgModelCapturing, setBgModelCapturing] = useState(false);
   const [bgModelAccumCount, setBgModelAccumCount] = useState(0);
   const bgModelAccumRef = useRef(null);
@@ -699,8 +711,9 @@ export default function App() {
         });
         setBgModelAccumCount(accum.samples.length);
 
-        if (accum.samples.length >= 5) {
-          setBgModelCaptures(prev => [...prev, { samples: accum.samples }]);
+        if (accum.samples.length >= accum.target) {
+          const capture = { samples: accum.samples, stats: computeCaptureStats(accum.samples) };
+          setBgModelCaptures(prev => [...prev, capture]);
           bgModelAccumRef.current = null;
           setBgModelCapturing(false);
           setBgModelAccumCount(0);
@@ -825,13 +838,26 @@ export default function App() {
       sendSdr({ cmd: 'sfcw_stop' });
     } else if (action === 'capture') {
       setBgModelCapturing(true);
-      bgModelAccumRef.current = { samples: [] };
+      bgModelAccumRef.current = { samples: [], target: bgModelSweepsPerCapture };
     } else if (action === 'undo') {
       setBgModelCaptures(prev => prev.slice(0, -1));
     } else if (action === 'clear') {
       setBgModelCaptures([]);
     } else if (action === 'build') {
-      const allSamples = bgModelCaptures.flatMap(c => c.samples);
+      // One training sample per position, using the coherent mean across that
+      // position's sweeps. The replicas are the same standoff measured N times,
+      // so feeding them individually adds no information — it just costs N x the
+      // epochs and regresses to this mean anyway.
+      const allSamples = bgModelCaptures.map(c => (
+        c.stats
+          ? {
+              h_cal_real: c.stats.h_mean_real,
+              h_cal_imag: c.stats.h_mean_imag,
+              lidar_standoff_mm: c.stats.standoffMm,
+              num_steps: c.stats.numSteps,
+            }
+          : c.samples[0]
+      )).filter(s => s && s.h_cal_real && s.lidar_standoff_mm != null);
       if (allSamples.length < 5) return;
       bgModelWorker.startTraining(allSamples, sfcwParams);
     } else if (action === 'save_model') {
@@ -849,19 +875,35 @@ export default function App() {
         if (res.success) bgModelWorker.reset();
       }).catch(err => console.error('Failed to save model:', err));
     } else if (action === 'export') {
+      if (bgModelCaptures.length === 0) return;
+      // v2 hoists the fields that repeat identically on every sweep and stores
+      // per-position stats alongside the raw sweeps, so the file is directly
+      // usable for offline fitting without recomputation.
+      const ref = bgModelCaptures[0].samples[0] || {};
       const exportData = {
-        version: 1,
+        version: 2,
         type: 'bgmodel_training_data',
         timestamp: new Date().toISOString(),
         sfcwParams: sfcwParams,
         lidarAntennaOffsetMm: LIDAR_ANTENNA_OFFSET_MM,
-        captures: bgModelCaptures,
+        sweepsPerCapture: bgModelSweepsPerCapture,
+        common: {
+          num_steps: ref.num_steps,
+          step_size: ref.step_size,
+          range_offset: ref.range_offset,
+        },
+        captures: bgModelCaptures.map(c => ({
+          stats: c.stats || computeCaptureStats(c.samples),
+          standoffs: c.samples.map(s => s.lidar_standoff_mm),
+          real: c.samples.map(s => s.h_cal_real),
+          imag: c.samples.map(s => s.h_cal_imag),
+        })),
       };
       const blob = new Blob([JSON.stringify(exportData)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `bgmodel_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      a.download = `bgmodel_${bgModelCaptures.length}pos_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
       a.click();
       URL.revokeObjectURL(url);
     } else if (action === 'import') {
@@ -875,9 +917,21 @@ export default function App() {
         reader.onload = (ev) => {
           try {
             const imported = JSON.parse(ev.target.result);
-            if (imported.type === 'bgmodel_training_data' && Array.isArray(imported.captures)) {
-              setBgModelCaptures(imported.captures);
-            }
+            if (imported.type !== 'bgmodel_training_data' || !Array.isArray(imported.captures)) return;
+            const common = imported.common || {};
+            const caps = imported.captures.map(c => {
+              // v1 stored a plain samples array; v2 stores hoisted columns
+              const samples = c.samples || c.real.map((r, i) => ({
+                h_cal_real: r,
+                h_cal_imag: c.imag[i],
+                lidar_standoff_mm: c.standoffs[i],
+                num_steps: common.num_steps,
+                step_size: common.step_size,
+                range_offset: common.range_offset,
+              }));
+              return { samples, stats: c.stats || computeCaptureStats(samples) };
+            });
+            setBgModelCaptures(caps);
           } catch (err) {
             console.error('Failed to import BG model data:', err);
           }
@@ -890,7 +944,7 @@ export default function App() {
       setBgModelTestResult(null);
       bgModelTestRef.current = { samples: [] };
     }
-  }, [sendSdr, sfcwRunning, bgModelCaptures, sfcwParams, bgModelWorker.startTraining, bgModelWorker.reset, bgModelWorker.resultRef]);
+  }, [sendSdr, sfcwRunning, bgModelCaptures, sfcwParams, bgModelSweepsPerCapture, bgModelWorker.startTraining, bgModelWorker.reset, bgModelWorker.resultRef]);
 
   // Rate counter interval
   const rateIntervalRef = useRef(null);
@@ -1052,6 +1106,8 @@ export default function App() {
         bgModelTrainProgress={bgModelWorker.progress}
         bgModelTrainResult={bgModelWorker.result}
         bgModelTrainError={bgModelWorker.error}
+        bgModelSweepsPerCapture={bgModelSweepsPerCapture}
+        onBgModelSweepsChange={setBgModelSweepsPerCapture}
         onBgModelAction={handleBgModelAction}
       />
       <Viewport
@@ -1092,6 +1148,7 @@ export default function App() {
         mapFocusAperture={mapFocusAperture}
         bgModelCaptures={bgModelCaptures}
         bgModelCapturing={bgModelCapturing}
+        bgModelStopFreq={sfcwParams.stopFreq}
       />
     </div>
   );
