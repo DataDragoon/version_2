@@ -44,8 +44,8 @@ IMU, LiDAR, Camera, and bladeRF SDR integrated. All stream to groundstation debu
 RF Calib panel provides signal generator + oscilloscope for bladeRF calibration (TX1/RX1).
 SFCW panel performs stepped-frequency sweeps (1–6 GHz default) with range profile + waterfall display.
 Both RF panels share port 9003 — starting an SFCW sweep auto-stops any active TX/RX in RF Calib.
-B-scan panel captures positions along an aperture and shares the SFCW panel's background
-model machinery (see below).
+C-scan panel rasters a 2D grid of positions over the target and shares the SFCW panel's
+background model machinery (see below).
 
 ## Background Subtraction — Groundstation Only (SFCW + B-scan)
 
@@ -64,7 +64,7 @@ Selecting either clears the other; "Clear BG" clears both. Subtraction is always
 the only mode.
 
 - SFCW live display: `App.jsx` `processedSfcwResult`.
-- B-scan: `lib/bscanBg.js` `applyBscanBg()`, shared by `processedBscanData` (B-scan +
+- C-scan: `lib/bscanBg.js` `applyBscanBg()`, shared by `processedBscanData` (C-scan +
   2D Map), `sarProcessedData` (SAR), and `alignedSvdData` (Aligned).
 
 **The model path is strictly better for B-scans.** A captured reference is only valid
@@ -86,15 +86,58 @@ Note `SfcwDisplay` recomputes its own range profile from `h_cal_real/imag` for
 windowing/range-comp, so any subtraction must write back into those fields — replacing
 only `magnitudes`/`distances` gets silently discarded. `applyBscanBg` does this.
 
-**Removed from the B-scan panel:** the SVD filter (the Aligned, SAR and 2D Map panels
+**Removed from the panel:** the SVD filter (the Aligned, SAR and 2D Map panels
 keep their own; `lib/svd.js` stays) and the Wall section. Wall standoff / thickness /
 permittivity were never doing refraction work in practice — εr defaulted to 1, so the
 distance correction was the identity and the only live effect was capping display depth
 at the wall thickness. That is now a single `maxDepth` field (cm, default 30) under
-Display, used by both `BscanDisplay` and `sar.worker.js`. B-scan export is v4; import
-still reads v3 and maps the old `wallThickness` onto `maxDepth`.
+Display, used by both `BscanDisplay` and `sar.worker.js`. Export is v5 (see the C-scan
+section); import still reads v3 and maps the old `wallThickness` onto `maxDepth`.
 Pi-side architecture: bladerf_driver.py (HAL) → sfcw_engine.py (sweep logic) → sdr_server.py (WebSocket).
 Next steps: OptiFlow pipeline, SAR reconstruction integration.
+
+## C-Scan Panel — 2D Raster (replaced the B-scan panel, 2026-08-20)
+
+The B-scan panel is gone; `CscanPanel.jsx` + `CscanDisplay.jsx` + `lib/cscanGrid.js`
+replace it. Panel id is `cscan` (was `bscan`). App-level state keeps its `bscan*` names
+(`bscanData`, `bscanParams`, …) because the underlying record is still one B-scan trace
+per position — only the panel and its geometry changed.
+
+**Grid.** `bscanParams` is now `{ hCount, hStep, vCount, vStep, maxDepth, gateStart,
+gateEnd, metric }`. `stepSize` / `numPositions` are gone; SAR and the 2D Map are 1D and
+read `stepSize: hStep` (injected in `sarParams` / `mapStepSize`) with the position count
+taken from the data length as before. The Scan Grid section sits between Session and
+Capture so the rectangle is described before any sweep is tagged.
+
+**Snake raster order** (`lib/cscanGrid.js` `cellForIndex`). Capture starts at the
+bottom-left cell, sweeps the bottom row left→right, steps up one row, sweeps right→left,
+steps up, and repeats. Verified: a 3×2 grid captures (0,0) (4,0) (8,0) (8,6) (4,6) (0,6)
+for hStep 4 / vStep 6. Every position stores `grid_ix`, `grid_iy`, `x_cm`, `y_cm`,
+resolved from the capture index at capture time in the `sfcw_result` handler (via
+`bscanParamsRef`), so editing the grid afterwards never relabels existing cells. Lidar
+standoff is captured per cell exactly as before.
+
+**Display.** The viewport is Live Sweep (top) over C-Scan Grid (left) + the selected
+row's B-scan (right). The grid is a plan view holding the physical aspect ratio, colour =
+`gatedIntensity()` over the depth gate (peak / energy / mean), drawn live as cells fill.
+Uncaptured cells are outlined and empty; a cell captured with no range bin inside the gate
+is mid-grey, distinct from uncaptured. The next target pulses cyan, the snake path is
+dashed over the captured cells, and clicking a cell picks the row shown in the B-scan pane
+(that pane sorts the row by `grid_ix`, so a right→left row still reads left→right).
+
+**Colour scaling** is one `{ dynamic, min, max }` object shared by both panes. Dynamic
+tracks the captured cells; switching to manual seeds the sliders from the current dynamic
+limits so colours do not jump, then the two dB sliders drive both images live. The sliders
+are disabled and dimmed while dynamic is on, and the colour bar turns amber and reads
+MANUAL when it is off.
+
+**Export is v5** (`cscan_<ts>.json`): grid params plus per-position `grid_ix` / `grid_iy` /
+`x_cm` / `y_cm`. Import accepts v3–v5; a v4 (or earlier) linear scan maps onto a one-row
+grid (`hCount = numPositions`, `hStep = stepSize`, `vCount = 1`).
+
+**Known limitation:** SAR and the 2D Map still treat the capture sequence as a single line.
+With `vCount = 1` that is exactly the old behaviour; with more rows their input is a
+zig-zag path and the reconstruction is not meaningful until they are made grid-aware.
 
 ## BG Model — Capture Protocol and Findings
 

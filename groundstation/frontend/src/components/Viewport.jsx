@@ -8,6 +8,7 @@ import ReceiverDisplay from './ReceiverDisplay';
 import FftDisplay from './FftDisplay';
 import SfcwDisplay from './SfcwDisplay';
 import BscanDisplay from './BscanDisplay';
+import CscanDisplay from './CscanDisplay';
 import SarDisplay from './SarDisplay';
 import MapDisplay from './MapDisplay';
 import BgModelDisplay from './BgModelDisplay';
@@ -35,6 +36,7 @@ export default function Viewport({
   bscanCapturing,
   bscanScaleMode,
   bscanDisplayMode,
+  bscanScaleRange,
   sarResult,
   sarProgress,
   sarScaleMode,
@@ -52,6 +54,9 @@ export default function Viewport({
   bgModelStopFreq,
 }) {
   const [bscanLiveRange, setBscanLiveRange] = useState({ min: 0, max: 0.3 });
+  // Which C-scan cell the B-scan pane is showing the row for; null follows the
+  // most recent capture.
+  const [selectedCell, setSelectedCell] = useState(null);
 
   if (!activePanel) {
     return (
@@ -225,16 +230,33 @@ export default function Viewport({
     );
   }
 
-  if (activePanel === 'bscan') {
-    const targetScanShifts = bscanData.map(() => 0);
-    const targetBgShift = 0;
+  if (activePanel === 'cscan') {
     const showLiveSweep = sfcwRunning || sfcwResult;
+
+    // The cell driving the B-scan pane: whatever was clicked, else the last
+    // capture. A selection is dropped once the grid shrinks past it.
+    const last = bscanData.length > 0 ? bscanData[bscanData.length - 1] : null;
+    const inGrid = selectedCell
+      && selectedCell.ix < bscanParams.hCount && selectedCell.iy < bscanParams.vCount;
+    const activeCell = (inGrid ? selectedCell : null)
+      || (last && last.grid_ix != null ? { ix: last.grid_ix, iy: last.grid_iy } : null);
+
+    // One row of the raster, laid out left-to-right regardless of which way the
+    // snake swept it. Data with no grid indices (an imported linear scan) is
+    // shown whole.
+    const hasGrid = bscanData.some(p => p.grid_iy != null);
+    const rowData = (hasGrid && activeCell)
+      ? bscanData.filter(p => p.grid_iy === activeCell.iy).sort((a, b) => a.grid_ix - b.grid_ix)
+      : bscanData;
+    const rowLabel = (hasGrid && activeCell)
+      ? `B-Scan · Row ${activeCell.iy + 1}`
+      : 'B-Scan';
 
     return (
       <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
-        {/* Live sweep range profile (top) — shown during B-scan session */}
+        {/* Live sweep range profile (top) — shown during a C-scan session */}
         {showLiveSweep && (
-          <div className="relative flex flex-col border-b border-white/5" style={{ flex: '0 0 35%' }}>
+          <div className="relative flex flex-col border-b border-white/5" style={{ flex: '0 0 32%' }}>
             <PaneHeader icon={Radar} label="Live Sweep" active={sfcwRunning} color="orange" />
             <div className="flex-1 min-h-0 relative overflow-hidden">
               <SfcwDisplay
@@ -251,31 +273,52 @@ export default function Viewport({
             </div>
           </div>
         )}
-        {/* B-scan image (bottom) */}
-        <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
-          <PaneHeader icon={ScanLine} label="B-Scan Imaging" active={bscanData.length > 0} color="cyan" />
-          <div className="flex-1 min-h-0 relative overflow-hidden">
-            {bscanData.length > 0 && (
-              <div className="absolute inset-0 pointer-events-none">
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#6B9BD2]/4 blur-[80px] rounded-full" />
-              </div>
-            )}
-            <BscanDisplay
-              scanData={bscanData}
-              bgDisplay={bscanBgDisplay}
-              params={bscanParams}
-              capturing={bscanCapturing}
-              sfcwProgress={sfcwProgress}
-              scaleMode={bscanScaleMode}
-              displayMode={bscanDisplayMode}
-              targetShifts={targetScanShifts}
-              targetBgShift={targetBgShift}
-            />
-            {bscanData.length === 0 && !showLiveSweep && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No scan data</span>
-              </div>
-            )}
+
+        {/* C-scan plan view (left) + the selected row's B-scan (right) */}
+        <div className="flex min-h-0" style={{ flex: '1 1 0%' }}>
+          <div className="relative flex flex-col min-w-0 border-r border-white/5" style={{ flex: '1.35 1 0%' }}>
+            <PaneHeader icon={Grid3x3} label="C-Scan Grid" active={bscanData.length > 0} color="cyan" />
+            <div className="flex-1 min-h-0 relative overflow-hidden">
+              {bscanData.length > 0 && (
+                <div className="absolute inset-0 pointer-events-none">
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#22d3ee]/4 blur-[80px] rounded-full" />
+                </div>
+              )}
+              <CscanDisplay
+                scanData={bscanData}
+                params={bscanParams}
+                capturing={bscanCapturing}
+                sfcwProgress={sfcwProgress}
+                scaleMode={bscanScaleMode}
+                scaleRange={bscanScaleRange}
+                nextIndex={bscanData.length}
+                selectedCell={activeCell}
+                onSelectCell={setSelectedCell}
+              />
+            </div>
+          </div>
+
+          <div className="relative flex flex-col min-w-0" style={{ flex: '1 1 0%' }}>
+            <PaneHeader icon={ScanLine} label={rowLabel} active={rowData.length > 0} color="cyan" />
+            <div className="flex-1 min-h-0 relative overflow-hidden">
+              <BscanDisplay
+                scanData={rowData}
+                bgDisplay={bscanBgDisplay}
+                params={bscanParams}
+                capturing={bscanCapturing}
+                sfcwProgress={sfcwProgress}
+                scaleMode={bscanScaleMode}
+                displayMode={bscanDisplayMode}
+                scaleRange={bscanScaleRange}
+                targetShifts={rowData.map(() => 0)}
+                targetBgShift={0}
+              />
+              {rowData.length === 0 && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No scan data</span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

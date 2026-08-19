@@ -9,6 +9,7 @@ import { inferBgModel } from './lib/bgModelInfer';
 import { computeCaptureStats } from './lib/bgCaptureStats';
 import { computeRangeProfile } from './lib/rangeProfile';
 import { applyBscanBg, bgForStandoff, freqGrid } from './lib/bscanBg';
+import { cellForIndex } from './lib/cscanGrid';
 
 const SPEED_OF_LIGHT = 299792458;
 
@@ -228,15 +229,27 @@ export default function App() {
   // Lidar accumulator for averaging during SFCW sweeps
   const LIDAR_ANTENNA_OFFSET_MM = 315;
   const lidarAccumRef = useRef([]);
+  // C-scan raster: a hCount x vCount grid captured along a snake path (see
+  // lib/cscanGrid.js). vCount = 1 degenerates to the old single-line B-scan.
   const [bscanParams, setBscanParams] = useState({
-    stepSize: 5,
-    numPositions: 20,
+    hCount: 20,
+    hStep: 5,
+    vCount: 1,
+    vStep: 5,
     maxDepth: 30,
+    gateStart: 2,
+    gateEnd: 15,
+    metric: 'peak',
   });
+  // The SDR message handler is mounted once, so it reads the grid through a ref.
+  const bscanParamsRef = useRef(bscanParams);
+  bscanParamsRef.current = bscanParams;
 
   // B-scan display toggles
   const [bscanScaleMode, setBscanScaleMode] = useState('linear');
   const [bscanDisplayMode, setBscanDisplayMode] = useState('color');
+  // Colour limits: dynamic follows the data, manual pins both ends live.
+  const [bscanScaleRange, setBscanScaleRange] = useState({ dynamic: true, min: -90, max: -20 });
 
   const bscanBgSource = useMemo(
     () => ({ bgRef: bscanBgRef, bgModel: bscanBgModel }),
@@ -383,7 +396,9 @@ export default function App() {
     return svdFilter(sarProcessedData, sarSvdK, sarSvdStrength);
   }, [sarProcessedData, sarSvdEnabled, sarSvdK, sarSvdStrength]);
 
-  const sarParams = useMemo(() => ({ ...bscanParams, aperture: sarAperture, coherent: sarCoherent, startFreq: sfcwParams.startFreq, svdEnabled: sarSvdEnabled, svdK: sarSvdK, svdStrength: sarSvdStrength }), [bscanParams, sarAperture, sarCoherent, sfcwParams.startFreq, sarSvdEnabled, sarSvdK, sarSvdStrength]);
+  // SAR and the 2D Map are one-dimensional: they read the horizontal step as the
+  // aperture spacing and treat the capture sequence as a line.
+  const sarParams = useMemo(() => ({ ...bscanParams, stepSize: bscanParams.hStep, aperture: sarAperture, coherent: sarCoherent, startFreq: sfcwParams.startFreq, svdEnabled: sarSvdEnabled, svdK: sarSvdK, svdStrength: sarSvdStrength }), [bscanParams, sarAperture, sarCoherent, sfcwParams.startFreq, sarSvdEnabled, sarSvdK, sarSvdStrength]);
   const { sarResult, sarProgress } = useSarWorker(sarBscanInput, sarParams);
 
   // 2D Map uses the same processed B-scan as the main B-scan panel, optionally with its own SVD
@@ -508,19 +523,28 @@ export default function App() {
         setSfcwBgCapturing(false);
       }
 
-      // B-scan capture: the first sweep after the button press is the position
+      // C-scan capture: the first sweep after the button press is the cell.
+      // The cell is resolved from the capture index along the snake path and
+      // stored on the record, so editing the grid later never relabels it.
       if (bscanCaptureRef.current) {
-        const posData = {
-          magnitudes: [...msg.magnitudes],
-          distances: [...msg.distances],
-          h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
-          h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
-          num_steps: msg.num_steps,
-          step_size: msg.step_size,
-          range_offset: msg.range_offset,
-          lidar_standoff_mm: standoffMm,
-        };
-        setBscanData(prev => [...prev, posData]);
+        const grid = bscanParamsRef.current;
+        setBscanData(prev => {
+          const cell = cellForIndex(prev.length, grid.hCount);
+          return [...prev, {
+            magnitudes: [...msg.magnitudes],
+            distances: [...msg.distances],
+            h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
+            h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
+            num_steps: msg.num_steps,
+            step_size: msg.step_size,
+            range_offset: msg.range_offset,
+            lidar_standoff_mm: standoffMm,
+            grid_ix: cell.ix,
+            grid_iy: cell.iy,
+            x_cm: cell.ix * grid.hStep,
+            y_cm: cell.iy * grid.vStep,
+          }];
+        });
         bscanCaptureRef.current = false;
         setBscanCapturing(false);
       }
@@ -613,7 +637,7 @@ export default function App() {
       setBscanData(prev => prev.slice(0, -1));
     } else if (action === 'export') {
       const exportData = {
-        version: 4,
+        version: 5,
         timestamp: new Date().toISOString(),
         params: bscanParams,
         sfcwParams: sfcwParams,
@@ -626,7 +650,7 @@ export default function App() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `bscan_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      a.download = `cscan_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
       a.click();
       URL.revokeObjectURL(url);
     } else if (action === 'import') {
@@ -647,14 +671,26 @@ export default function App() {
                 setBscanBgRef(imported.bgRef);
               }
               if (imported.params) {
-                // v3 and earlier stored the depth extent as a wall thickness.
-                const { stepSize, numPositions, maxDepth, wallThickness } = imported.params;
+                // v3 and earlier stored the depth extent as a wall thickness;
+                // v4 and earlier were a single line (stepSize / numPositions),
+                // which maps onto a one-row grid.
+                const {
+                  stepSize, numPositions, maxDepth, wallThickness,
+                  hCount, hStep, vCount, vStep, gateStart, gateEnd, metric,
+                } = imported.params;
                 const depth = maxDepth != null ? maxDepth : wallThickness;
                 setBscanParams(prev => ({
                   ...prev,
-                  ...(stepSize != null && { stepSize }),
-                  ...(numPositions != null && { numPositions }),
                   ...(depth != null && { maxDepth: depth }),
+                  ...(stepSize != null && { hStep: stepSize }),
+                  ...(numPositions != null && { hCount: numPositions, vCount: 1 }),
+                  ...(hCount != null && { hCount }),
+                  ...(hStep != null && { hStep }),
+                  ...(vCount != null && { vCount }),
+                  ...(vStep != null && { vStep }),
+                  ...(gateStart != null && { gateStart }),
+                  ...(gateEnd != null && { gateEnd }),
+                  ...(metric != null && { metric }),
                 }));
               }
             }
@@ -884,6 +920,8 @@ export default function App() {
         onBscanScaleModeChange={setBscanScaleMode}
         bscanDisplayMode={bscanDisplayMode}
         onBscanDisplayModeChange={setBscanDisplayMode}
+        bscanScaleRange={bscanScaleRange}
+        onBscanScaleRangeChange={setBscanScaleRange}
         sarBscanData={sarBscanInput}
         sarResult={sarResult}
         sarProgress={sarProgress}
@@ -959,6 +997,7 @@ export default function App() {
         bscanCapturing={bscanCapturing}
         bscanScaleMode={bscanScaleMode}
         bscanDisplayMode={bscanDisplayMode}
+        bscanScaleRange={bscanScaleRange}
         sarResult={sarResult}
         sarProgress={sarProgress}
         sarScaleMode={sarScaleMode}
@@ -968,7 +1007,7 @@ export default function App() {
         mapGateEnd={mapGateEnd}
         mapDynRange={mapDynRange}
         mapMetric={mapMetric}
-        mapStepSize={bscanParams.stepSize}
+        mapStepSize={bscanParams.hStep}
         mapFocusEnabled={mapFocusEnabled}
         mapFocusAperture={mapFocusAperture}
         bgModelCaptures={bgModelCaptures}

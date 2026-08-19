@@ -5,7 +5,7 @@ import OptiFlowPanel from './OptiFlowPanel';
 import RfCalibPanel from './RfCalibPanel';
 import BgModelPanel from './BgModelPanel';
 import SfcwPanel from './SfcwPanel';
-import BscanPanel from './BscanPanel';
+import CscanPanel from './CscanPanel';
 import SarPanel from './SarPanel';
 import MapPanel from './MapPanel';
 
@@ -15,7 +15,7 @@ const PANELS = [
   { id: 'rfcalib',   label: 'RF Calibrate', icon: Radio },
   { id: 'sfcw',      label: 'SFCW',      icon: Radar },
   { id: 'bgmodel',   label: 'BG Model',  icon: Brain },
-  { id: 'bscan',     label: 'B-Scan',    icon: ScanLine },
+  { id: 'cscan',     label: 'C-Scan',    icon: ScanLine },
   { id: 'sar',       label: 'SAR',       icon: Grid3x3 },
   { id: 'map',       label: '2D Map',    icon: Map },
 ];
@@ -76,6 +76,8 @@ export default function Sidebar({
   onBscanScaleModeChange,
   bscanDisplayMode,
   onBscanDisplayModeChange,
+  bscanScaleRange,
+  onBscanScaleRangeChange,
   sarBscanData,
   sarResult,
   sarProgress,
@@ -303,8 +305,8 @@ export default function Sidebar({
                   onClearBg={onClearSfcwBg}
                 />
               )}
-              {activePanel === 'bscan' && (
-                <BscanPanel
+              {activePanel === 'cscan' && (
+                <CscanPanel
                   isConnected={isConnected}
                   sdrConnected={sdrConnected}
                   sfcwRunning={sfcwRunning}
@@ -319,6 +321,8 @@ export default function Sidebar({
                   onScaleModeChange={onBscanScaleModeChange}
                   displayMode={bscanDisplayMode}
                   onDisplayModeChange={onBscanDisplayModeChange}
+                  scaleRange={bscanScaleRange}
+                  onScaleRangeChange={onBscanScaleRangeChange}
                   lidarMm={lidarMm}
                   lidarOffsetMm={lidarOffsetMm}
                   bgRef={bscanBgRef}

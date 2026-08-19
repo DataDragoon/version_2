@@ -1,11 +1,17 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
+import { cellForIndex, gridStats, buildCscanGrid } from '@/lib/cscanGrid';
 
 const LIDAR_AVG_WINDOW = 20;
 
-export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, scanData, scanCapturing, bgApplied, onBgAppliedChange, onScanAction, params, onParamsChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange, lidarMm, lidarOffsetMm, bgRef, bgModel, bgCapturing, onCaptureBg, onLoadBgModel, onClearBg }) {
-  const { stepSize, numPositions, maxDepth } = params;
+export default function CscanPanel({
+  isConnected, sdrConnected, sfcwRunning, scanData, scanCapturing, bgApplied, onBgAppliedChange,
+  onScanAction, params, onParamsChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange,
+  scaleRange, onScaleRangeChange, lidarMm, lidarOffsetMm, bgRef, bgModel, bgCapturing,
+  onCaptureBg, onLoadBgModel, onClearBg,
+}) {
+  const { hStep, hCount, vStep, vCount, maxDepth, gateStart, gateEnd, metric } = params;
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
@@ -56,7 +62,23 @@ export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sca
 
   const canActivate = isConnected && sdrConnected;
   const captured = scanData.length;
-  const apertureLength = stepSize * (numPositions - 1);
+  const stats = gridStats(params);
+  const gridFull = captured >= stats.total;
+
+  // Where the next capture lands on the snake path.
+  const next = gridFull ? null : cellForIndex(captured, hCount);
+  const nextLabel = next
+    ? `col ${next.ix + 1}/${hCount}, row ${next.iy + 1}/${vCount}  ·  (${(next.ix * hStep).toFixed(1)}, ${(next.iy * vStep).toFixed(1)}) cm`
+    : 'Grid complete';
+  const rowDir = next ? (next.iy % 2 === 0 ? 'left → right' : 'right → left') : null;
+
+  // Handing over from dynamic to manual should not jump the colours, so the
+  // sliders start wherever the dynamic limits currently sit.
+  const seedManualRange = () => {
+    const grid = buildCscanGrid(scanData, params);
+    if (!isFinite(grid.min) || !isFinite(grid.max)) return { min: scaleRange.min, max: scaleRange.max };
+    return { min: Math.round(grid.min), max: Math.max(Math.round(grid.max), Math.round(grid.min) + 1) };
+  };
 
   return (
     <>
@@ -98,50 +120,112 @@ export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sca
         </button>
       </Section>
 
+      {/* Scan grid — describes the rectangle to raster before any capture starts */}
+      <Section label="Scan Grid">
+        <div className="px-1 text-[9px] font-medium uppercase tracking-wider text-[#555555]">Horizontal</div>
+        <div className="grid grid-cols-2 gap-2">
+          <EditableField
+            label="H Positions"
+            value={hCount}
+            unit="ct"
+            onChange={(v) => update('hCount', Math.round(v))}
+            min={1}
+            max={200}
+          />
+          <EditableField
+            label="H Step"
+            value={hStep}
+            unit="cm"
+            onChange={(v) => update('hStep', v)}
+            min={0.5}
+            max={50}
+          />
+        </div>
+        <div className="px-1 pt-1 text-[9px] font-medium uppercase tracking-wider text-[#555555]">Vertical</div>
+        <div className="grid grid-cols-2 gap-2">
+          <EditableField
+            label="V Positions"
+            value={vCount}
+            unit="ct"
+            onChange={(v) => update('vCount', Math.round(v))}
+            min={1}
+            max={200}
+          />
+          <EditableField
+            label="V Step"
+            value={vStep}
+            unit="cm"
+            onChange={(v) => update('vStep', v)}
+            min={0.5}
+            max={50}
+          />
+        </div>
+
+        {/* Sweep rectangle stats */}
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          <InfoTile label="Sweep W × H" value={`${stats.width.toFixed(1)} × ${stats.height.toFixed(1)} cm`} />
+          <InfoTile label="Area" value={`${stats.area.toFixed(0)} cm²`} />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <InfoTile label="Total Cells" value={`${stats.total}`} />
+          <InfoTile label="Captured" value={`${captured} / ${stats.total}`} />
+        </div>
+
+        <div className="px-2 py-1.5 rounded-lg bg-[#0a0a0a]/60 border border-white/5 text-[9px] text-white/40 leading-relaxed">
+          Raster starts bottom-left and snakes: row 1 left → right, row 2 right → left, and so on.
+        </div>
+      </Section>
+
       {/* Capture controls — only available when session is running */}
       <Section label="Capture">
         <button
           onClick={() => onScanAction('add_scan')}
-          disabled={!sfcwRunning || scanCapturing || captured >= numPositions}
+          disabled={!sfcwRunning || scanCapturing || gridFull}
           className={cn(
             'group relative flex items-center gap-3 w-full p-4 rounded-2xl border',
             'transition-all duration-500 cursor-pointer',
             'disabled:cursor-not-allowed disabled:opacity-40',
-            sfcwRunning && !scanCapturing && captured < numPositions
-              ? 'bg-[#6B9BD2]/8 border-[#6B9BD2]/30 hover:border-[#6B9BD2]/50'
+            sfcwRunning && !scanCapturing && !gridFull
+              ? 'bg-[#22d3ee]/8 border-[#22d3ee]/30 hover:border-[#22d3ee]/50'
               : 'bg-[#0a0a0a]/50 border-white/5',
           )}
         >
           <div className={cn(
             'flex items-center justify-center w-10 h-10 rounded-xl shrink-0 transition-all duration-500',
-            sfcwRunning && !scanCapturing && captured < numPositions ? 'bg-[#6B9BD2]/15' : 'bg-white/5',
+            sfcwRunning && !scanCapturing && !gridFull ? 'bg-[#22d3ee]/15' : 'bg-white/5',
           )}>
             {scanCapturing ? (
-              <div className="w-3 h-3 rounded-full border-2 border-[#6B9BD2] border-t-transparent animate-spin" />
+              <div className="w-3 h-3 rounded-full border-2 border-[#22d3ee] border-t-transparent animate-spin" />
             ) : (
-              <svg className="w-4 h-4 text-[#6B9BD2]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <svg className="w-4 h-4 text-[#22d3ee]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
               </svg>
             )}
           </div>
           <div className="flex flex-col gap-0.5 text-left min-w-0">
             <span className="text-sm font-semibold text-white">
-              {scanCapturing ? 'Capturing...' : `Add Scan ${captured + 1}`}
+              {scanCapturing ? 'Capturing...' : gridFull ? 'Grid Complete' : `Capture Cell ${captured + 1}`}
             </span>
             <span className="text-xs text-[#555555] leading-relaxed">
               {scanCapturing ? 'Waiting for next sweep' :
-               captured >= numPositions ? 'Scan complete' :
-               !sfcwRunning ? 'Start session first' :
-               `At ${(captured * stepSize).toFixed(1)} cm`}
+               gridFull ? `All ${stats.total} cells captured` :
+               !sfcwRunning ? 'Start session first' : nextLabel}
             </span>
           </div>
         </button>
 
+        {!gridFull && rowDir && (
+          <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-[#22d3ee]/5 border border-[#22d3ee]/20">
+            <span className="text-[9px] font-medium uppercase tracking-wider text-[#555555]">Row {next.iy + 1} sweeps</span>
+            <span className="text-[10px] font-mono text-[#22d3ee]">{rowDir}</span>
+          </div>
+        )}
+
         {captured > 0 && (
           <div className="relative h-1.5 rounded-full bg-white/5 overflow-hidden">
             <div
-              className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-[#6B9BD2] to-[#8BB8E8] transition-all duration-300"
-              style={{ width: `${(captured / numPositions) * 100}%` }}
+              className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-[#22d3ee] to-[#67e8f9] transition-all duration-300"
+              style={{ width: `${Math.min(100, (captured / Math.max(1, stats.total)) * 100)}%` }}
             />
           </div>
         )}
@@ -166,34 +250,10 @@ export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sca
             Undo Last
           </button>
         </div>
-      </Section>
 
-      <Section label="Aperture">
-        <div className="grid grid-cols-2 gap-2">
-          <EditableField
-            label="Step"
-            value={stepSize}
-            unit="cm"
-            onChange={(v) => update('stepSize', v)}
-            min={0.5}
-            max={50}
-          />
-          <EditableField
-            label="Positions"
-            value={numPositions}
-            unit="ct"
-            onChange={(v) => update('numPositions', Math.round(v))}
-            min={2}
-            max={200}
-          />
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <InfoTile label="Aperture" value={`${apertureLength.toFixed(1)} cm`} />
-          <InfoTile label="Captured" value={`${captured} / ${numPositions}`} />
-        </div>
         {captured > 0 && scanData[captured - 1].lidar_standoff_mm != null && (
-          <div className="px-2 py-1 text-[9px] text-white/40 leading-relaxed">
-            Last lidar standoff: {scanData[captured - 1].lidar_standoff_mm.toFixed(1)} mm
+          <div className="px-2 text-[9px] text-white/40 leading-relaxed">
+            Last cell standoff: {scanData[captured - 1].lidar_standoff_mm.toFixed(1)} mm
           </div>
         )}
       </Section>
@@ -241,6 +301,46 @@ export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sca
         </div>
       </Section>
 
+      {/* Depth slice — the C-scan collapses the depth axis over this gate */}
+      <Section label="Depth Slice">
+        <SliderRow
+          label="Gate start"
+          value={gateStart}
+          unit="cm"
+          min={0}
+          max={Math.max(gateEnd - 0.5, 0.5)}
+          step={0.5}
+          accent="cyan"
+          onChange={(v) => update('gateStart', v)}
+        />
+        <SliderRow
+          label="Gate end"
+          value={gateEnd}
+          unit="cm"
+          min={Math.min(gateStart + 0.5, gateEnd)}
+          max={Math.max(maxDepth, gateEnd)}
+          step={0.5}
+          accent="cyan"
+          onChange={(v) => update('gateEnd', v)}
+        />
+        <div className="flex gap-2">
+          {['peak', 'energy', 'mean'].map((m) => (
+            <button
+              key={m}
+              onClick={() => update('metric', m)}
+              className={cn(
+                'flex-1 px-2 py-2 rounded-lg text-xs font-medium capitalize transition-all border',
+                metric === m
+                  ? 'bg-[#22d3ee]/10 border-[#22d3ee]/30 text-[#22d3ee]'
+                  : 'bg-white/5 border-white/10 text-white/50 hover:text-white/80'
+              )}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+      </Section>
+
       <Section label="Display">
         <div className="flex gap-2">
           <button
@@ -260,10 +360,59 @@ export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sca
           label="Max Depth"
           value={maxDepth}
           unit="cm"
-          onChange={(v) => update('maxDepth', v)}
+          onChange={(v) => onParamsChange({
+            ...params,
+            maxDepth: v,
+            gateEnd: Math.min(gateEnd, v),
+            gateStart: Math.min(gateStart, Math.max(0, v - 0.5)),
+          })}
           min={1}
           max={500}
         />
+      </Section>
+
+      {/* Colour scaling — dynamic tracks the data, manual pins both ends live */}
+      <Section label="Scaling">
+        <button
+          onClick={() => onScaleRangeChange(scaleRange.dynamic
+            ? { dynamic: false, ...seedManualRange() }
+            : { ...scaleRange, dynamic: true })}
+          className={cn(
+            'w-full px-3 py-2.5 rounded-lg text-xs font-medium transition-all border',
+            scaleRange.dynamic
+              ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
+              : 'bg-[#f59e0b]/10 border-[#f59e0b]/30 text-[#f59e0b]'
+          )}
+        >
+          {scaleRange.dynamic ? '● Dynamic Scaling' : 'Manual Scaling'}
+        </button>
+        <SliderRow
+          label="Min"
+          value={scaleRange.min}
+          unit="dB"
+          min={-140}
+          max={0}
+          step={1}
+          accent="amber"
+          disabled={scaleRange.dynamic}
+          onChange={(v) => onScaleRangeChange({ ...scaleRange, min: Math.min(v, scaleRange.max - 1) })}
+        />
+        <SliderRow
+          label="Max"
+          value={scaleRange.max}
+          unit="dB"
+          min={-140}
+          max={0}
+          step={1}
+          accent="amber"
+          disabled={scaleRange.dynamic}
+          onChange={(v) => onScaleRangeChange({ ...scaleRange, max: Math.max(v, scaleRange.min + 1) })}
+        />
+        <div className="px-2 text-[9px] text-white/40 leading-relaxed">
+          {scaleRange.dynamic
+            ? 'Colour limits track the captured cells. Turn off to pin them.'
+            : 'Colour limits pinned — both the C-scan and B-scan panes update live.'}
+        </div>
       </Section>
 
       {/* Background — same two mutually exclusive sources as the SFCW panel */}
@@ -355,9 +504,9 @@ export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sca
         )}
         <div className="px-2 text-[9px] text-white/40 leading-relaxed">
           {bgModel
-            ? 'Model background, inferred per position from that position’s own lidar standoff.'
+            ? 'Model background, inferred per cell from that cell’s own lidar standoff.'
             : bgRef
-              ? 'Reference sweep, phase-aligned to each position by lidar standoff.'
+              ? 'Reference sweep, phase-aligned to each cell by lidar standoff.'
               : 'Capture a reference sweep or load a model to subtract the background.'}
         </div>
       </Section>
@@ -386,6 +535,33 @@ export default function BscanPanel({ isConnected, sdrConnected, sfcwRunning, sca
       </Section>
 
     </>
+  );
+}
+
+function SliderRow({ label, value, unit, min, max, step, onChange, disabled, accent = 'cyan' }) {
+  const accentClass = accent === 'amber' ? 'accent-amber-500' : 'accent-cyan-500';
+  return (
+    <div className={cn('flex flex-col gap-1', disabled && 'opacity-35 pointer-events-none')}>
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] uppercase tracking-wider text-[#555555] font-medium">{label}</span>
+        <span className="text-[10px] font-mono text-white/60">{value} {unit}</span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        className={cn('w-full h-1 rounded-full appearance-none bg-white/10 cursor-pointer', accentClass,
+          disabled && 'cursor-not-allowed')}
+      />
+      <div className="flex justify-between text-[9px] font-mono text-white/30">
+        <span>{min}</span>
+        <span>{max}</span>
+      </div>
+    </div>
   );
 }
 

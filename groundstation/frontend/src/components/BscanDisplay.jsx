@@ -12,7 +12,7 @@ function jet(t) {
   ];
 }
 
-function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, bgDisplay, animatedShifts, animatedBgShift) {
+function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, bgDisplay, animatedShifts, animatedBgShift, scaleRange) {
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   const rect = canvas.getBoundingClientRect();
@@ -40,8 +40,16 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, b
 
   const numPos = scanData.length;
   const allDistances = scanData[0].distances;
-  const { stepSize, maxDepth } = params;
+  const { hStep, maxDepth } = params;
   const maxDepthM = maxDepth / 100;
+
+  // Row label: a C-scan cell carries its own grid coordinates; fall back to the
+  // capture index times the horizontal step for data imported from a linear scan.
+  const rowLabelFor = (scanIdx) => {
+    const pos = scanData[scanIdx];
+    if (pos && pos.x_cm != null && pos.y_cm != null) return `${pos.x_cm.toFixed(0)},${pos.y_cm.toFixed(0)}`;
+    return (scanIdx * (hStep || 1)).toFixed(0);
+  };
 
   const startBin = 0;
   let endBin = allDistances.length - 1;
@@ -81,6 +89,11 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, b
   }
   if (!isFinite(dbMin)) dbMin = -90;
   if (!isFinite(dbMax)) dbMax = -20;
+  // Manual scaling pins both ends so cells stay comparable across captures.
+  if (scaleRange && !scaleRange.dynamic) {
+    dbMin = scaleRange.min;
+    dbMax = scaleRange.max;
+  }
   if (dbMax - dbMin < 1) { dbMin -= 0.5; dbMax += 0.5; }
 
   const linMin = Math.pow(10, dbMin / 20);
@@ -248,14 +261,15 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, b
     ctx.fillText(`${dist.toFixed(2)}`, x, h - pad.bottom + 14);
   }
 
-  // Y-axis labels (position)
-  for (let i = 0; i <= yTicks; i++) {
-    const y = pad.top + (i / yTicks) * plotH;
-    const pos = (i / yTicks) * (numPos - 1) * stepSize;
-    ctx.fillStyle = '#555555';
-    ctx.font = '9px monospace';
-    ctx.textAlign = 'right';
-    ctx.fillText(`${pos.toFixed(0)}`, pad.left - 6, y + 3);
+  // Y-axis labels (one per row, thinned when there are many)
+  ctx.fillStyle = '#555555';
+  ctx.font = '9px monospace';
+  ctx.textAlign = 'right';
+  const rowEvery = Math.max(1, Math.ceil(totalRows / Math.max(1, Math.floor(plotH / 12))));
+  for (let rowIdx = 0; rowIdx < totalRows; rowIdx += rowEvery) {
+    if (hasBg && rowIdx === 0) continue;
+    const y = pad.top + (rowIdx + 0.5) * cellH;
+    ctx.fillText(rowLabelFor(hasBg ? rowIdx - 1 : rowIdx), pad.left - 6, y + 3);
   }
 
   // Axis titles
@@ -270,7 +284,7 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, b
   ctx.fillStyle = '#444444';
   ctx.font = '9px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('Position (cm)', 0, 0);
+  ctx.fillText('Position x,y (cm)', 0, 0);
   ctx.restore();
 
   // Title
@@ -341,7 +355,7 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, b
       const valLabel = isLinear
         ? Math.pow(10, db / 20).toExponential(2)
         : `${db.toFixed(1)}dB`;
-      const posLabel = isBgRow ? bgLabel : `pos ${((hasBg ? rowIdx - 1 : rowIdx) * stepSize).toFixed(0)}cm`;
+      const posLabel = isBgRow ? bgLabel : `pos ${rowLabelFor(hasBg ? rowIdx - 1 : rowIdx)}cm`;
       const label = `${posLabel} | ${dist.toFixed(2)}m | ${valLabel}`;
       const labelX = crosshair.x + 10 > w - 220 ? crosshair.x - 220 : crosshair.x + 10;
       ctx.fillText(label, labelX, crosshair.y - 8);
@@ -349,7 +363,7 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, b
   }
 }
 
-export default function BscanDisplay({ scanData, bgDisplay, params, capturing, sfcwProgress, scaleMode, displayMode, targetShifts, targetBgShift }) {
+export default function BscanDisplay({ scanData, bgDisplay, params, capturing, sfcwProgress, scaleMode, displayMode, targetShifts, targetBgShift, scaleRange }) {
   const canvasRef = useRef(null);
   const animRef = useRef(null);
   const [crosshair, setCrosshair] = useState(null);
@@ -390,12 +404,12 @@ export default function BscanDisplay({ scanData, bgDisplay, params, capturing, s
         currentBgShiftRef.current += bgDiff * lerpSpeed;
       }
 
-      drawBscan(canvasRef.current, scanData, params, crosshair, isLinear, mode, bgDisplay, current, currentBgShiftRef.current);
+      drawBscan(canvasRef.current, scanData, params, crosshair, isLinear, mode, bgDisplay, current, currentBgShiftRef.current, scaleRange);
       animRef.current = requestAnimationFrame(render);
     };
     animRef.current = requestAnimationFrame(render);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [scanData, params, crosshair, isLinear, mode, bgDisplay, targetShifts, targetBgShift]);
+  }, [scanData, params, crosshair, isLinear, mode, bgDisplay, targetShifts, targetBgShift, scaleRange]);
 
   return (
     <div className="flex flex-col w-full h-full">
