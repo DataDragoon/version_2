@@ -422,72 +422,12 @@ class SFCWEngine:
             start = self.start_freq
             stop = self.stop_freq
             step = self.step_size
-            settle = self.settle_time
             num_buffers = self.num_buffers
 
         num_steps = int((stop - start) / step) + 1
         freqs = np.linspace(start, stop, num_steps).astype(np.int64)
-        h_signal = np.zeros(num_steps, dtype=np.complex128)
-        h_reference = np.zeros(num_steps, dtype=np.complex128)
 
-        dev_ptr = self.driver.device.dev[0]
-        tx_ch = bladerf.CHANNEL_TX(0)
-        rx_ch = bladerf.CHANNEL_RX(0)
-        rx_ch1 = bladerf.CHANNEL_RX(1)
-
-        use_qt = (self._use_quick_tune and self._qt_profiles_rx is not None
-                  and len(self._qt_profiles_rx) == num_steps)
-        settle_count = 10 if use_qt else 2
-
-        dropped_steps = 0
-
-        for i in range(num_steps):
-            if self._stop_event.is_set():
-                return None
-
-            f = int(freqs[i])
-            if use_qt:
-                libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, self._qt_profiles_rx[i])
-                libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, self._qt_profiles_tx[i])
-            else:
-                libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
-                libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
-
-            # Wait for PLL settle after retune
-            with self._rx_cond:
-                target_seq = self._rx_seq + settle_count
-                while self._rx_seq < target_seq:
-                    if not self._rx_cond.wait(timeout=1.0):
-                        break
-
-            # Capture num_buffers fresh samples, each waiting for a new seq tick
-            rx1_bufs = []
-            rx2_bufs = []
-            with self._rx_cond:
-                last_seq = self._rx_seq
-
-            for _ in range(num_buffers):
-                with self._rx_cond:
-                    while self._rx_seq <= last_seq:
-                        if not self._rx_cond.wait(timeout=1.0):
-                            break
-                    if self._rx_seq > last_seq:
-                        rx1_bufs.append(self._rx_latest[0])
-                        rx2_bufs.append(self._rx_latest[1])
-                        last_seq = self._rx_seq
-
-            captured = len(rx1_bufs)
-            if captured > 0:
-                # Batch deinterleave + complex conversion + ref_tone correlation
-                sig_arr = np.array(rx1_bufs, dtype=np.float64)
-                ref_arr = np.array(rx2_bufs, dtype=np.float64)
-                sig_cplx = (sig_arr[:, 0::2] + 1j * sig_arr[:, 1::2]) * self._ref_tone_scaled
-                ref_cplx = (ref_arr[:, 0::2] + 1j * ref_arr[:, 1::2]) * self._ref_tone_scaled
-                h_signal[i] = sig_cplx.mean()
-                h_reference[i] = ref_cplx.mean()
-            else:
-                dropped_steps += 1
-
+        def progress(i):
             if self._callback and i % 10 == 0:
                 self._callback({
                     'type': 'progress',
@@ -496,17 +436,13 @@ class SFCWEngine:
                     'freq_mhz': freqs[i] / 1e6,
                 })
 
+        h_cal, dropped_steps = self._sweep_core(num_steps, freqs, num_buffers, progress)
+        if h_cal is None:
+            return None
+
         if dropped_steps > 0:
             print(f"[sfcw] WARNING: {dropped_steps}/{num_steps} steps had incomplete captures")
 
-        # Phase-reference division: cancels TX and RX PLL phase offsets
-        ref_mag = np.abs(h_reference)
-        valid = ref_mag > 1e-10
-        h_cal = np.zeros(num_steps, dtype=np.complex128)
-        h_cal[valid] = h_signal[valid] / h_reference[valid]
-
-        # Background subtraction is performed groundstation-side (see App.jsx),
-        # so h_cal goes out raw. Keeps captured B-scan / BG-model data uncontaminated.
         return self._process_h_cal(h_cal)
 
     def _perform_sweep_raw(self):
@@ -515,11 +451,19 @@ class SFCWEngine:
             start = self.start_freq
             stop = self.stop_freq
             step = self.step_size
-            settle = self.settle_time
             num_buffers = self.num_buffers
 
         num_steps = int((stop - start) / step) + 1
         freqs = np.linspace(start, stop, num_steps).astype(np.int64)
+
+        h_cal, _ = self._sweep_core(num_steps, freqs, num_buffers)
+        return h_cal
+
+    def _sweep_core(self, num_steps, freqs, num_buffers, progress_cb=None):
+        """Shared sweep loop: retune, settle, capture, reference-divide.
+
+        Returns (h_cal, dropped_steps) or (None, 0) if stopped.
+        """
         h_signal = np.zeros(num_steps, dtype=np.complex128)
         h_reference = np.zeros(num_steps, dtype=np.complex128)
 
@@ -535,7 +479,7 @@ class SFCWEngine:
 
         for i in range(num_steps):
             if self._stop_event.is_set():
-                return None
+                return None, 0
 
             f = int(freqs[i])
             if use_qt:
@@ -577,12 +521,15 @@ class SFCWEngine:
             else:
                 dropped_steps += 1
 
+            if progress_cb:
+                progress_cb(i)
+
         ref_mag = np.abs(h_reference)
         valid = ref_mag > 1e-10
         h_cal = np.zeros(num_steps, dtype=np.complex128)
         h_cal[valid] = h_signal[valid] / h_reference[valid]
 
-        return h_cal
+        return h_cal, dropped_steps
 
     def _process_h_cal(self, h_cal):
         num_steps = len(h_cal)
@@ -603,7 +550,7 @@ class SFCWEngine:
         magnitude_db = 20 * np.log10(np.abs(range_profile) + 1e-12)
 
         max_range = SPEED_OF_LIGHT / (2 * step)
-        distances = np.linspace(0, max_range, nfft) - self.range_offset
+        distances = np.arange(nfft) / nfft * max_range - self.range_offset
 
         half = nfft // 2
         magnitude_db = magnitude_db[:half]
@@ -623,7 +570,8 @@ class SFCWEngine:
             'h_cal_real': [round(v, 8) for v in h_cal_real],
             'h_cal_imag': [round(v, 8) for v in h_cal_imag],
             'range_resolution': SPEED_OF_LIGHT / (2 * (stop - start)),
-            'max_range': max_range / 2,
+            'unambiguous_range': max_range,
+            'displayed_range_max': max_range / 2 - self.range_offset,
             'num_steps': num_steps,
             'step_size': step,
             'range_offset': self.range_offset,

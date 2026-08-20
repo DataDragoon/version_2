@@ -96,6 +96,31 @@ section); import still reads v3 and maps the old `wallThickness` onto `maxDepth`
 Pi-side architecture: bladerf_driver.py (HAL) → sfcw_engine.py (sweep logic) → sdr_server.py (WebSocket).
 Next steps: OptiFlow pipeline, SAR reconstruction integration.
 
+## Sweep Timing and Step-Count Limits (measured 2026-08-20)
+
+**Measured sweep times** at 151 steps (20 MHz spacing, 2–5 GHz):
+- Mean: 548 ms, effective rate 1.82 Hz.
+- Per-step time: 3.63 ms (10 settle buffers × 4096 samples / 2 Msps = 20.5 ms settle
+  + 1 capture buffer, but the real wall time per step is 3.63 ms because RX callbacks
+  overlap — the settle wait is for *new* callbacks arriving, not elapsed time).
+
+**The `settleTime` panel field is inert on the quick-tune path.** The actual per-step
+wait is `settle_count = 10` RX buffer callbacks (~20.5 ms at 4096 samples / 2 Msps).
+`SfcwPanel.jsx:74` computes its "Sweep" time estimate from `settleTime` — that estimate
+is therefore decoupled from reality. The real measured sweep rate is 1.82 Hz, not the
+panel's formula output.
+
+**60 MHz step size (51 steps) is UNSAFE on the bladeRF xA9.** Benchmark showed:
+- PLL does not settle on 60 MHz jumps within 10-buffer wait: sweep-to-sweep
+  correlation 0.167, repeatability −0.56 (negative = noise exceeds signal).
+- max_adjacent_phase_step = 179.9° (unwrap limit — phase is incoherent).
+- Hardware cross-check: decimated-151 vs measured-51 correlation = 0.077 (zero).
+- Quick-tune profile generation takes 92s (vs 6s for 151 steps) — VCO cal itself
+  struggles at 60 MHz spacing.
+- Verdict: the AD9361 RFIC cannot achieve PLL lock at 60 MHz frequency jumps within
+  the existing timing budget. Only 20 MHz (or possibly 30–40 MHz with testing) is
+  safe. See `docs/step-count-benchmark-results.md` for full analysis.
+
 ## C-Scan Panel — 2D Raster (replaced the B-scan panel, 2026-08-20)
 
 The B-scan panel is gone; `CscanPanel.jsx` + `CscanDisplay.jsx` + `lib/cscanGrid.js`

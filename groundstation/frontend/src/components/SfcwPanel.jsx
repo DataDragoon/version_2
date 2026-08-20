@@ -69,7 +69,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
   const numSteps = Math.floor((stopFreq - startFreq) / stepSize) + 1;
   const bandwidth = (stopFreq - startFreq) * 1e6;
   const rangeRes = bandwidth > 0 ? (299792458 / (2 * bandwidth)) : Infinity;
-  const maxRange = stepSize > 0 ? (299792458 / (2 * stepSize * 1e6)) : Infinity;
+  const maxRange = stepSize > 0 ? (299792458 / (4 * stepSize * 1e6) - rangeOffset) : Infinity;
   const captureTimeMs = numBuffers * BUFFER_TIME_MS;
   const sweepTime = numSteps * (settleTime + captureTimeMs) / 1000;
 
