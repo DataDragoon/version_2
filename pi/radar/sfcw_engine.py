@@ -49,6 +49,8 @@ class SFCWEngine:
         self._qt_params = None
         self._use_quick_tune = True
         self._freq_grid_dirty = False
+        self.sweep_mode = 'standard'
+        self._fast_settle_count = 7
 
     @property
     def num_steps(self):
@@ -117,6 +119,10 @@ class SFCWEngine:
                 self.bscan_avg_count = max(1, int(kwargs['bscan_avg_count']))
             if 'bscan_primer' in kwargs:
                 self.bscan_primer = bool(kwargs['bscan_primer'])
+            if 'sweep_mode' in kwargs:
+                mode = kwargs['sweep_mode']
+                if mode in ('standard', 'fast'):
+                    self.sweep_mode = mode
 
     def get_params(self):
         return {
@@ -137,6 +143,7 @@ class SFCWEngine:
             'max_range': self.max_range,
             'bscan_avg_count': self.bscan_avg_count,
             'bscan_primer': self.bscan_primer,
+            'sweep_mode': self.sweep_mode,
         }
 
     def run_coherence_test(self, callback=None):
@@ -476,7 +483,10 @@ class SFCWEngine:
                     'freq_mhz': freqs[i] / 1e6,
                 })
 
-        h_cal, dropped_steps = self._sweep_core(num_steps, freqs, num_buffers, progress)
+        if self.sweep_mode == 'fast':
+            h_cal, dropped_steps = self._sweep_core_fast(num_steps, freqs, num_buffers, progress)
+        else:
+            h_cal, dropped_steps = self._sweep_core(num_steps, freqs, num_buffers, progress)
         if h_cal is None:
             return None
 
@@ -496,7 +506,10 @@ class SFCWEngine:
         num_steps = int((stop - start) / step) + 1
         freqs = np.linspace(start, stop, num_steps).astype(np.int64)
 
-        h_cal, _ = self._sweep_core(num_steps, freqs, num_buffers)
+        if self.sweep_mode == 'fast':
+            h_cal, _ = self._sweep_core_fast(num_steps, freqs, num_buffers)
+        else:
+            h_cal, _ = self._sweep_core(num_steps, freqs, num_buffers)
         return h_cal
 
     def _sweep_core(self, num_steps, freqs, num_buffers, progress_cb=None):
@@ -562,6 +575,78 @@ class SFCWEngine:
                 dropped_steps += 1
 
             if progress_cb:
+                progress_cb(i)
+
+        ref_mag = np.abs(h_reference)
+        valid = ref_mag > 1e-10
+        h_cal = np.zeros(num_steps, dtype=np.complex128)
+        h_cal[valid] = h_signal[valid] / h_reference[valid]
+
+        return h_cal, dropped_steps
+
+    def _sweep_core_fast(self, num_steps, freqs, num_buffers, progress_cb=None):
+        """Optimized sweep loop: single combined wait, reduced per-step overhead.
+
+        Key optimizations vs _sweep_core:
+        1. Single combined wait for (settle + capture) buffers — eliminates the
+           second lock acquisition cycle for capture.
+        2. Pre-extracted loop variables to minimize per-step Python overhead.
+        3. Inlined single-buffer capture (no list append / np.array wrapping).
+        4. Progress callback only fires every 10 steps.
+        5. Reduced settle_count if Test C proves it safe.
+        """
+        h_signal = np.zeros(num_steps, dtype=np.complex128)
+        h_reference = np.zeros(num_steps, dtype=np.complex128)
+
+        dev_ptr = self.driver.device.dev[0]
+        tx_ch = bladerf.CHANNEL_TX(0)
+        rx_ch = bladerf.CHANNEL_RX(0)
+
+        use_qt = (self._use_quick_tune and self._qt_profiles_rx is not None
+                  and len(self._qt_profiles_rx) == num_steps)
+
+        settle_count = self._fast_settle_count if use_qt else 2
+        total_wait = settle_count + num_buffers
+
+        qt_rx = self._qt_profiles_rx
+        qt_tx = self._qt_profiles_tx
+        ref_tone_scaled = self._ref_tone_scaled
+        rx_cond = self._rx_cond
+        stop_event = self._stop_event
+
+        dropped_steps = 0
+
+        for i in range(num_steps):
+            if stop_event.is_set():
+                return None, 0
+
+            f = int(freqs[i])
+            if use_qt:
+                libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, qt_rx[i])
+                libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, qt_tx[i])
+            else:
+                libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+                libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+
+            with rx_cond:
+                post_retune_seq = self._rx_seq
+                target_seq = post_retune_seq + total_wait
+                while self._rx_seq < target_seq:
+                    if not rx_cond.wait(timeout=1.0):
+                        break
+                latest = self._rx_latest
+
+            if latest is not None:
+                rx1_buf = latest[0]
+                rx2_buf = latest[1]
+                sig_arr = rx1_buf.astype(np.float64)
+                ref_arr = rx2_buf.astype(np.float64)
+                h_signal[i] = np.mean((sig_arr[0::2] + 1j * sig_arr[1::2]) * ref_tone_scaled)
+                h_reference[i] = np.mean((ref_arr[0::2] + 1j * ref_arr[1::2]) * ref_tone_scaled)
+            else:
+                dropped_steps += 1
+
+            if progress_cb and i % 10 == 0:
                 progress_cb(i)
 
         ref_mag = np.abs(h_reference)
