@@ -25,7 +25,6 @@ class SFCWEngine:
         self.start_freq = 2_000_000_000
         self.stop_freq = 5_000_000_000
         self.step_size = 20_000_000
-        self.settle_time = 0.003
         self.num_buffers = 1
         self.tx1_gain = 30
         self.rx1_gain = 30
@@ -78,8 +77,6 @@ class SFCWEngine:
                 self.stop_freq = int(kwargs['stop_freq'])
             if 'step_size' in kwargs:
                 self.step_size = int(kwargs['step_size'])
-            if 'settle_time' in kwargs:
-                self.settle_time = float(kwargs['settle_time'])
             if 'num_buffers' in kwargs:
                 self.num_buffers = max(1, int(kwargs['num_buffers']))
             if 'tx1_gain' in kwargs:
@@ -110,7 +107,6 @@ class SFCWEngine:
             'start_freq': self.start_freq,
             'stop_freq': self.stop_freq,
             'step_size': self.step_size,
-            'settle_time': self.settle_time,
             'num_buffers': self.num_buffers,
             'tx1_gain': self.tx1_gain,
             'rx1_gain': self.rx1_gain,

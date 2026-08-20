@@ -2,14 +2,11 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile, ToggleButton } from './Sidebar';
 
-const BUFFER_SAMPLES = 1024;
-const SAMPLE_RATE = 2_000_000;
-const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
 const LIDAR_AVG_WINDOW = 20;
 
 export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, rangeScale, onRangeScaleChange, lidarMm, bgModel, bgRef, bgCapturing, onCaptureBg, onLoadBgModel, onClearBg }) {
-  const { startFreq, stopFreq, stepSize, settleTime, numBuffers, tx1Gain, rx1Gain, rangeOffset } = params;
+  const { startFreq, stopFreq, stepSize, numBuffers, tx1Gain, rx1Gain, rangeOffset } = params;
   const [coherenceRunning, setCoherenceRunning] = useState(false);
   const lidarBuf = useRef([]);
   const [lidarAvg, setLidarAvg] = useState(null);
@@ -58,7 +55,6 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
       start_freq_mhz: overrides.startFreq ?? startFreq,
       stop_freq_mhz: overrides.stopFreq ?? stopFreq,
       step_size_mhz: overrides.stepSize ?? stepSize,
-      settle_time_ms: overrides.settleTime ?? settleTime,
       num_buffers: overrides.numBuffers ?? numBuffers,
       tx1_gain: overrides.tx1Gain ?? tx1Gain,
       rx1_gain: overrides.rx1Gain ?? rx1Gain,
@@ -70,8 +66,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
   const bandwidth = (stopFreq - startFreq) * 1e6;
   const rangeRes = bandwidth > 0 ? (299792458 / (2 * bandwidth)) : Infinity;
   const maxRange = stepSize > 0 ? (299792458 / (4 * stepSize * 1e6) - rangeOffset) : Infinity;
-  const captureTimeMs = numBuffers * BUFFER_TIME_MS;
-  const sweepTime = numSteps * (settleTime + captureTimeMs) / 1000;
+  const sweepTime = numSteps * 3.63 / 1000;
 
   return (
     <>
@@ -107,14 +102,6 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             onChange={(v) => { update('stepSize', v); sendParams({ stepSize: v }); }}
             min={0.1}
             max={500}
-          />
-          <EditableField
-            label="Settle"
-            value={settleTime}
-            unit="ms"
-            onChange={(v) => { update('settleTime', v); sendParams({ settleTime: v }); }}
-            min={0.1}
-            max={50}
           />
         </div>
         <div className="flex flex-col gap-1">

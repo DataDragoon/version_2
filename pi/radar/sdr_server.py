@@ -110,8 +110,6 @@ class SDRServer:
                     params['stop_freq'] = float(cmd['stop_freq_mhz']) * 1e6
                 if 'step_size_mhz' in cmd:
                     params['step_size'] = float(cmd['step_size_mhz']) * 1e6
-                if 'settle_time_ms' in cmd:
-                    params['settle_time'] = float(cmd['settle_time_ms']) / 1000
                 if 'num_buffers' in cmd:
                     params['num_buffers'] = int(cmd['num_buffers'])
                 if 'tx1_gain' in cmd:

@@ -151,9 +151,8 @@ export default function App() {
   const [sfcwParams, setSfcwParams] = useState({
     startFreq: 2000,
     stopFreq: 5000,
-    stepSize: 20,
-    settleTime: 3,
-    numBuffers: 4,
+    stepSize: 60,
+    numBuffers: 1,
     tx1Gain: 30,
     rx1Gain: 30,
     rangeOffset: 0.5,

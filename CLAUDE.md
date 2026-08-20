@@ -104,11 +104,10 @@ Next steps: OptiFlow pipeline, SAR reconstruction integration.
   + 1 capture buffer, but the real wall time per step is 3.63 ms because RX callbacks
   overlap — the settle wait is for *new* callbacks arriving, not elapsed time).
 
-**The `settleTime` panel field is inert on the quick-tune path.** The actual per-step
-wait is `settle_count = 10` RX buffer callbacks (~20.5 ms at 4096 samples / 2 Msps).
-`SfcwPanel.jsx:74` computes its "Sweep" time estimate from `settleTime` — that estimate
-is therefore decoupled from reality. The real measured sweep rate is 1.82 Hz, not the
-panel's formula output.
+The actual per-step wait is `settle_count = 10` RX buffer callbacks in `_sweep_core`.
+The `settleTime` field was dead code (stored but never read by any sweep path) and has
+been removed from the engine, sdr_server, and the panel. The "Sweep" tile now uses the
+measured 3.63 ms/step.
 
 **60 MHz step size (51 steps) is UNSAFE on the bladeRF xA9.** Benchmark showed:
 - PLL does not settle on 60 MHz jumps within 10-buffer wait: sweep-to-sweep
