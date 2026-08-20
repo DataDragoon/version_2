@@ -620,9 +620,31 @@ export default function App() {
   const sdrUrl = piIp ? `ws://${piIp}:9003` : null;
   const { status: sdrConnectionStatus, send: sendSdr, connect: connectSdr, disconnect: disconnectSdr } = useWebSocket(sdrUrl, handleSdrMessage);
 
+  // The Pi keeps its own SFCW defaults, so anything the panel shows is a guess
+  // until we push. Sync on connect and again before every sweep, so the panel is
+  // always the source of truth and the two sides cannot drift apart silently.
+  const sendSfcwParams = useCallback(() => {
+    const p = sfcwParamsRef.current;
+    sendSdr({
+      cmd: 'sfcw_set_params',
+      start_freq_mhz: p.startFreq,
+      stop_freq_mhz: p.stopFreq,
+      step_size_mhz: p.stepSize,
+      num_buffers: p.numBuffers,
+      tx1_gain: p.tx1Gain,
+      rx1_gain: p.rx1Gain,
+      range_offset: p.rangeOffset,
+    });
+  }, [sendSdr]);
+
+  useEffect(() => {
+    if (sdrConnectionStatus === 'connected') sendSfcwParams();
+  }, [sdrConnectionStatus, sendSfcwParams]);
+
   const handleBscanAction = useCallback((action) => {
     if (action === 'start_session') {
       if (sfcwRunning) return;
+      sendSfcwParams();
       sendSdr({ cmd: 'sfcw_start' });
     } else if (action === 'stop_session') {
       sendSdr({ cmd: 'sfcw_stop' });
@@ -701,11 +723,12 @@ export default function App() {
       };
       input.click();
     }
-  }, [sendSdr, sfcwRunning, bscanData, bscanParams, sfcwParams, bscanBgRef, bscanBgModel]);
+  }, [sendSdr, sendSfcwParams, sfcwRunning, bscanData, bscanParams, sfcwParams, bscanBgRef, bscanBgModel]);
 
   const handleBgModelAction = useCallback((action, payload) => {
     if (action === 'start_session') {
       if (sfcwRunning) return;
+      sendSfcwParams();
       sendSdr({ cmd: 'sfcw_start' });
     } else if (action === 'stop_session') {
       sendSdr({ cmd: 'sfcw_stop' });
@@ -817,7 +840,7 @@ export default function App() {
       setBgModelTestResult(null);
       bgModelTestRef.current = { samples: [] };
     }
-  }, [sendSdr, sfcwRunning, bgModelCaptures, sfcwParams, bgModelSweepsPerCapture, bgModelWorker.startTraining, bgModelWorker.reset, bgModelWorker.resultRef]);
+  }, [sendSdr, sendSfcwParams, sfcwRunning, bgModelCaptures, sfcwParams, bgModelSweepsPerCapture, bgModelWorker.startTraining, bgModelWorker.reset, bgModelWorker.resultRef]);
 
   // Rate counter interval
   const rateIntervalRef = useRef(null);

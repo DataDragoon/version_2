@@ -24,7 +24,7 @@ class SFCWEngine:
         self.driver = driver
         self.start_freq = 2_000_000_000
         self.stop_freq = 5_000_000_000
-        self.step_size = 20_000_000
+        self.step_size = 60_000_000
         self.num_buffers = 1
         self.tx1_gain = 30
         self.rx1_gain = 30

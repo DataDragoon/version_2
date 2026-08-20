@@ -5,6 +5,12 @@ import { Section, InfoTile, ToggleButton } from './Sidebar';
 
 const LIDAR_AVG_WINDOW = 20;
 
+// Must match pi/radar/sfcw_engine.py: _start_tx_rx() captures n = 4096 samples
+// per buffer at the 10 Msps set in _configure_hardware().
+const BUFFER_SAMPLES = 4096;
+const SAMPLE_RATE = 10_000_000;
+const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
+
 export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, rangeScale, onRangeScaleChange, lidarMm, bgModel, bgRef, bgCapturing, onCaptureBg, onLoadBgModel, onClearBg }) {
   const { startFreq, stopFreq, stepSize, numBuffers, tx1Gain, rx1Gain, rangeOffset } = params;
   const [coherenceRunning, setCoherenceRunning] = useState(false);
@@ -66,6 +72,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
   const bandwidth = (stopFreq - startFreq) * 1e6;
   const rangeRes = bandwidth > 0 ? (299792458 / (2 * bandwidth)) : Infinity;
   const maxRange = stepSize > 0 ? (299792458 / (4 * stepSize * 1e6) - rangeOffset) : Infinity;
+  const captureTimeMs = numBuffers * BUFFER_TIME_MS;
   const sweepTime = numSteps * 3.63 / 1000;
 
   return (
@@ -108,7 +115,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
           <EditableField
             label="Buffers"
             value={numBuffers}
-            unit="x1024 smp"
+            unit="x4096 smp"
             onChange={(v) => { update('numBuffers', v); sendParams({ numBuffers: v }); }}
             min={1}
             max={64}
@@ -176,7 +183,11 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
         <ToggleButton
           active={sfcwRunning}
           canActivate={canActivate}
-          onToggle={() => sendSdr({ cmd: sfcwRunning ? 'sfcw_stop' : 'sfcw_start' })}
+          onToggle={() => {
+            if (sfcwRunning) { sendSdr({ cmd: 'sfcw_stop' }); return; }
+            sendParams();
+            sendSdr({ cmd: 'sfcw_start' });
+          }}
           activeLabel="Stop Sweep"
           idleLabel="Start Sweep"
           activeSubLabel={`Sweeping ${startFreq}–${stopFreq} MHz`}
