@@ -126,8 +126,6 @@ class SDRServer:
                     params['bscan_avg_count'] = int(cmd['bscan_avg_count'])
                 if 'bscan_primer' in cmd:
                     params['bscan_primer'] = bool(cmd['bscan_primer'])
-                if 'sweep_mode' in cmd:
-                    params['sweep_mode'] = cmd['sweep_mode']
                 self.sfcw.set_params(**params)
                 await self._broadcast_sfcw_status()
 
