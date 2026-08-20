@@ -48,6 +48,7 @@ class SFCWEngine:
         self._qt_profiles_tx = None
         self._qt_params = None
         self._use_quick_tune = True
+        self._freq_grid_dirty = False
 
     @property
     def num_steps(self):
@@ -71,12 +72,27 @@ class SFCWEngine:
 
     def set_params(self, **kwargs):
         with self._lock:
+            freq_grid_changed = False
             if 'start_freq' in kwargs:
-                self.start_freq = int(kwargs['start_freq'])
+                new_val = int(kwargs['start_freq'])
+                if new_val != self.start_freq:
+                    self.start_freq = new_val
+                    freq_grid_changed = True
             if 'stop_freq' in kwargs:
-                self.stop_freq = int(kwargs['stop_freq'])
+                new_val = int(kwargs['stop_freq'])
+                if new_val != self.stop_freq:
+                    self.stop_freq = new_val
+                    freq_grid_changed = True
             if 'step_size' in kwargs:
-                self.step_size = int(kwargs['step_size'])
+                new_val = int(kwargs['step_size'])
+                if new_val != self.step_size:
+                    self.step_size = new_val
+                    freq_grid_changed = True
+            if freq_grid_changed:
+                self._qt_profiles_rx = None
+                self._qt_profiles_tx = None
+                self._qt_params = None
+                self._freq_grid_dirty = True
             if 'num_buffers' in kwargs:
                 self.num_buffers = max(1, int(kwargs['num_buffers']))
             if 'tx1_gain' in kwargs:
@@ -137,6 +153,9 @@ class SFCWEngine:
 
     def _coherence_test_worker(self, callback):
         try:
+            if self._freq_grid_dirty:
+                self.driver.reset()
+                self._freq_grid_dirty = False
             self._configure_hardware()
             self._start_tx_rx()
             time.sleep(0.1)
@@ -207,6 +226,8 @@ class SFCWEngine:
         """Perform averaged sweeps with hardware already running (warm B-scan mode)."""
         with self._sweep_lock:
             try:
+                if self._freq_grid_dirty:
+                    self._reconfigure_for_new_grid()
                 if self.bscan_primer:
                     self._perform_sweep_raw()
 
@@ -239,6 +260,9 @@ class SFCWEngine:
 
     def _single_sweep_worker(self):
         try:
+            if self._freq_grid_dirty:
+                self.driver.reset()
+                self._freq_grid_dirty = False
             self._configure_hardware()
             self._start_tx_rx()
             time.sleep(0.1)
@@ -257,6 +281,9 @@ class SFCWEngine:
         """Start hardware and keep it running for multiple on-demand sweeps (B-scan mode)."""
         if self._warm or self.running:
             return
+        if self._freq_grid_dirty:
+            self.driver.reset()
+            self._freq_grid_dirty = False
         self._stop_event.clear()
         self._configure_hardware()
         self._start_tx_rx()
@@ -305,6 +332,8 @@ class SFCWEngine:
                     if self._callback:
                         self._callback({'error': 'USB stream died — restart sweep'})
                     break
+                if self._freq_grid_dirty:
+                    self._reconfigure_for_new_grid()
                 if self._gains_dirty:
                     self._apply_gains()
                 range_profile = self._perform_sweep()
@@ -398,6 +427,21 @@ class SFCWEngine:
         libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(0), int(self.rx1_gain))
         libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(1), int(self.rx2_gain))
         self._gains_dirty = False
+
+    def _reconfigure_for_new_grid(self):
+        """Full device reset and reconfigure after frequency grid change.
+
+        Needed because the AD9361 VCO state gets corrupted when quick-tune
+        profiles are regenerated without a clean device state.
+        """
+        print("[sfcw] Frequency grid changed — resetting device")
+        self._stop_tx_rx()
+        self.driver.reset()
+        self._freq_grid_dirty = False
+        self._configure_hardware()
+        self._start_tx_rx()
+        time.sleep(0.1)
+        print("[sfcw] Reconfiguration complete")
 
     def _stop_tx_rx(self):
         self.driver.stop_rx_dual()
