@@ -144,6 +144,17 @@ export default function App() {
   // SFCW range scale ({min, max} in meters)
   const [sfcwRangeScale, setSfcwRangeScale] = useState({ min: 0, max: 3 });
 
+  // SFCW amplitude scale. Dynamic by default; manual pins the range profile's
+  // Y axis and the waterfall colour range together. `isDb` records which units
+  // the pinned numbers are in — the display drops back to dynamic if its
+  // dB/LIN mode changes underneath them. The live dynamic limits live in a ref
+  // (the display rewrites them every frame) so the panel can seed on toggle
+  // without re-rendering on every sweep.
+  const [sfcwScaleRange, setSfcwScaleRange] = useState({ dynamic: true, min: -60, max: 0, isDb: true });
+  const sfcwDynamicScale = useRef({ min: -60, max: 0, isDb: true });
+  const handleSfcwDynamicScale = useCallback((r) => { sfcwDynamicScale.current = r; }, []);
+  const getSfcwDynamicScale = useCallback(() => sfcwDynamicScale.current, []);
+
   // SFCW panel params (lifted so they survive panel switches)
   const [sfcwParams, setSfcwParams] = useState({
     startFreq: 2000,
@@ -900,6 +911,9 @@ export default function App() {
         coherenceResult={coherenceResult}
         sfcwRangeScale={sfcwRangeScale}
         onSfcwRangeScaleChange={setSfcwRangeScale}
+        sfcwScaleRange={sfcwScaleRange}
+        onSfcwScaleRangeChange={setSfcwScaleRange}
+        getSfcwDynamicScale={getSfcwDynamicScale}
         sfcwBgModel={sfcwBgModel}
         sfcwBgRef={sfcwBgRef}
         sfcwBgCapturing={sfcwBgCapturing}
@@ -994,6 +1008,9 @@ export default function App() {
         sfcwProgress={sfcwProgress}
         sfcwRunning={sfcwRunning}
         sfcwRangeScale={sfcwRangeScale}
+        sfcwScaleRange={sfcwScaleRange}
+        onSfcwScaleRangeChange={setSfcwScaleRange}
+        onSfcwDynamicScale={handleSfcwDynamicScale}
         bscanData={processedBscanData}
         bscanBgDisplay={bscanBgDisplay}
         bscanAlignShifts={alignShifts}

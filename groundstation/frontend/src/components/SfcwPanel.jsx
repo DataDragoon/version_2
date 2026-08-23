@@ -11,7 +11,7 @@ const BUFFER_SAMPLES = 4096;
 const SAMPLE_RATE = 10_000_000;
 const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
-export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, rangeScale, onRangeScaleChange, lidarMm, bgModel, bgRef, bgCapturing, onCaptureBg, onLoadBgModel, onClearBg }) {
+export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, rangeScale, onRangeScaleChange, scaleRange, onScaleRangeChange, getDynamicScale, lidarMm, bgModel, bgRef, bgCapturing, onCaptureBg, onLoadBgModel, onClearBg }) {
   const { startFreq, stopFreq, stepSize, numBuffers, settleCount, tx1Gain, rx1Gain, rangeOffset } = params;
   const [coherenceRunning, setCoherenceRunning] = useState(false);
   const lidarBuf = useRef([]);
@@ -67,6 +67,22 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
       rx1_gain: overrides.rx1Gain ?? rx1Gain,
       range_offset: overrides.rangeOffset ?? rangeOffset,
     });
+  };
+
+  // Amplitude scaling. The display owns the live dynamic limits, so handing
+  // over to manual seeds the fields from whatever is on screen right now —
+  // the colours and the Y axis must not jump on the toggle.
+  const isDbScale = scaleRange.isDb !== false;
+  const fmtScale = (v) => (isDbScale ? (Math.round(v * 10) / 10).toString() : Number(v).toExponential(2));
+  const scaleUnit = isDbScale ? 'dB' : '';
+  const scaleGap = isDbScale ? 1 : 1e-12;
+
+  const toManualScale = () => {
+    const live = getDynamicScale ? getDynamicScale() : null;
+    if (!live || !isFinite(live.min) || !isFinite(live.max) || live.max <= live.min) {
+      return { dynamic: false, min: scaleRange.min, max: scaleRange.max, isDb: scaleRange.isDb !== false };
+    }
+    return { dynamic: false, min: live.min, max: live.max, isDb: live.isDb !== false };
   };
 
   const numSteps = Math.floor((stopFreq - startFreq) / stepSize) + 1;
@@ -321,6 +337,51 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
         )}
       </Section>
 
+      {/* Amplitude scaling — dynamic tracks the sweep, manual pins the range
+          profile's Y axis and the waterfall's colour range to fixed limits. */}
+      <Section label="Amplitude Scaling">
+        <button
+          onClick={() => onScaleRangeChange(scaleRange.dynamic
+            ? toManualScale()
+            : { ...scaleRange, dynamic: true })}
+          className={cn(
+            'w-full px-3 py-2.5 rounded-lg text-xs font-medium transition-all border',
+            scaleRange.dynamic
+              ? 'bg-[#6B9BD2]/10 border-[#6B9BD2]/30 text-[#6B9BD2]'
+              : 'bg-[#f59e0b]/10 border-[#f59e0b]/30 text-[#f59e0b]'
+          )}
+        >
+          {scaleRange.dynamic ? '● Dynamic Scaling' : 'Manual Scaling'}
+        </button>
+        <div className="grid grid-cols-2 gap-2 mt-2">
+          <EditableField
+            label="Min"
+            value={scaleRange.min}
+            unit={scaleUnit}
+            format={fmtScale}
+            disabled={scaleRange.dynamic}
+            onChange={(v) => onScaleRangeChange({ ...scaleRange, min: Math.min(v, scaleRange.max - scaleGap) })}
+            min={-1e9}
+            max={1e9}
+          />
+          <EditableField
+            label="Max"
+            value={scaleRange.max}
+            unit={scaleUnit}
+            format={fmtScale}
+            disabled={scaleRange.dynamic}
+            onChange={(v) => onScaleRangeChange({ ...scaleRange, max: Math.max(v, scaleRange.min + scaleGap) })}
+            min={-1e9}
+            max={1e9}
+          />
+        </div>
+        <div className="px-1 mt-1 text-[9px] text-[#555555] leading-relaxed">
+          {scaleRange.dynamic
+            ? 'Limits track the sweep. Turn off to pin them at their current values.'
+            : 'Limits pinned — range profile and waterfall both update live.'}
+        </div>
+      </Section>
+
       <Section label="Display Range">
         <button
           onClick={() => onRangeScaleChange(rangeScale && rangeScale.max === 0.3 ? { min: 0, max: 3 } : { min: 0, max: 0.3 })}
@@ -338,13 +399,14 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
   );
 }
 
-function EditableField({ label, value, unit, onChange, min, max }) {
+function EditableField({ label, value, unit, onChange, min, max, disabled = false, format }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const committedRef = useRef(false);
+  const shown = format ? format(value) : value;
 
   const startEdit = () => {
-    setDraft(String(value));
+    setDraft(String(shown));
     setEditing(true);
     committedRef.current = false;
   };
@@ -361,13 +423,15 @@ function EditableField({ label, value, unit, onChange, min, max }) {
 
   return (
     <div
-      onClick={!editing ? startEdit : undefined}
+      onClick={!editing && !disabled ? startEdit : undefined}
       className={cn(
         'relative flex flex-col gap-0.5 p-3 rounded-xl border',
         'transition-all duration-300',
-        editing
-          ? 'border-[#D1855C]/40 bg-[#D1855C]/5 cursor-text'
-          : 'border-white/8 bg-[#0a0a0a]/60 cursor-pointer hover:border-white/20 hover:bg-white/[0.02]',
+        disabled
+          ? 'border-white/5 bg-[#0a0a0a]/40 opacity-40 cursor-not-allowed'
+          : editing
+            ? 'border-[#D1855C]/40 bg-[#D1855C]/5 cursor-text'
+            : 'border-white/8 bg-[#0a0a0a]/60 cursor-pointer hover:border-white/20 hover:bg-white/[0.02]',
       )}
     >
       <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">{label}</span>
@@ -386,7 +450,7 @@ function EditableField({ label, value, unit, onChange, min, max }) {
         </div>
       ) : (
         <div className="flex items-baseline gap-1">
-          <span className="text-base font-bold font-mono text-white">{value}</span>
+          <span className="text-base font-bold font-mono text-white">{shown}</span>
           <span className="text-xs font-semibold text-[#888888]">{unit}</span>
         </div>
       )}

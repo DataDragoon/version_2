@@ -45,6 +45,9 @@ export default function Sidebar({
   coherenceResult,
   sfcwRangeScale,
   onSfcwRangeScaleChange,
+  sfcwScaleRange,
+  onSfcwScaleRangeChange,
+  getSfcwDynamicScale,
   sfcwBgModel,
   sfcwBgRef,
   sfcwBgCapturing,
@@ -278,6 +281,9 @@ export default function Sidebar({
                   coherenceResult={coherenceResult}
                   rangeScale={sfcwRangeScale}
                   onRangeScaleChange={onSfcwRangeScaleChange}
+                  scaleRange={sfcwScaleRange}
+                  onScaleRangeChange={onSfcwScaleRangeChange}
+                  getDynamicScale={getSfcwDynamicScale}
                   lidarMm={lidarMm}
                   bgModel={sfcwBgModel}
                   bgRef={sfcwBgRef}

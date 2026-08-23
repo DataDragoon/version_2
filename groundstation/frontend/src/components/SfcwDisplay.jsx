@@ -156,7 +156,7 @@ function computeRangeProfile(hCalReal, hCalImag, windowFn, zeroPadFactor) {
   return { magnitudeDb, nfft };
 }
 
-export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, rangeScale, hideWaterfall, defaultScaleMode, onRangeScaleToggle }) {
+export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, rangeScale, hideWaterfall, defaultScaleMode, onRangeScaleToggle, scaleRange, onScaleRangeChange, onDynamicScale }) {
   const rangeCanvasRef = useRef(null);
   const waterfallCanvasRef = useRef(null);
   const animRef = useRef(null);
@@ -199,6 +199,15 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
 
   // Session-wide Y-axis tracking (only expands, never shrinks within a session)
   const sessionY = useRef({ min: Infinity, max: -Infinity });
+
+  // Manual amplitude scaling pins both panes to the same limits. Undefined
+  // scaleRange (the C-scan / BG-model live-sweep instances) means dynamic.
+  const manualScale = !!(scaleRange && !scaleRange.dynamic);
+
+  // The live dynamic limits are published upward so the panel can seed its
+  // manual fields from whatever is on screen at the moment it is switched.
+  const reportScale = useRef(null);
+  useEffect(() => { reportScale.current = onDynamicScale || null; }, [onDynamicScale]);
 
   // Store raw h_cal when it arrives
   useEffect(() => {
@@ -310,17 +319,20 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
 
     const {
       mags, dists, view, traceColor, title, crosshair,
-      showCFAR, isDb, sessionY
+      showCFAR, isDb, sessionY, manual, manualMin, manualMax, onScale
     } = opts;
     const n = mags.length;
     const pad = { top: 24, bottom: 36, left: 52, right: 16 };
     const plotW = w - pad.left - pad.right;
     const plotH = h - pad.top - pad.bottom;
 
-    // Determine Y range using session-wide extremes
+    // Determine Y range: pinned limits win, else session-wide extremes
     let yMin = view.yMin;
     let yMax = view.yMax;
-    if (view.autoY && sessionY) {
+    if (manual) {
+      yMin = manualMin;
+      yMax = manualMax;
+    } else if (view.autoY && sessionY) {
       // Update session extremes with current frame data
       for (let i = 0; i < n; i++) {
         if (mags[i] < sessionY.current.min) sessionY.current.min = mags[i];
@@ -343,6 +355,9 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
       yMin = dataMin - margin;
       yMax = dataMax + margin;
     }
+
+    // Publish the live limits so the panel can hand them to manual mode.
+    if (!manual && onScale) onScale({ min: yMin, max: yMax, isDb });
 
     const xToPixel = (frac) => pad.left + ((frac - view.xMin) / (view.xMax - view.xMin)) * plotW;
     const yToPixel = (val) => pad.top + ((yMax - val) / (yMax - yMin)) * plotH;
@@ -500,6 +515,12 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     ctx.font = 'bold 10px monospace';
     ctx.textAlign = 'left';
     ctx.fillText(title, pad.left, 14);
+    if (manual) {
+      const tw = ctx.measureText(title).width;
+      ctx.fillStyle = '#f59e0b';
+      ctx.font = '9px monospace';
+      ctx.fillText('MANUAL', pad.left + tw + 8, 14);
+    }
     if (result.range_resolution) {
       ctx.fillStyle = '#444444';
       ctx.font = '9px monospace';
@@ -523,7 +544,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     return { pad, plotW, plotH, yMin, yMax };
   }, [cfarGuard, cfarTrain, cfarAlpha, cfarEnabled]);
 
-  const drawWaterfall = useCallback((canvas, dists, view, crosshair, isDb) => {
+  const drawWaterfall = useCallback((canvas, dists, view, crosshair, isDb, manual, manualMin, manualMax) => {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const rect = canvas.getBoundingClientRect();
@@ -558,13 +579,18 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     const endBin = Math.min(n - 1, Math.ceil(view.xMax * (n - 1)));
     const visibleBins = endBin - startBin + 1;
 
-    // Dynamic color range from all visible history
+    // Colour range: pinned limits win, else dynamic over all visible history
     let vMin = Infinity, vMax = -Infinity;
-    for (let row = 0; row < numRows; row++) {
-      for (let bin = startBin; bin <= endBin; bin++) {
-        const v = history[row][bin];
-        if (v < vMin) vMin = v;
-        if (v > vMax) vMax = v;
+    if (manual) {
+      vMin = manualMin;
+      vMax = manualMax;
+    } else {
+      for (let row = 0; row < numRows; row++) {
+        for (let bin = startBin; bin <= endBin; bin++) {
+          const v = history[row][bin];
+          if (v < vMin) vMin = v;
+          if (v > vMax) vMax = v;
+        }
       }
     }
     if (!isFinite(vMin)) vMin = 0;
@@ -614,7 +640,14 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     ctx.fillStyle = '#D1855C';
     ctx.font = 'bold 10px monospace';
     ctx.textAlign = 'left';
-    ctx.fillText(isDb ? 'WATERFALL (dB)' : 'WATERFALL (LINEAR)', pad.left, 14);
+    const wfTitle = isDb ? 'WATERFALL (dB)' : 'WATERFALL (LINEAR)';
+    ctx.fillText(wfTitle, pad.left, 14);
+    if (manual) {
+      const tw = ctx.measureText(wfTitle).width;
+      ctx.fillStyle = '#f59e0b';
+      ctx.font = '9px monospace';
+      ctx.fillText('MANUAL', pad.left + tw + 8, 14);
+    }
 
     ctx.fillStyle = '#444444';
     ctx.font = '9px monospace';
@@ -632,7 +665,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
       ctx.fillStyle = `rgb(${r},${g},${b})`;
       ctx.fillRect(barX, barY + i, barW, 1);
     }
-    ctx.fillStyle = '#555555';
+    ctx.fillStyle = manual ? '#f59e0b' : '#555555';
     ctx.font = '8px monospace';
     ctx.textAlign = 'left';
     if (isDb) {
@@ -707,14 +740,23 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
           mags, dists, view, traceColor,
           title, crosshair: crosshairTrace,
           showCFAR: cfarEnabled && isDb, isDb, sessionY,
+          manual: manualScale,
+          manualMin: scaleRange ? scaleRange.min : 0,
+          manualMax: scaleRange ? scaleRange.max : 1,
+          onScale: reportScale.current,
         });
-        drawWaterfall(waterfallCanvasRef.current, dists, view, crosshairWaterfall, isDb);
+        drawWaterfall(
+          waterfallCanvasRef.current, dists, view, crosshairWaterfall, isDb,
+          manualScale,
+          scaleRange ? scaleRange.min : 0,
+          scaleRange ? scaleRange.max : 1,
+        );
       }
       animRef.current = requestAnimationFrame(render);
     };
     animRef.current = requestAnimationFrame(render);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [drawChart, traceView, crosshairTrace, crosshairWaterfall, cfarEnabled, averaged, recomputed, scaleMode, rangeScale]);
+  }, [drawChart, drawWaterfall, traceView, crosshairTrace, crosshairWaterfall, cfarEnabled, averaged, recomputed, scaleMode, rangeScale, manualScale, scaleRange]);
 
   // Zoom handler
   const handleWheel = (e) => {
@@ -891,7 +933,10 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
 
         {/* Reset scale */}
         <button
-          onClick={() => { sessionY.current = { min: Infinity, max: -Infinity }; }}
+          onClick={() => {
+            sessionY.current = { min: Infinity, max: -Infinity };
+            if (manualScale && onScaleRangeChange) onScaleRangeChange({ ...scaleRange, dynamic: true });
+          }}
           className="px-2 py-0.5 rounded text-[9px] text-white/40 border border-white/10 hover:text-white/70 hover:border-white/20 transition-all"
         >
           Reset Scale
@@ -921,7 +966,12 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
         />
         {/* Scale toggle button */}
         <button
-          onClick={() => { setScaleMode(m => m === 'db' ? 'linear' : 'db'); sessionY.current = { min: Infinity, max: -Infinity }; }}
+          onClick={() => {
+            setScaleMode(m => m === 'db' ? 'linear' : 'db');
+            sessionY.current = { min: Infinity, max: -Infinity };
+            // Pinned limits are in the units we are leaving — drop back to dynamic.
+            if (manualScale && onScaleRangeChange) onScaleRangeChange({ ...scaleRange, dynamic: true });
+          }}
           className={cn(
             'absolute bottom-10 left-14 px-2 py-1 rounded text-[9px] font-medium uppercase tracking-wider transition-all border z-10',
             scaleMode === 'db'
