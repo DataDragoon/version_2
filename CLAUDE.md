@@ -164,6 +164,29 @@ unnoticed. `benchmark_sweep.py` is a leftover from that pass and is currently br
 needs a rewrite against the current `_sweep_core`/master-table API before it's useful
 again.
 
+**Regression, 2026-08-20 to 2026-08-23 (fixed): `num_buffers` default silently dropped
+from 4 to 1, killing per-step noise averaging.** The `c33b0ce` "clean up" commit (same
+day as the `settle_count` regression above) trimmed `sfcwParams`/`SFCWEngine` defaults
+and dropped `numBuffers` from 4 to 1 — with no discussion, apparently just collateral
+from tidying the defaults block. It went unnoticed at the time because the multi-buffer
+averaging in `_sweep_core` was *itself* separately broken by the `407e205`/`510a9fe`
+optimization pass: `num_buffers` only extended the settle wait but the code always
+grabbed the single latest RX buffer regardless of its value, so for a few days the
+setting had no effect at any value. `f98e208` (2026-08-23) fixed the averaging to
+actually capture and mean `num_buffers` fresh buffers per step — but the default was
+already 1, so the fix's benefit stayed invisible (1 buffer averaged with itself is a
+no-op) until the default was corrected back. Symptom: sweep-to-sweep correlation stays
+high (scene/multipath structure is unchanged) but per-sweep amplitude/phase noise is
+visibly higher than before, burying fainter returns — because each step went from
+averaging 4 captures (~6 dB of free SNR, `10*log10(4)`) down to 1. Confirmed live on
+2026-08-23: 15-sweep static-scene comparison via the running `sdr_server`, mean
+complex-domain deviation between sweeps was 0.0055 at `num_buffers=1` vs 0.0034 at
+`num_buffers=4` (~39% reduction). Default restored to 4 in both `App.jsx` and
+`SFCWEngine.__init__`. If `num_buffers` is ever dropped for speed again, check the
+*current* live-sweep wobble against a static scene first, not just correlation —
+correlation is insensitive to this because it doesn't wreck sweep structure, only
+buries weak signal in noise.
+
 ## Quick-tune master table (2026-08-23)
 
 Per-grid quick-tune profile caching is gone. `SFCWEngine._ensure_master_quick_tune_table()`

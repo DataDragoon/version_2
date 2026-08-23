@@ -44,7 +44,7 @@ class SFCWEngine:
         self.start_freq = 2_000_000_000
         self.stop_freq = 5_000_000_000
         self.step_size = 60_000_000
-        self.num_buffers = 1
+        self.num_buffers = 4
         self.settle_count = 10
         self.tx1_gain = 60
         self.rx1_gain = 40
