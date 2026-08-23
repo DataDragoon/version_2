@@ -1,7 +1,6 @@
-import { Activity, Eye, Radio, Radar, ScanLine, Grid3x3, Map, ChevronLeft, Wifi, WifiOff, Brain } from 'lucide-react';
+import { Activity, Radio, Radar, ScanLine, Grid3x3, Map, ChevronLeft, Wifi, WifiOff, Brain } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ImuPanel from './ImuPanel';
-import OptiFlowPanel from './OptiFlowPanel';
 import RfCalibPanel from './RfCalibPanel';
 import BgModelPanel from './BgModelPanel';
 import SfcwPanel from './SfcwPanel';
@@ -11,7 +10,6 @@ import MapPanel from './MapPanel';
 
 const PANELS = [
   { id: 'imu',       label: 'IMU',       icon: Activity },
-  { id: 'optiflow',  label: 'OptiFlow',  icon: Eye },
   { id: 'rfcalib',   label: 'RF Calibrate', icon: Radio },
   { id: 'sfcw',      label: 'SFCW',      icon: Radar },
   { id: 'bgmodel',   label: 'BG Model',  icon: Brain },
@@ -31,8 +29,6 @@ export default function Sidebar({
   imuRate,
   imuData,
   lidarMm,
-  optiflowRate,
-  optiflowData,
   sdrConnected,
   txActive,
   rxActive,
@@ -41,9 +37,6 @@ export default function Sidebar({
   graphPaused,
   onTogglePause,
   sendSdr,
-  gyroComp,
-  onGyroCompChange,
-  sendOptiflow,
   sfcwRunning,
   sfcwStatus,
   sfcwParams,
@@ -231,23 +224,12 @@ export default function Sidebar({
                 onConnect={onConnect}
                 isConnected={isConnected}
                 imuRate={imuRate}
-                optiflowRate={optiflowRate}
                 sdrConnected={sdrConnected}
               />
 
               {/* Panel-specific content */}
               {activePanel === 'imu' && (
                 <ImuPanel isConnected={isConnected} imuData={imuData} />
-              )}
-              {activePanel === 'optiflow' && (
-                <OptiFlowPanel
-                  isConnected={isConnected}
-                  optiflowData={optiflowData}
-                  lidarMm={lidarMm}
-                  gyroComp={gyroComp}
-                  onGyroCompChange={onGyroCompChange}
-                  sendOptiflow={sendOptiflow}
-                />
               )}
               {activePanel === 'rfcalib' && (
                 <RfCalibPanel
@@ -388,7 +370,7 @@ export default function Sidebar({
   );
 }
 
-function ConnectionBlock({ piIp, onPiIpChange, onConnect, isConnected, imuRate, optiflowRate, sdrConnected }) {
+function ConnectionBlock({ piIp, onPiIpChange, onConnect, isConnected, imuRate, sdrConnected }) {
   return (
     <Section label="Connection">
       <div className="flex flex-col gap-2">
@@ -414,9 +396,8 @@ function ConnectionBlock({ piIp, onPiIpChange, onConnect, isConnected, imuRate, 
           )}
         </div>
 
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2">
           <InfoTile label="IMU" value={isConnected ? `${imuRate} Hz` : '—'} />
-          <InfoTile label="Flow" value={isConnected ? `${optiflowRate} Hz` : '—'} />
           <InfoTile label="SDR" value={sdrConnected ? 'OK' : '—'} />
         </div>
       </div>

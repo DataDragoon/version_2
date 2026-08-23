@@ -6,7 +6,7 @@ Calibration discovery results:
   Pitch down:  gyro -Y (-40.1 deg)    -> IMU Y = pitch/left axis
   Yaw right:   gyro -X (-84.7 deg)    -> IMU X = yaw/up axis
 
-Body frame (right-hand, camera-centric):
+Body frame (right-hand):
   Body X = FORWARD, Body Y = LEFT, Body Z = UP
 
 Accel mapping:  body = R_ACCEL @ imu

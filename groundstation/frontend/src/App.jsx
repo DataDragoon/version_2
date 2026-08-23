@@ -122,12 +122,6 @@ export default function App() {
   const imuCountRef = useRef(0);
   const [lidarMm, setLidarMm] = useState(null);
 
-  // OptiFlow state
-  const [optiflowData, setOptiflowData] = useState(null);
-  const [optiflowRate, setOptiflowRate] = useState(0);
-  const optiflowCountRef = useRef(0);
-  const [gyroComp, setGyroComp] = useState(false);
-
   // SDR / RF Calib state
   const [sdrStatus, setSdrStatus] = useState(null);
   const [rxSamples, setRxSamples] = useState([]);
@@ -468,15 +462,6 @@ export default function App() {
 
   const imuUrl = piIp ? `ws://${piIp}:9001` : null;
   const { status: imuStatus, connect: connectImu, disconnect: disconnectImu } = useWebSocket(imuUrl, handleImuMessage);
-
-  // OptiFlow WebSocket
-  const handleOptiflowMessage = useCallback((msg) => {
-    optiflowCountRef.current++;
-    setOptiflowData(msg);
-  }, []);
-
-  const optiflowUrl = piIp ? `ws://${piIp}:9002` : null;
-  const { status: optiflowStatus, send: sendOptiflow, connect: connectOptiflow, disconnect: disconnectOptiflow } = useWebSocket(optiflowUrl, handleOptiflowMessage);
 
   // SDR WebSocket (RF Calib + SFCW share this connection)
   const handleSdrMessage = useCallback((msg) => {
@@ -849,26 +834,21 @@ export default function App() {
     if (!piIp.trim()) return;
     localStorage.setItem('pi_ip', piIp);
     connectImu();
-    connectOptiflow();
     connectSdr();
 
     if (rateIntervalRef.current) clearInterval(rateIntervalRef.current);
     rateIntervalRef.current = setInterval(() => {
       setImuRate(imuCountRef.current);
       imuCountRef.current = 0;
-      setOptiflowRate(optiflowCountRef.current);
-      optiflowCountRef.current = 0;
     }, 1000);
-  }, [piIp, connectImu, connectOptiflow, connectSdr]);
+  }, [piIp, connectImu, connectSdr]);
 
   const handleDisconnect = useCallback(() => {
     disconnectImu();
-    disconnectOptiflow();
     disconnectSdr();
     if (rateIntervalRef.current) { clearInterval(rateIntervalRef.current); rateIntervalRef.current = null; }
     setImuRate(0);
-    setOptiflowRate(0);
-  }, [disconnectImu, disconnectOptiflow, disconnectSdr]);
+  }, [disconnectImu, disconnectSdr]);
 
   const isConnected = imuStatus === 'connected';
 
@@ -894,8 +874,6 @@ export default function App() {
         imuRate={imuRate}
         imuData={imuData}
         lidarMm={lidarMm}
-        optiflowRate={optiflowRate}
-        optiflowData={optiflowData}
         sdrConnected={sdrConnectionStatus === 'connected'}
         txActive={txActive}
         rxActive={rxActive}
@@ -904,12 +882,6 @@ export default function App() {
         graphPaused={graphPaused}
         onTogglePause={setGraphPaused}
         sendSdr={sendSdr}
-        gyroComp={gyroComp}
-        onGyroCompChange={(v) => {
-          setGyroComp(v);
-          sendOptiflow({ cmd: 'gyro_comp', enabled: v });
-        }}
-        sendOptiflow={sendOptiflow}
         sfcwRunning={sfcwRunning}
         sfcwStatus={sfcwStatus}
         sfcwParams={sfcwParams}
@@ -999,9 +971,7 @@ export default function App() {
       <Viewport
         activePanel={activePanel}
         isConnected={isConnected}
-        piIp={piIp}
         imuData={imuData}
-        optiflowData={optiflowData}
         txActive={txActive}
         rxActive={rxActive}
         rxSamples={rxSamples}

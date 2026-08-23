@@ -24,7 +24,6 @@ See CONTEXT.md for full system description.
 ## Hardware Context
 
 - Raspberry Pi with AI HAT+ (Hailo-8L accelerator)
-- Camera: Pi NoIR v3 (CSI, use libcamera/picamera2)
 - LiDAR: TF-LC02 (UART, 115200 baud default)
 - IMU: MPU-6500 (I2C, address 0x68)
 - SDR: bladeRF (USB, use libbladeRF / pybladeRF)
@@ -40,7 +39,7 @@ asked. These files are how context survives across sessions and collaborators.
 
 ## Current Phase
 
-IMU, LiDAR, Camera, and bladeRF SDR integrated. All stream to groundstation debug panels.
+IMU, LiDAR, and bladeRF SDR integrated. All stream to groundstation debug panels.
 RF Calib panel provides signal generator + oscilloscope for bladeRF calibration (TX1/RX1).
 SFCW panel performs stepped-frequency sweeps (1–6 GHz default) with range profile + waterfall display.
 Both RF panels share port 9003 — starting an SFCW sweep auto-stops any active TX/RX in RF Calib.
@@ -103,7 +102,7 @@ derived everything (step count, sweep time, max range) from different ones. `App
 `sfcw_start` (all three start paths: both `App.jsx` handlers and the panel's own toggle).
 The panel is the source of truth; keep new SFCW params in that payload or they will not
 reach the Pi.
-Next steps: OptiFlow pipeline, SAR reconstruction integration.
+Next steps: SAR reconstruction integration.
 
 ## Sweep Timing (measured 2026-08-20)
 

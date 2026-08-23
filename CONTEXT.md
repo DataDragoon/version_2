@@ -2,8 +2,7 @@
 
 ## Mission
 
-Within-wall imaging using a Stepped-Frequency Continuous Wave (SFCW) radar,
-with OptiFlow-based positioning for coherent aperture synthesis.
+Within-wall imaging using a Stepped-Frequency Continuous Wave (SFCW) radar.
 The goal is to image what is inside the wall (rebar, pipes, voids, studs),
 not what is beyond it.
 
@@ -14,7 +13,6 @@ not what is beyond it.
 | Component | Model | Interface | Role |
 |-----------|-------|-----------|------|
 | Compute | Raspberry Pi (with AI HAT+) | — | On-board control, sensor fusion, data capture |
-| Camera | Raspberry Pi NoIR Camera v3 | CSI | Optical flow input (OptiFlow positioning) |
 | LiDAR | TF-LC02 | UART (serial) | Range/distance reference |
 | IMU | MPU-6500 | I2C | Orientation, acceleration, gyro |
 | SDR | bladeRF | USB | SFCW radar TX/RX |
@@ -32,8 +30,8 @@ not what is beyond it.
 │  │                     │          │                      │ │
 │  │  - Sensor capture   │  ◄────►  │  - Control panel     │ │
 │  │  - Radar TX/RX      │  socket  │  - Debug tools       │ │
-│  │  - OptiFlow compute │          │  - Heavy processing  │ │
-│  │  - Data streaming   │          │  - 3D visualization  │ │
+│  │  - Data streaming   │          │  - Heavy processing  │ │
+│  │                     │          │  - 3D visualization  │ │
 │  └─────────────────────┘          └──────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -41,7 +39,7 @@ not what is beyond it.
 ## Operational Model
 
 - **No direct input to the Pi.** All commands originate from the groundstation.
-- **Pi streams data** (raw IQ, sensor logs, camera frames) to groundstation.
+- **Pi streams data** (raw IQ, sensor logs) to groundstation.
 - **Heavy processing** (image reconstruction, SAR focusing) runs on the PC.
 - **Debug everything.** Every subsystem has a dedicated debug view on groundstation.
 
@@ -49,9 +47,6 @@ not what is beyond it.
 
 - LiDAR distance log + live plot
 - IMU orientation/accel live view
-- Camera direct view (raw NoIR feed)
-- OptiFlow vector field visualization
-- OptiFlow-derived position (2D/3D)
 - 3D position visualizer (fused estimate)
 - Radar TX/RX pattern viewer
 - Raw IQ waterfall / spectrogram
@@ -73,9 +68,8 @@ not what is beyond it.
 ```
 version0/
 ├── pi/                    # Code that runs on the Raspberry Pi
-│   ├── sensors/           # LiDAR, IMU, camera drivers/readers
+│   ├── sensors/           # LiDAR, IMU drivers/readers
 │   ├── radar/             # bladeRF SFCW control
-│   ├── optiflow/          # Optical flow positioning (AI HAT+)
 │   ├── comms/             # Network transport to groundstation
 │   └── scripts/           # Startup, calibration, utilities
 ├── groundstation/         # Code that runs on the PC
@@ -98,7 +92,7 @@ Communication between Pi and groundstation. Likely ZeroMQ or raw TCP sockets
 with a simple framed binary protocol. Requirements:
 - Low-latency command delivery (groundstation -> Pi)
 - High-throughput data streaming (Pi -> groundstation)
-- Multiplexed channels (IQ data, sensor data, camera, status)
+- Multiplexed channels (IQ data, sensor data, status)
 
 ## Radar Parameters
 
@@ -137,14 +131,6 @@ with a simple framed binary protocol. Requirements:
 
 UART enabled via `raspi-config`, serial console disabled. Device: `/dev/serial0`.
 
-## Camera — Pi NoIR v3
-
-- Connected to **CSI port 1** on the Pi 5
-- Mounted **upside-down** (corrected with 180° CSS rotation on groundstation)
-- Sensor: IMX708, max 12MP
-- Streaming: 1920x1080 @ 30fps MJPEG over HTTP (port 8080)
-- Library: picamera2 with hardware MJPEG encoder
-
 ## IMU Calibration & Orientation
 
 MPU-6500 mounting orientation (determined via calibration tool):
@@ -152,8 +138,8 @@ MPU-6500 mounting orientation (determined via calibration tool):
 - IMU Y = pitch axis (pitch down = gyro -Y)
 - IMU Z = roll/forward axis (roll right = gyro +Z)
 
-Body frame convention (right-hand, camera-centric):
-- Body X = FORWARD (camera optical axis)
+Body frame convention (right-hand):
+- Body X = FORWARD
 - Body Y = LEFT
 - Body Z = UP
 
@@ -170,8 +156,6 @@ Use `--skip-cal` flag on `stream.py` to reuse previous calibration.
 | Service | Port | Protocol | Direction |
 |---------|------|----------|-----------|
 | Sensor stream (IMU + LiDAR) | 9001 | WebSocket | Pi → Browser |
-| OptiFlow MJPEG (camera feed) | 8080 | HTTP | Pi → Browser |
-| OptiFlow data (vectors, position) | 9002 | WebSocket | Pi → Browser |
 | SDR control + IQ stream | 9003 | WebSocket | Pi ↔ Browser |
 | Groundstation UI | 5000 | HTTP | PC local |
 
@@ -183,14 +167,11 @@ Use `--skip-cal` flag on `stream.py` to reuse previous calibration.
 - [x] IMU driver (MPU-6500 over I2C)
 - [x] LiDAR driver (TF-LC02 over UART)
 - [x] Combined sensor WebSocket stream (port 9001)
-- [x] OptiFlow: camera + sparse LK optical flow (port 8080 MJPEG + port 9002 WS)
 - [x] Groundstation UI — IMU + LiDAR debug panel
-- [x] Groundstation UI — OptiFlow debug panel (live feed + vector overlay + FOV toggle)
 - [x] IMU calibration (gyro bias + accel bias at startup, persisted to imu_cal.json)
 - [x] IMU axis remapping (IMU frame → body frame: forward/left/up)
 - [x] Madgwick AHRS orientation filter (quaternion-based, groundstation 3D view)
 - [x] IMU calibration discovery tool (groundstation panel)
-- [ ] OptiFlow gyro compensation (subtract rotation from optical flow)
 - [x] BladeRF driver + AquaSense calibration panel (signal generator + oscilloscope)
 - [ ] BladeRF SFCW implementation
 - [ ] Network protocol (formal)

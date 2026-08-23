@@ -27,7 +27,6 @@ signal.signal(signal.SIGTERM, cleanup)
 
 services = [
     [sys.executable, os.path.join(base, 'sensors', 'stream.py')],
-    [sys.executable, os.path.join(base, 'sensors', 'camera_stream.py')],
     [sys.executable, os.path.join(base, 'radar', 'sdr_server.py')],
 ]
 

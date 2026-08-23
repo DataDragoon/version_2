@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import { Activity, Eye, Radio, Radar, ScanLine, Grid3x3, Map, Zap, Brain } from 'lucide-react';
+import { Activity, Radio, Radar, ScanLine, Grid3x3, Map, Zap, Brain } from 'lucide-react';
 import ImuDisplay from './ImuDisplay';
-import OptiFlowDisplay from './OptiFlowDisplay';
 import WaveformDisplay from './WaveformDisplay';
 import ReceiverDisplay from './ReceiverDisplay';
 import FftDisplay from './FftDisplay';
@@ -16,9 +15,7 @@ import BgModelDisplay from './BgModelDisplay';
 export default function Viewport({
   activePanel,
   isConnected,
-  piIp,
   imuData,
-  optiflowData,
   txActive,
   rxActive,
   rxSamples,
@@ -89,29 +86,6 @@ export default function Viewport({
             {!imuData && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No IMU data</span>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (activePanel === 'optiflow') {
-    return (
-      <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
-        <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
-          <PaneHeader icon={Eye} label="OptiFlow" active={isConnected && !!optiflowData} color="green" />
-          <div className="flex-1 min-h-0 relative overflow-hidden">
-            {isConnected && optiflowData && (
-              <div className="absolute inset-0 pointer-events-none">
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#4aff8a]/4 blur-[80px] rounded-full" />
-              </div>
-            )}
-            <OptiFlowDisplay piIp={piIp} optiflowData={optiflowData} isConnected={isConnected} />
-            {!optiflowData && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No stream</span>
               </div>
             )}
           </div>

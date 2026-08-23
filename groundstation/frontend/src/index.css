@@ -100,55 +100,6 @@ body {
   background: #1e1e1e;
 }
 
-/* ── OptiFlow Slider (green accent) ──────────────────────────────── */
-
-.optiflow-slider {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 3px;
-  border-radius: 2px;
-  outline: none;
-  cursor: pointer;
-  background: linear-gradient(
-    to right,
-    #4aff8a calc(var(--pct, 0%)),
-    #1e1e1e calc(var(--pct, 0%))
-  );
-}
-
-.optiflow-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #4aff8a;
-  box-shadow: 0 0 8px rgba(74, 255, 138, 0.55);
-  cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-
-.optiflow-slider::-webkit-slider-thumb:hover {
-  transform: scale(1.2);
-  box-shadow: 0 0 12px rgba(74, 255, 138, 0.8);
-}
-
-.optiflow-slider::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
-  border: none;
-  border-radius: 50%;
-  background: #4aff8a;
-  box-shadow: 0 0 8px rgba(74, 255, 138, 0.55);
-  cursor: pointer;
-}
-
-.optiflow-slider::-moz-range-track {
-  height: 3px;
-  border-radius: 2px;
-  background: #1e1e1e;
-}
-
 /* ── RX Slider (cyan) ─────────────────────────────────────────────── */
 
 .rx-slider {
