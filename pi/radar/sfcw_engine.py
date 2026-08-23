@@ -18,6 +18,16 @@ import bladerf
 
 SPEED_OF_LIGHT = 299_792_458
 
+# Master quick-tune table: covers the whole usable band at a fixed 10 MHz grid,
+# generated once per device connection. Any sweep's start/stop/step is snapped
+# onto this grid (see _snap_freq/_snap_step), so retuning never needs the table
+# to be regenerated — start/stop/step can change freely at runtime with no
+# device reset. See CLAUDE.md "Quick-tune master table" for the history of why
+# this replaced per-grid profile caching.
+QT_MASTER_START_FREQ = 1_000_000_000
+QT_MASTER_STOP_FREQ = 6_000_000_000
+QT_MASTER_STEP = 10_000_000
+
 
 class SFCWEngine:
     def __init__(self, driver: BladeRFDriver):
@@ -26,6 +36,7 @@ class SFCWEngine:
         self.stop_freq = 5_000_000_000
         self.step_size = 60_000_000
         self.num_buffers = 1
+        self.settle_count = 10
         self.tx1_gain = 30
         self.rx1_gain = 30
         self.tx2_gain = 30
@@ -44,11 +55,10 @@ class SFCWEngine:
         self._gains_dirty = False
         self._warm = False
         self._sweep_lock = threading.Lock()
-        self._qt_profiles_rx = None
-        self._qt_profiles_tx = None
-        self._qt_params = None
+        self._qt_master_freqs = None
+        self._qt_master_rx = None
+        self._qt_master_tx = None
         self._use_quick_tune = True
-        self._freq_grid_dirty = False
 
     @property
     def num_steps(self):
@@ -70,31 +80,29 @@ class SFCWEngine:
             return float('inf')
         return SPEED_OF_LIGHT / (2 * self.step_size)
 
+    @staticmethod
+    def _snap_freq(value):
+        """Round to the nearest 10 MHz grid point and clamp into the master table's range."""
+        snapped = round(float(value) / QT_MASTER_STEP) * QT_MASTER_STEP
+        return int(min(max(snapped, QT_MASTER_START_FREQ), QT_MASTER_STOP_FREQ))
+
+    @staticmethod
+    def _snap_step(value):
+        snapped = round(float(value) / QT_MASTER_STEP) * QT_MASTER_STEP
+        return int(max(snapped, QT_MASTER_STEP))
+
     def set_params(self, **kwargs):
         with self._lock:
-            freq_grid_changed = False
             if 'start_freq' in kwargs:
-                new_val = int(kwargs['start_freq'])
-                if new_val != self.start_freq:
-                    self.start_freq = new_val
-                    freq_grid_changed = True
+                self.start_freq = self._snap_freq(kwargs['start_freq'])
             if 'stop_freq' in kwargs:
-                new_val = int(kwargs['stop_freq'])
-                if new_val != self.stop_freq:
-                    self.stop_freq = new_val
-                    freq_grid_changed = True
+                self.stop_freq = self._snap_freq(kwargs['stop_freq'])
             if 'step_size' in kwargs:
-                new_val = int(kwargs['step_size'])
-                if new_val != self.step_size:
-                    self.step_size = new_val
-                    freq_grid_changed = True
-            if freq_grid_changed:
-                self._qt_profiles_rx = None
-                self._qt_profiles_tx = None
-                self._qt_params = None
-                self._freq_grid_dirty = True
+                self.step_size = self._snap_step(kwargs['step_size'])
             if 'num_buffers' in kwargs:
                 self.num_buffers = max(1, int(kwargs['num_buffers']))
+            if 'settle_count' in kwargs:
+                self.settle_count = max(1, int(kwargs['settle_count']))
             if 'tx1_gain' in kwargs:
                 self.tx1_gain = int(kwargs['tx1_gain'])
                 self._gains_dirty = True
@@ -124,6 +132,7 @@ class SFCWEngine:
             'stop_freq': self.stop_freq,
             'step_size': self.step_size,
             'num_buffers': self.num_buffers,
+            'settle_count': self.settle_count,
             'tx1_gain': self.tx1_gain,
             'rx1_gain': self.rx1_gain,
             'tx2_gain': self.tx2_gain,
@@ -153,9 +162,6 @@ class SFCWEngine:
 
     def _coherence_test_worker(self, callback):
         try:
-            if self._freq_grid_dirty:
-                self.driver.reset()
-                self._freq_grid_dirty = False
             self._configure_hardware()
             self._start_tx_rx()
             time.sleep(0.1)
@@ -226,8 +232,6 @@ class SFCWEngine:
         """Perform averaged sweeps with hardware already running (warm B-scan mode)."""
         with self._sweep_lock:
             try:
-                if self._freq_grid_dirty:
-                    self._reconfigure_for_new_grid()
                 if self.bscan_primer:
                     self._perform_sweep_raw()
 
@@ -260,9 +264,6 @@ class SFCWEngine:
 
     def _single_sweep_worker(self):
         try:
-            if self._freq_grid_dirty:
-                self.driver.reset()
-                self._freq_grid_dirty = False
             self._configure_hardware()
             self._start_tx_rx()
             time.sleep(0.1)
@@ -281,9 +282,6 @@ class SFCWEngine:
         """Start hardware and keep it running for multiple on-demand sweeps (B-scan mode)."""
         if self._warm or self.running:
             return
-        if self._freq_grid_dirty:
-            self.driver.reset()
-            self._freq_grid_dirty = False
         self._stop_event.clear()
         self._configure_hardware()
         self._start_tx_rx()
@@ -332,8 +330,6 @@ class SFCWEngine:
                     if self._callback:
                         self._callback({'error': 'USB stream died — restart sweep'})
                     break
-                if self._freq_grid_dirty:
-                    self._reconfigure_for_new_grid()
                 if self._gains_dirty:
                     self._apply_gains()
                 range_profile = self._perform_sweep()
@@ -348,23 +344,23 @@ class SFCWEngine:
             self._stop_tx_rx()
             self.running = False
 
-    def _generate_quick_tune_profiles(self):
-        """Generate and cache quick_tune profiles for all sweep frequencies.
+    def _ensure_master_quick_tune_table(self):
+        """Generate the full-band quick_tune table once, covering QT_MASTER_START_FREQ..
+        QT_MASTER_STOP_FREQ at QT_MASTER_STEP spacing.
 
-        Must be called before streaming starts (set_frequency does full VCO cal).
-        Profiles are reused across sweeps until parameters change.
+        This is the one place that pays the full-VCO-cal cost (one bladerf_set_frequency
+        per master grid point — ~500 of them, several seconds total). It's independent of
+        start_freq/stop_freq/step_size, so it only needs to happen once per device
+        connection: after this, changing sweep params never requires a device reset,
+        since every sweep's frequencies are just slices of this table (see
+        _build_sweep_grid). Must be called before streaming starts and before switching
+        to FPGA tuning mode (set_frequency needs normal tuning mode to calibrate).
         """
-        with self._lock:
-            start = self.start_freq
-            stop = self.stop_freq
-            step = self.step_size
-
-        params_key = (start, stop, step)
-        if self._qt_params == params_key and self._qt_profiles_rx is not None:
+        if self._qt_master_freqs is not None:
             return
 
-        num_steps = int((stop - start) / step) + 1
-        freqs = np.linspace(start, stop, num_steps).astype(np.int64)
+        freqs = np.arange(QT_MASTER_START_FREQ, QT_MASTER_STOP_FREQ + QT_MASTER_STEP,
+                           QT_MASTER_STEP, dtype=np.int64)
         dev_ptr = self.driver.device.dev[0]
 
         qt_rx = []
@@ -380,10 +376,43 @@ class SFCWEngine:
             qt_rx.append(qr)
             qt_tx.append(qt_val)
 
-        self._qt_profiles_rx = qt_rx
-        self._qt_profiles_tx = qt_tx
-        self._qt_params = params_key
-        print(f"[sfcw] Generated {num_steps} quick_tune profiles")
+        self._qt_master_freqs = freqs
+        self._qt_master_rx = qt_rx
+        self._qt_master_tx = qt_tx
+        print(f"[sfcw] Generated master quick_tune table: {len(freqs)} profiles "
+              f"({QT_MASTER_START_FREQ/1e9:.1f}-{QT_MASTER_STOP_FREQ/1e9:.1f} GHz, "
+              f"{QT_MASTER_STEP/1e6:.0f} MHz spacing)")
+
+    def invalidate_quick_tune_table(self):
+        """Drop the cached master table so it regenerates on next use.
+
+        Call after a device.reset() — a fresh device open can leave the AD9361 in a
+        state where previously-captured quick_tune profiles no longer apply.
+        """
+        self._qt_master_freqs = None
+        self._qt_master_rx = None
+        self._qt_master_tx = None
+
+    def _build_sweep_grid(self, start, stop, step):
+        """Compute this sweep's frequencies and, if available, their quick_tune profiles
+        by indexing straight into the master table — no regeneration needed regardless
+        of what start/stop/step are, as long as they're on the master's 10 MHz grid
+        within its range (set_params() guarantees this via _snap_freq/_snap_step).
+        """
+        num_steps = int((stop - start) / step) + 1
+
+        if self._use_quick_tune and self._qt_master_freqs is not None:
+            n_master = len(self._qt_master_freqs)
+            start_idx = int(round((start - QT_MASTER_START_FREQ) / QT_MASTER_STEP))
+            step_idx = max(1, int(round(step / QT_MASTER_STEP)))
+            idxs = np.clip(start_idx + np.arange(num_steps) * step_idx, 0, n_master - 1)
+            freqs = self._qt_master_freqs[idxs]
+            qt_rx = [self._qt_master_rx[k] for k in idxs]
+            qt_tx = [self._qt_master_tx[k] for k in idxs]
+            return freqs, qt_rx, qt_tx
+
+        freqs = (start + np.arange(num_steps) * step).astype(np.int64)
+        return freqs, None, None
 
     def _configure_hardware(self):
         self.driver.tx_gain = self.tx1_gain
@@ -394,7 +423,7 @@ class SFCWEngine:
         self.driver.bandwidth = 8_000_000
         self.driver.set_waveform('cw', offset=100_000, amplitude=0.9)
         if self._use_quick_tune:
-            self._generate_quick_tune_profiles()
+            self._ensure_master_quick_tune_table()
         self.driver._configure_channels_dual()
         self.driver.set_tuning_mode_fpga()
         self._fpga_tuning = True
@@ -428,21 +457,6 @@ class SFCWEngine:
         libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(1), int(self.rx2_gain))
         self._gains_dirty = False
 
-    def _reconfigure_for_new_grid(self):
-        """Full device reset and reconfigure after frequency grid change.
-
-        Needed because the AD9361 VCO state gets corrupted when quick-tune
-        profiles are regenerated without a clean device state.
-        """
-        print("[sfcw] Frequency grid changed — resetting device")
-        self._stop_tx_rx()
-        self.driver.reset()
-        self._freq_grid_dirty = False
-        self._configure_hardware()
-        self._start_tx_rx()
-        time.sleep(0.1)
-        print("[sfcw] Reconfiguration complete")
-
     def _stop_tx_rx(self):
         self.driver.stop_rx_dual()
         self.driver.stop_tx_dual()
@@ -463,9 +477,10 @@ class SFCWEngine:
             stop = self.stop_freq
             step = self.step_size
             num_buffers = self.num_buffers
+            settle_count = self.settle_count
 
-        num_steps = int((stop - start) / step) + 1
-        freqs = np.linspace(start, stop, num_steps).astype(np.int64)
+        freqs, qt_rx, qt_tx = self._build_sweep_grid(start, stop, step)
+        num_steps = len(freqs)
 
         def progress(i):
             if self._callback and i % 10 == 0:
@@ -476,7 +491,7 @@ class SFCWEngine:
                     'freq_mhz': freqs[i] / 1e6,
                 })
 
-        h_cal, dropped_steps = self._sweep_core(num_steps, freqs, num_buffers, progress)
+        h_cal, dropped_steps = self._sweep_core(freqs, qt_rx, qt_tx, num_buffers, settle_count, progress)
         if h_cal is None:
             return None
 
@@ -492,23 +507,24 @@ class SFCWEngine:
             stop = self.stop_freq
             step = self.step_size
             num_buffers = self.num_buffers
+            settle_count = self.settle_count
 
-        num_steps = int((stop - start) / step) + 1
-        freqs = np.linspace(start, stop, num_steps).astype(np.int64)
+        freqs, qt_rx, qt_tx = self._build_sweep_grid(start, stop, step)
 
-        h_cal, _ = self._sweep_core(num_steps, freqs, num_buffers)
+        h_cal, _ = self._sweep_core(freqs, qt_rx, qt_tx, num_buffers, settle_count)
         return h_cal
 
-    def _sweep_core(self, num_steps, freqs, num_buffers, progress_cb=None):
-        """Sweep loop: retune, settle, capture, reference-divide.
+    def _sweep_core(self, freqs, qt_rx, qt_tx, num_buffers, settle_count, progress_cb=None):
+        """Sweep loop: retune, settle, capture num_buffers buffers and average them
+        (noise averaging — 10*log10(num_buffers) dB of SNR for free), reference-divide.
+
+        settle_count is the number of RX buffer arrivals to wait, after issuing a
+        retune, before trusting the data — see CLAUDE.md's Sweep Timing / quick-tune
+        regression note for why this matters and shouldn't be dropped carelessly.
 
         Returns (h_cal, dropped_steps) or (None, 0) if stopped.
-        settle_count=10 validated over 50 sweeps at 0.9997 correlation. A 2026-08-20
-        optimization pass cut this to 7, which was never actually validated (the
-        "Test C" it was gated behind never landed) — it caused intermittent single-step
-        corruption that, via the sweep-wide IFFT, showed up as occasional garbled
-        whole scans. Reverted 2026-08-23.
         """
+        num_steps = len(freqs)
         h_signal = np.zeros(num_steps, dtype=np.complex128)
         h_reference = np.zeros(num_steps, dtype=np.complex128)
 
@@ -516,14 +532,7 @@ class SFCWEngine:
         tx_ch = bladerf.CHANNEL_TX(0)
         rx_ch = bladerf.CHANNEL_RX(0)
 
-        use_qt = (self._use_quick_tune and self._qt_profiles_rx is not None
-                  and len(self._qt_profiles_rx) == num_steps)
-
-        settle_count = 10 if use_qt else 2
-        total_wait = settle_count + num_buffers
-
-        qt_rx = self._qt_profiles_rx
-        qt_tx = self._qt_profiles_tx
+        use_qt = qt_rx is not None
         ref_tone_scaled = self._ref_tone_scaled
         rx_cond = self._rx_cond
         stop_event = self._stop_event
@@ -543,20 +552,31 @@ class SFCWEngine:
                 libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
 
             with rx_cond:
-                post_retune_seq = self._rx_seq
-                target_seq = post_retune_seq + total_wait
+                target_seq = self._rx_seq + settle_count
                 while self._rx_seq < target_seq:
                     if not rx_cond.wait(timeout=1.0):
                         break
-                latest = self._rx_latest
 
-            if latest is not None:
-                rx1_buf = latest[0]
-                rx2_buf = latest[1]
-                sig_arr = rx1_buf.astype(np.float64)
-                ref_arr = rx2_buf.astype(np.float64)
-                h_signal[i] = np.mean((sig_arr[0::2] + 1j * sig_arr[1::2]) * ref_tone_scaled)
-                h_reference[i] = np.mean((ref_arr[0::2] + 1j * ref_arr[1::2]) * ref_tone_scaled)
+                sig_bufs = []
+                ref_bufs = []
+                last_seq = self._rx_seq
+                for _ in range(num_buffers):
+                    while self._rx_seq <= last_seq:
+                        if not rx_cond.wait(timeout=1.0):
+                            break
+                    if self._rx_seq <= last_seq:
+                        break
+                    last_seq = self._rx_seq
+                    sig_bufs.append(self._rx_latest[0])
+                    ref_bufs.append(self._rx_latest[1])
+
+            if sig_bufs:
+                sig_arr = np.asarray(sig_bufs, dtype=np.float64)
+                ref_arr = np.asarray(ref_bufs, dtype=np.float64)
+                sig_cplx = (sig_arr[:, 0::2] + 1j * sig_arr[:, 1::2]) * ref_tone_scaled
+                ref_cplx = (ref_arr[:, 0::2] + 1j * ref_arr[:, 1::2]) * ref_tone_scaled
+                h_signal[i] = sig_cplx.mean()
+                h_reference[i] = ref_cplx.mean()
             else:
                 dropped_steps += 1
 
