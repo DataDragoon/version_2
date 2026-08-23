@@ -40,8 +40,12 @@ asked. These files are how context survives across sessions and collaborators.
 ## Current Phase
 
 IMU, LiDAR, and bladeRF SDR integrated. All stream to groundstation debug panels.
-RF Calib panel provides signal generator + oscilloscope for bladeRF calibration (TX1/RX1).
-SFCW panel performs stepped-frequency sweeps (1–6 GHz default) with range profile + waterfall display.
+RF Calib panel provides signal generator + oscilloscope for bladeRF calibration — always
+runs both channels (antenna TX1/RX1 + reference TX2/RX2 loopback) simultaneously, viewport
+split left (antenna) / right (reference) for both TX and RX.
+SFCW panel performs stepped-frequency sweeps (2–5 GHz, hard-bounded by the quick-tune master
+table's 256-profile hardware ceiling — see Quick-tune master table below) with range profile
++ waterfall display.
 Both RF panels share port 9003 — starting an SFCW sweep auto-stops any active TX/RX in RF Calib.
 C-scan panel rasters a 2D grid of positions over the target and shares the SFCW panel's
 background model machinery (see below).
@@ -163,15 +167,15 @@ again.
 ## Quick-tune master table (2026-08-23)
 
 Per-grid quick-tune profile caching is gone. `SFCWEngine._ensure_master_quick_tune_table()`
-generates one fixed table spanning `QT_MASTER_START_FREQ`–`QT_MASTER_STOP_FREQ` (1–6 GHz)
-at `QT_MASTER_STEP` (10 MHz) once per device connection — ~501 profiles, paying the full
+generates one fixed table spanning `QT_MASTER_START_FREQ`–`QT_MASTER_STOP_FREQ` (2–5 GHz)
+at `QT_MASTER_STEP` (20 MHz) once per device connection — 151 profiles, paying the full
 per-frequency VCO-cal cost (`bladerf_set_frequency` + `bladerf_get_quick_tune`) only that
-once, several seconds total. `set_params()` snaps `start_freq`/`stop_freq` to the nearest
-10 MHz and clamps them into that range, and snaps `step_size` to a 10 MHz multiple
-(`_snap_freq`/`_snap_step`), so every sweep's frequencies are guaranteed to land exactly on
-master grid points. `_build_sweep_grid()` then just indexes into the cached table — no
-regeneration, no device reset — so start/stop/step can change freely mid-session, live,
-with no interruption.
+once, ~6s total. `set_params()` snaps `start_freq`/`stop_freq` to the nearest 20 MHz and
+clamps them into that range, and snaps `step_size` to a 20 MHz multiple (`_snap_freq`/
+`_snap_step`), so every sweep's frequencies are guaranteed to land exactly on master grid
+points. `_build_sweep_grid()` then just indexes into the cached table — no regeneration,
+no device reset — so start/stop/step can change freely mid-session, live, with no
+interruption.
 
 This replaced the old scheme: profiles were cached per-`(start, stop, step)` combo, and
 changing any of those three flipped `_freq_grid_dirty`, which forced a full
@@ -181,11 +185,30 @@ errors on the reopen — which is why it's gone rather than fixed. The master ta
 needs invalidating (`SFCWEngine.invalidate_quick_tune_table()`) after an explicit
 `device_reset` from the panel; `sdr_server.py`'s `device_reset` handler calls it.
 
-Consequence: the sweep range is now hard-bounded to 1–6 GHz (panel Start/Stop min is
-1000 MHz, was 47 MHz) — anything requested outside that gets clamped. If sub-1 GHz
-SFCW sweeps are ever needed, `QT_MASTER_START_FREQ` has to move down and the whole
-table regenerates at whatever range it covers; there's no fundamental reason it
-couldn't run 47 MHz–6 GHz instead, it just costs more startup time for more profiles.
+**Hard ceiling: `MAX_QUICK_TUNE_PROFILES = 256`, do not exceed it.** The first version of
+this table tried 1–6 GHz at 10 MHz spacing (501 profiles) and it was broken: verified
+against libbladeRF's own source on the Pi
+(`~/bladerf-src/host/libraries/libbladeRF/src/board/bladerf2/bladerf2.c:1419-1513`),
+`bladerf_get_quick_tune()` is not a stateless read — every call *writes* a new fastlock
+profile into a fixed-size on-device table (`board_data->quick_tune_tx/rx_profile`, capped
+at `NUM_BBP_FASTLOCK_PROFILES = 256` in `fpga_common/include/bladerf2_common.h`, one shared
+counter per direction across both TX/RX sub-channels). That counter only resets on a full
+`bladerf_open()`. Past 256 calls it returns `BLADERF_ERR_UNEXPECTED` and leaves the profile
+struct unpopulated — the original code didn't check the return code, so it silently stored
+zeroed/garbage profiles for every frequency past the 256th, which `bladerf_schedule_retune()`
+would then happily retune to the wrong RF state. Symptom on stdout: a wall of
+`[ERROR @ .../bladerf2.c:1427/1456] Reached maximum number of TX/RX quick tune profiles.`
+repeated once per frequency past the cap, on every `start.py` run. `_ensure_master_quick_tune_table()`
+now raises immediately if `len(freqs) > MAX_QUICK_TUNE_PROFILES` (compile-time check) or if
+`bladerf_get_quick_tune()` ever returns nonzero (runtime check) — fail loud, never store an
+unchecked profile. 2–5 GHz at 20 MHz is 151 profiles, comfortably under 256.
+
+Consequence: the sweep range is hard-bounded to 2–5 GHz (panel Start/Stop min/max 2000/5000
+MHz) — anything requested outside that gets clamped, and step size floors at 20 MHz. Widening
+either means trading against the 256-profile ceiling (span_MHz / step_MHz + 1 ≤ 256) — there's
+no way to have both a wide range and fine resolution simultaneously on this hardware without a
+different strategy (e.g. a lazy per-frequency cache with a reset-triggered eviction, discussed
+and deferred 2026-08-23 in favor of just picking a range/step that fits).
 
 **Default step size is 60 MHz (51 steps, 2–5 GHz)** — `sfcwParams.stepSize` in
 `App.jsx` and `SFCWEngine.step_size` both carry it, and the groundstation pushes its

@@ -105,16 +105,16 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             value={startFreq}
             unit="MHz"
             onChange={(v) => { update('startFreq', v); sendParams({ startFreq: v }); }}
-            min={1000}
-            max={6000}
+            min={2000}
+            max={5000}
           />
           <EditableField
             label="Stop"
             value={stopFreq}
             unit="MHz"
             onChange={(v) => { update('stopFreq', v); sendParams({ stopFreq: v }); }}
-            min={1000}
-            max={6000}
+            min={2000}
+            max={5000}
           />
         </div>
       </Section>
@@ -127,7 +127,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             value={stepSize}
             unit="MHz"
             onChange={(v) => { update('stepSize', v); sendParams({ stepSize: v }); }}
-            min={0.1}
+            min={20}
             max={500}
           />
         </div>

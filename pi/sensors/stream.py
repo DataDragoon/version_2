@@ -78,8 +78,16 @@ async def main():
 
     stop = asyncio.get_event_loop().create_future()
     loop = asyncio.get_event_loop()
-    loop.add_signal_handler(signal.SIGINT, stop.set_result, None)
-    loop.add_signal_handler(signal.SIGTERM, stop.set_result, None)
+
+    def request_stop():
+        # SIGINT (Ctrl-C, propagated to the whole process group) and SIGTERM
+        # (start.py forwarding to this child) routinely both arrive — resolving
+        # an already-done future raises InvalidStateError, so guard it.
+        if not stop.done():
+            stop.set_result(None)
+
+    loop.add_signal_handler(signal.SIGINT, request_stop)
+    loop.add_signal_handler(signal.SIGTERM, request_stop)
 
     async with websockets.serve(register, '0.0.0.0', args.port):
         task = asyncio.create_task(sensor_loop(args.rate, skip_cal=args.skip_cal))

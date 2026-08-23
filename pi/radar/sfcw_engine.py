@@ -18,15 +18,24 @@ import bladerf
 
 SPEED_OF_LIGHT = 299_792_458
 
-# Master quick-tune table: covers the whole usable band at a fixed 10 MHz grid,
-# generated once per device connection. Any sweep's start/stop/step is snapped
-# onto this grid (see _snap_freq/_snap_step), so retuning never needs the table
-# to be regenerated — start/stop/step can change freely at runtime with no
-# device reset. See CLAUDE.md "Quick-tune master table" for the history of why
-# this replaced per-grid profile caching.
-QT_MASTER_START_FREQ = 1_000_000_000
-QT_MASTER_STOP_FREQ = 6_000_000_000
-QT_MASTER_STEP = 10_000_000
+# Master quick-tune table: covers the whole usable band at a fixed grid, generated
+# once per device connection. Any sweep's start/stop/step is snapped onto this grid
+# (see _snap_freq/_snap_step), so retuning never needs the table to be regenerated —
+# start/stop/step can change freely at runtime with no device reset. See CLAUDE.md
+# "Quick-tune master table" for the history of why this replaced per-grid caching.
+#
+# bladerf_get_quick_tune() isn't a stateless read — every call WRITES a new fastlock
+# profile into a fixed-size on-device table (bladerf2.c: board_data->quick_tune_tx/
+# rx_profile, capped at NUM_BBP_FASTLOCK_PROFILES). That counter only resets on a
+# full device close+reopen. Past the cap, bladerf_get_quick_tune() returns an error
+# and leaves the profile struct unpopulated — MAX_QUICK_TUNE_PROFILES here must stay
+# under that hardware ceiling or the table silently contains garbage profiles for
+# every frequency past it (this happened: a prior 1-6 GHz/10 MHz table needed 501
+# profiles against a 256 cap).
+MAX_QUICK_TUNE_PROFILES = 256  # NUM_BBP_FASTLOCK_PROFILES, fpga_common/bladerf2_common.h
+QT_MASTER_START_FREQ = 2_000_000_000
+QT_MASTER_STOP_FREQ = 5_000_000_000
+QT_MASTER_STEP = 20_000_000
 
 
 class SFCWEngine:
@@ -349,7 +358,8 @@ class SFCWEngine:
         QT_MASTER_STOP_FREQ at QT_MASTER_STEP spacing.
 
         This is the one place that pays the full-VCO-cal cost (one bladerf_set_frequency
-        per master grid point — ~500 of them, several seconds total). It's independent of
+        per master grid point) and consumes the device's fixed BBP fastlock profile
+        budget (MAX_QUICK_TUNE_PROFILES, see the module comment). It's independent of
         start_freq/stop_freq/step_size, so it only needs to happen once per device
         connection: after this, changing sweep params never requires a device reset,
         since every sweep's frequencies are just slices of this table (see
@@ -361,6 +371,14 @@ class SFCWEngine:
 
         freqs = np.arange(QT_MASTER_START_FREQ, QT_MASTER_STOP_FREQ + QT_MASTER_STEP,
                            QT_MASTER_STEP, dtype=np.int64)
+        if len(freqs) > MAX_QUICK_TUNE_PROFILES:
+            raise RuntimeError(
+                f"Master quick-tune table needs {len(freqs)} profiles but the bladeRF2 "
+                f"firmware caps BBP fastlock profiles at {MAX_QUICK_TUNE_PROFILES} per "
+                f"direction. Narrow QT_MASTER_STOP_FREQ - QT_MASTER_START_FREQ or widen "
+                f"QT_MASTER_STEP in sfcw_engine.py."
+            )
+
         dev_ptr = self.driver.device.dev[0]
 
         qt_rx = []
@@ -371,8 +389,16 @@ class SFCWEngine:
             libbladeRF.bladerf_set_frequency(dev_ptr, bladerf.CHANNEL_TX(0), f_int)
             qr = ffi.new('struct bladerf_quick_tune *')
             qt_val = ffi.new('struct bladerf_quick_tune *')
-            libbladeRF.bladerf_get_quick_tune(dev_ptr, bladerf.CHANNEL_RX(0), qr)
-            libbladeRF.bladerf_get_quick_tune(dev_ptr, bladerf.CHANNEL_TX(0), qt_val)
+            rc_rx = libbladeRF.bladerf_get_quick_tune(dev_ptr, bladerf.CHANNEL_RX(0), qr)
+            rc_tx = libbladeRF.bladerf_get_quick_tune(dev_ptr, bladerf.CHANNEL_TX(0), qt_val)
+            if rc_rx != 0 or rc_tx != 0:
+                raise RuntimeError(
+                    f"bladerf_get_quick_tune failed at {f_int/1e6:.0f} MHz "
+                    f"(rx_rc={rc_rx}, tx_rc={rc_tx}) after {len(qt_rx)} profiles built — "
+                    f"likely exhausted the device's {MAX_QUICK_TUNE_PROFILES}-profile "
+                    f"fastlock table. A device reset reclaims the budget (fresh "
+                    f"bladerf_open() resets the on-device counter to 0)."
+                )
             qt_rx.append(qr)
             qt_tx.append(qt_val)
 
@@ -380,7 +406,7 @@ class SFCWEngine:
         self._qt_master_rx = qt_rx
         self._qt_master_tx = qt_tx
         print(f"[sfcw] Generated master quick_tune table: {len(freqs)} profiles "
-              f"({QT_MASTER_START_FREQ/1e9:.1f}-{QT_MASTER_STOP_FREQ/1e9:.1f} GHz, "
+              f"({QT_MASTER_START_FREQ/1e9:.2f}-{QT_MASTER_STOP_FREQ/1e9:.2f} GHz, "
               f"{QT_MASTER_STEP/1e6:.0f} MHz spacing)")
 
     def invalidate_quick_tune_table(self):
