@@ -96,6 +96,23 @@ class BladeRFDriver:
 
         print(f"[bladerf] Dual-channel configured: TX1={gains_tx[0]}dB TX2={gains_tx[1]}dB RX1={gains_rx[0]}dB RX2={gains_rx[1]}dB")
 
+    def reapply_dual_gains(self):
+        """Re-push TX1/TX2/RX1/RX2 gains after enabling TX/RX modules.
+
+        enable_module() resets gain state, so any dual-channel start (start_tx_dual,
+        start_rx_dual) needs this called afterward or the gains configured by
+        _configure_channels_dual() are silently lost. Safe to call even if only one
+        direction's modules are enabled — setting a gain register for a disabled
+        module just takes effect whenever it's next enabled.
+        """
+        dev_ptr = self.device.dev[0]
+        libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(0), MGC)
+        libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(1), MGC)
+        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(0), int(self.rx_gain))
+        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(1), int(self.rx2_gain))
+        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(0), int(self.tx_gain))
+        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(1), int(self.tx2_gain))
+
     def set_tuning_mode_fpga(self):
         """Switch to FPGA tuning mode — retunes execute on-FPGA, no USB round-trip."""
         dev_ptr = self.device.dev[0]
@@ -145,7 +162,16 @@ class BladeRFDriver:
             ch_tx.bandwidth = self.bandwidth
             ch_rx.sample_rate = self.sample_rate
             ch_rx.bandwidth = self.bandwidth
+            if self._dual_channel:
+                ch_tx2 = self.device.Channel(bladerf.CHANNEL_TX(1))
+                ch_rx2 = self.device.Channel(bladerf.CHANNEL_RX(1))
+                ch_tx2.sample_rate = self.sample_rate
+                ch_tx2.bandwidth = self.bandwidth
+                ch_rx2.sample_rate = self.sample_rate
+                ch_rx2.bandwidth = self.bandwidth
             self._tx_buffer = self._generate(int(self.sample_rate * 0.01))
+            if self._dual_channel:
+                self._rebuild_tx_dual_buffer()
 
     def set_waveform(self, waveform_type, **params):
         with self._lock:
@@ -159,6 +185,27 @@ class BladeRFDriver:
             if 'chirp_duration' in params:
                 self.chirp_duration = float(params['chirp_duration'])
             self._tx_buffer = self._generate(int(self.sample_rate * 0.01))
+            if self._dual_channel:
+                self._rebuild_tx_dual_buffer()
+
+    def _rebuild_tx_dual_buffer(self):
+        """Rebuild the interleaved TX1+TX2 buffer from self._tx_buffer.
+
+        Call whenever self._tx_buffer changes while dual TX may be running —
+        _tx_loop_dual re-reads _tx_dual_bytes every iteration (like _tx_loop does
+        with _tx_buffer), so this is what makes live waveform/rate changes actually
+        reach a running dual-channel TX instead of silently doing nothing.
+        """
+        buf = self._tx_buffer
+        n_samples = len(buf) // 2
+        tx_dual_buf = np.empty(len(buf) * 2, dtype=np.int16)
+        tx_dual_buf[0::4] = buf[0::2]  # TX1 I
+        tx_dual_buf[1::4] = buf[1::2]  # TX1 Q
+        tx_dual_buf[2::4] = buf[0::2]  # TX2 I
+        tx_dual_buf[3::4] = buf[1::2]  # TX2 Q
+        self._tx_dual_buf = tx_dual_buf
+        self._tx_dual_bytes = tx_dual_buf.tobytes()
+        self._tx_dual_n_samples = n_samples
 
     def _generate(self, num_samples):
         if self.waveform_type == 'chirp':
@@ -286,16 +333,7 @@ class BladeRFDriver:
         self._tx_stop.clear()
         self.tx_running = True
         self._dual_channel = True
-        # Pre-allocate the interleaved dual-channel buffer once
-        buf = self._tx_buffer
-        n_samples = len(buf) // 2
-        self._tx_dual_buf = np.empty(len(buf) * 2, dtype=np.int16)
-        self._tx_dual_buf[0::4] = buf[0::2]  # TX1 I
-        self._tx_dual_buf[1::4] = buf[1::2]  # TX1 Q
-        self._tx_dual_buf[2::4] = buf[0::2]  # TX2 I
-        self._tx_dual_buf[3::4] = buf[1::2]  # TX2 Q
-        self._tx_dual_bytes = self._tx_dual_buf.tobytes()
-        self._tx_dual_n_samples = n_samples
+        self._rebuild_tx_dual_buffer()
         self.device.sync_config(
             layout=ChannelLayout.TX_X2,
             fmt=Format.SC16_Q11,
@@ -310,11 +348,13 @@ class BladeRFDriver:
         self._tx_thread.start()
 
     def _tx_loop_dual(self):
-        """TX loop for dual channel — replays pre-built interleaved buffer."""
+        """TX loop for dual channel — replays the interleaved buffer, re-read each
+        iteration (like _tx_loop) so live waveform/rate changes take effect."""
         try:
-            tx_bytes = self._tx_dual_bytes
-            n_samples = self._tx_dual_n_samples
             while not self._tx_stop.is_set():
+                with self._lock:
+                    tx_bytes = self._tx_dual_bytes
+                    n_samples = self._tx_dual_n_samples
                 self.device.sync_tx(tx_bytes, n_samples)
         except Exception as e:
             print(f"[bladerf] TX dual error: {e}")

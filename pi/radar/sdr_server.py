@@ -61,18 +61,22 @@ class SDRServer:
             if action == 'start_tx':
                 if self.sfcw._warm:
                     self.sfcw.cool_down()
-                self.driver.start_tx()
+                self.driver._configure_channels_dual()
+                self.driver.start_tx_dual()
+                self.driver.reapply_dual_gains()
                 await self._broadcast_status()
             elif action == 'stop_tx':
-                self.driver.stop_tx()
+                self.driver.stop_tx_dual()
                 await self._broadcast_status()
             elif action == 'start_rx':
                 if self.sfcw._warm:
                     self.sfcw.cool_down()
-                self.driver.start_rx(self._rx_callback)
+                self.driver._configure_channels_dual()
+                self.driver.start_rx_dual(self._rx_callback, num_samples=16384)
+                self.driver.reapply_dual_gains()
                 await self._broadcast_status()
             elif action == 'stop_rx':
-                self.driver.stop_rx()
+                self.driver.stop_rx_dual()
                 await self._broadcast_status()
             elif action == 'set_freq':
                 self.driver.set_frequency(float(cmd['value']) * 1e6)
@@ -283,24 +287,50 @@ class SDRServer:
                 dead.add(client)
         self.clients -= dead
 
-    def _rx_callback(self, iq_buffer):
+    def _rx_callback(self, rx1_iq, rx2_iq):
+        pair = (rx1_iq, rx2_iq)
         try:
-            self.rx_queue.put_nowait(iq_buffer)
+            self.rx_queue.put_nowait(pair)
         except asyncio.QueueFull:
             try:
                 self.rx_queue.get_nowait()
             except asyncio.QueueEmpty:
                 pass
             try:
-                self.rx_queue.put_nowait(iq_buffer)
+                self.rx_queue.put_nowait(pair)
             except asyncio.QueueFull:
                 pass
+
+    def _channel_vis(self, iq):
+        """Time-domain preview + FFT magnitudes for one channel's raw interleaved IQ."""
+        i_raw = iq[0::2].astype(np.float64)
+        q_raw = iq[1::2].astype(np.float64)
+        num = len(i_raw)
+
+        vis_len = min(VIS_SAMPLES, num)
+        i_vis = i_raw[:vis_len] / SCALE
+        q_vis = q_raw[:vis_len] / SCALE
+
+        fft_len = min(num, FFT_SIZE)
+        complex_iq = (i_raw[:fft_len] + 1j * q_raw[:fft_len]) / SCALE
+        window = np.hanning(fft_len)
+        spectrum = np.fft.fftshift(np.fft.fft(complex_iq * window))
+        magnitudes = 20 * np.log10(np.abs(spectrum) / fft_len + 1e-12)
+        n_bins = 512
+        if len(magnitudes) > n_bins:
+            trim = len(magnitudes) - len(magnitudes) % n_bins
+            magnitudes = magnitudes[:trim].reshape(n_bins, -1).max(axis=1)
+
+        return (
+            {'i': [round(v, 4) for v in i_vis.tolist()], 'q': [round(v, 4) for v in q_vis.tolist()]},
+            {'magnitudes': [round(v, 1) for v in magnitudes.tolist()]},
+        )
 
     async def _broadcast_loop(self):
         interval = 1.0 / VIS_FPS
         while True:
             try:
-                iq = await asyncio.wait_for(self.rx_queue.get(), timeout=0.1)
+                rx1_iq, rx2_iq = await asyncio.wait_for(self.rx_queue.get(), timeout=0.1)
             except asyncio.TimeoutError:
                 await asyncio.sleep(0.01)
                 continue
@@ -309,33 +339,19 @@ class SDRServer:
                 await asyncio.sleep(interval)
                 continue
 
-            i_raw = iq[0::2].astype(np.float64)
-            q_raw = iq[1::2].astype(np.float64)
-            num = len(i_raw)
-
-            vis_len = min(VIS_SAMPLES, num)
-            i_vis = i_raw[:vis_len] / SCALE
-            q_vis = q_raw[:vis_len] / SCALE
+            antenna_data, antenna_fft = self._channel_vis(rx1_iq)
+            reference_data, reference_fft = self._channel_vis(rx2_iq)
 
             rx_msg = json.dumps({
                 'type': 'rx_data',
-                'i': [round(v, 4) for v in i_vis.tolist()],
-                'q': [round(v, 4) for v in q_vis.tolist()],
+                'antenna': antenna_data,
+                'reference': reference_data,
             })
-
-            fft_len = min(num, FFT_SIZE)
-            complex_iq = (i_raw[:fft_len] + 1j * q_raw[:fft_len]) / SCALE
-            window = np.hanning(fft_len)
-            spectrum = np.fft.fftshift(np.fft.fft(complex_iq * window))
-            magnitudes = 20 * np.log10(np.abs(spectrum) / fft_len + 1e-12)
-            n_bins = 512
-            if len(magnitudes) > n_bins:
-                trim = len(magnitudes) - len(magnitudes) % n_bins
-                magnitudes = magnitudes[:trim].reshape(n_bins, -1).max(axis=1)
 
             fft_msg = json.dumps({
                 'type': 'rx_fft',
-                'magnitudes': [round(v, 1) for v in magnitudes.tolist()],
+                'antenna': antenna_fft,
+                'reference': reference_fft,
                 'freq_span': self.driver.sample_rate,
             })
 

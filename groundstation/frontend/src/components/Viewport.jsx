@@ -18,8 +18,10 @@ export default function Viewport({
   imuData,
   txActive,
   rxActive,
-  rxSamples,
-  fftData,
+  rxSamplesAnt,
+  rxSamplesRef,
+  fftDataAnt,
+  fftDataRef,
   showFFT,
   graphPaused,
   sfcwResult,
@@ -98,38 +100,73 @@ export default function Viewport({
     return (
       <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
 
-        {/* Upper: TX Waveform */}
-        <div className="relative flex flex-col min-h-0 border-b border-white/5" style={{ flex: '1 1 0%' }}>
-          <PaneHeader icon={Zap} label="Transmitter" active={txActive} color="orange" />
-          <div className="flex-1 min-h-0 relative overflow-hidden">
-            {txActive && (
-              <div className="absolute inset-0 pointer-events-none">
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#D1855C]/5 blur-[80px] rounded-full" />
-              </div>
-            )}
-            <WaveformDisplay active={txActive} />
+        {/* Upper: TX Waveform — antenna (left) / reference (right) */}
+        <div className="flex min-h-0 border-b border-white/5" style={{ flex: '1 1 0%' }}>
+          <div className="relative flex flex-col min-w-0 border-r border-white/5" style={{ flex: '1 1 0%' }}>
+            <PaneHeader icon={Zap} label="Transmitter · Antenna" active={txActive} color="orange" />
+            <div className="flex-1 min-h-0 relative overflow-hidden">
+              {txActive && (
+                <div className="absolute inset-0 pointer-events-none">
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#D1855C]/5 blur-[80px] rounded-full" />
+                </div>
+              )}
+              <WaveformDisplay active={txActive} />
+            </div>
+          </div>
+          <div className="relative flex flex-col min-w-0" style={{ flex: '1 1 0%' }}>
+            <PaneHeader icon={Zap} label="Transmitter · Reference" active={txActive} color="orange" />
+            <div className="flex-1 min-h-0 relative overflow-hidden">
+              {txActive && (
+                <div className="absolute inset-0 pointer-events-none">
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#D1855C]/5 blur-[80px] rounded-full" />
+                </div>
+              )}
+              <WaveformDisplay active={txActive} />
+            </div>
           </div>
         </div>
 
-        {/* Lower: Receiver */}
-        <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
-          <PaneHeader icon={Radio} label="Receiver" active={rxActive} color="cyan" />
-          <div className="flex-1 min-h-0 relative overflow-hidden">
-            {rxActive && (
-              <div className="absolute inset-0 pointer-events-none">
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#22d3ee]/4 blur-[80px] rounded-full" />
-              </div>
-            )}
-            {showFFT ? (
-              <FftDisplay active={rxActive} fftData={fftData} paused={graphPaused} />
-            ) : (
-              <ReceiverDisplay active={rxActive} samples={rxSamples} paused={graphPaused} />
-            )}
-            {!rxActive && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No signal</span>
-              </div>
-            )}
+        {/* Lower: Receiver — antenna (left) / reference (right) */}
+        <div className="flex min-h-0" style={{ flex: '1 1 0%' }}>
+          <div className="relative flex flex-col min-w-0 border-r border-white/5" style={{ flex: '1 1 0%' }}>
+            <PaneHeader icon={Radio} label="Receiver · Antenna" active={rxActive} color="cyan" />
+            <div className="flex-1 min-h-0 relative overflow-hidden">
+              {rxActive && (
+                <div className="absolute inset-0 pointer-events-none">
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#22d3ee]/4 blur-[80px] rounded-full" />
+                </div>
+              )}
+              {showFFT ? (
+                <FftDisplay active={rxActive} fftData={fftDataAnt} paused={graphPaused} />
+              ) : (
+                <ReceiverDisplay active={rxActive} samples={rxSamplesAnt} paused={graphPaused} />
+              )}
+              {!rxActive && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No signal</span>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="relative flex flex-col min-w-0" style={{ flex: '1 1 0%' }}>
+            <PaneHeader icon={Radio} label="Receiver · Reference" active={rxActive} color="cyan" />
+            <div className="flex-1 min-h-0 relative overflow-hidden">
+              {rxActive && (
+                <div className="absolute inset-0 pointer-events-none">
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#22d3ee]/4 blur-[80px] rounded-full" />
+                </div>
+              )}
+              {showFFT ? (
+                <FftDisplay active={rxActive} fftData={fftDataRef} paused={graphPaused} />
+              ) : (
+                <ReceiverDisplay active={rxActive} samples={rxSamplesRef} paused={graphPaused} />
+              )}
+              {!rxActive && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No signal</span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 

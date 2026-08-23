@@ -440,14 +440,10 @@ class SFCWEngine:
         self.driver.start_rx_dual(self._rx_capture, num_samples=n)
         time.sleep(0.05)
 
-        # Apply gains AFTER modules are enabled (enable_module resets gain state)
-        dev_ptr = self.driver.device.dev[0]
-        libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(0), libbladeRF.BLADERF_GAIN_MGC)
-        libbladeRF.bladerf_set_gain_mode(dev_ptr, bladerf.CHANNEL_RX(1), libbladeRF.BLADERF_GAIN_MGC)
-        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(0), int(self.rx1_gain))
-        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_RX(1), int(self.rx2_gain))
-        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(0), int(self.tx1_gain))
-        libbladeRF.bladerf_set_gain(dev_ptr, bladerf.CHANNEL_TX(1), int(self.tx2_gain))
+        # enable_module() resets gain state, so re-push after modules are enabled.
+        # driver.tx_gain/rx_gain/tx2_gain/rx2_gain were already synced from
+        # self.tx1_gain/rx1_gain/tx2_gain/rx2_gain in _configure_hardware().
+        self.driver.reapply_dual_gains()
 
     def _apply_gains(self):
         dev_ptr = self.driver.device.dev[0]

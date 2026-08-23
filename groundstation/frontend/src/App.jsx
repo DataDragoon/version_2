@@ -122,10 +122,13 @@ export default function App() {
   const imuCountRef = useRef(0);
   const [lidarMm, setLidarMm] = useState(null);
 
-  // SDR / RF Calib state
+  // SDR / RF Calib state — antenna (TX1/RX1) and reference (TX2/RX2) both stream
+  // simultaneously now, so RX preview/FFT are tracked per channel.
   const [sdrStatus, setSdrStatus] = useState(null);
-  const [rxSamples, setRxSamples] = useState([]);
-  const [fftData, setFftData] = useState(null);
+  const [rxSamplesAnt, setRxSamplesAnt] = useState([]);
+  const [rxSamplesRef, setRxSamplesRef] = useState([]);
+  const [fftDataAnt, setFftDataAnt] = useState(null);
+  const [fftDataRef, setFftDataRef] = useState(null);
   const [txActive, setTxActive] = useState(false);
   const [rxActive, setRxActive] = useState(false);
   const [showFFT, setShowFFT] = useState(true);
@@ -471,13 +474,18 @@ export default function App() {
       setTxActive(msg.tx_active);
       setRxActive(msg.rx_active);
       if (!msg.rx_active) {
-        setRxSamples([]);
-        setFftData(null);
+        setRxSamplesAnt([]);
+        setRxSamplesRef([]);
+        setFftDataAnt(null);
+        setFftDataRef(null);
       }
     } else if (msg.type === 'rx_data') {
-      setRxSamples(msg.i);
+      setRxSamplesAnt(msg.antenna.i);
+      setRxSamplesRef(msg.reference.i);
     } else if (msg.type === 'rx_fft') {
-      setFftData({ magnitudes: msg.magnitudes, freq_span: msg.freq_span || 2000000 });
+      const freqSpan = msg.freq_span || 2000000;
+      setFftDataAnt({ magnitudes: msg.antenna.magnitudes, freq_span: freqSpan });
+      setFftDataRef({ magnitudes: msg.reference.magnitudes, freq_span: freqSpan });
     } else if (msg.type === 'sfcw_status') {
       setSfcwRunning(msg.running);
       setSfcwStatus(msg);
@@ -976,8 +984,10 @@ export default function App() {
         imuData={imuData}
         txActive={txActive}
         rxActive={rxActive}
-        rxSamples={rxSamples}
-        fftData={fftData}
+        rxSamplesAnt={rxSamplesAnt}
+        rxSamplesRef={rxSamplesRef}
+        fftDataAnt={fftDataAnt}
+        fftDataRef={fftDataRef}
         showFFT={showFFT}
         graphPaused={graphPaused}
         sfcwResult={processedSfcwResult}
