@@ -12,7 +12,7 @@ const SAMPLE_RATE = 10_000_000;
 const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
 export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, rangeScale, onRangeScaleChange, lidarMm, bgModel, bgRef, bgCapturing, onCaptureBg, onLoadBgModel, onClearBg }) {
-  const { startFreq, stopFreq, stepSize, numBuffers, tx1Gain, rx1Gain, rangeOffset } = params;
+  const { startFreq, stopFreq, stepSize, numBuffers, settleCount, tx1Gain, rx1Gain, rangeOffset } = params;
   const [coherenceRunning, setCoherenceRunning] = useState(false);
   const lidarBuf = useRef([]);
   const [lidarAvg, setLidarAvg] = useState(null);
@@ -62,6 +62,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
       stop_freq_mhz: overrides.stopFreq ?? stopFreq,
       step_size_mhz: overrides.stepSize ?? stepSize,
       num_buffers: overrides.numBuffers ?? numBuffers,
+      settle_count: overrides.settleCount ?? settleCount,
       tx1_gain: overrides.tx1Gain ?? tx1Gain,
       rx1_gain: overrides.rx1Gain ?? rx1Gain,
       range_offset: overrides.rangeOffset ?? rangeOffset,
@@ -73,7 +74,10 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
   const rangeRes = bandwidth > 0 ? (299792458 / (2 * bandwidth)) : Infinity;
   const maxRange = stepSize > 0 ? (299792458 / (4 * stepSize * 1e6) - rangeOffset) : Infinity;
   const captureTimeMs = numBuffers * BUFFER_TIME_MS;
-  const sweepTime = numSteps * 3.27 / 1000;
+  // Per-step wait is (settleCount + numBuffers) buffer arrivals — see
+  // pi/radar/sfcw_engine.py _sweep_core. Real time tends to run a bit under this
+  // because RX callbacks overlap with per-step Python overhead.
+  const sweepTime = numSteps * (settleCount + numBuffers) * BUFFER_TIME_MS / 1000;
 
   return (
     <>
@@ -85,7 +89,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             value={startFreq}
             unit="MHz"
             onChange={(v) => { update('startFreq', v); sendParams({ startFreq: v }); }}
-            min={47}
+            min={1000}
             max={6000}
           />
           <EditableField
@@ -93,7 +97,7 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             value={stopFreq}
             unit="MHz"
             onChange={(v) => { update('stopFreq', v); sendParams({ stopFreq: v }); }}
-            min={47}
+            min={1000}
             max={6000}
           />
         </div>
@@ -112,16 +116,27 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
           />
         </div>
         <div className="flex flex-col gap-1">
-          <EditableField
-            label="Buffers"
-            value={numBuffers}
-            unit="x4096 smp"
-            onChange={(v) => { update('numBuffers', v); sendParams({ numBuffers: v }); }}
-            min={1}
-            max={64}
-          />
+          <div className="grid grid-cols-2 gap-2">
+            <EditableField
+              label="Buffers"
+              value={numBuffers}
+              unit="x4096 smp"
+              onChange={(v) => { update('numBuffers', v); sendParams({ numBuffers: v }); }}
+              min={1}
+              max={64}
+            />
+            <EditableField
+              label="Settle"
+              value={settleCount}
+              unit="buffers"
+              onChange={(v) => { update('settleCount', v); sendParams({ settleCount: v }); }}
+              min={1}
+              max={30}
+            />
+          </div>
           <span className="text-[9px] text-[#333333] leading-tight px-1">
-            {captureTimeMs.toFixed(2)} ms capture per step ({(numBuffers * BUFFER_SAMPLES).toLocaleString()} samples)
+            {captureTimeMs.toFixed(2)} ms capture per step ({(numBuffers * BUFFER_SAMPLES).toLocaleString()} samples),
+            averaged over {numBuffers} buffer{numBuffers === 1 ? '' : 's'} — retune settle is {settleCount} buffers first
           </span>
         </div>
         <EditableField

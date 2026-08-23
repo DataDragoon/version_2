@@ -35,8 +35,8 @@ class SDRServer:
             sys.exit(1)
 
         print(f"[sdr] Device: {self.driver.serial}")
-        self.sfcw._generate_quick_tune_profiles()
-        print(f"[sdr] SFCW quick_tune profiles ready")
+        self.sfcw._ensure_master_quick_tune_table()
+        print(f"[sdr] SFCW master quick_tune table ready")
         print(f"[sdr] Starting WebSocket server on port {PORT}")
         self._broadcast_task = asyncio.create_task(self._broadcast_loop())
         self._sfcw_broadcast_task = asyncio.create_task(self._sfcw_broadcast_loop())
@@ -112,6 +112,8 @@ class SDRServer:
                     params['step_size'] = float(cmd['step_size_mhz']) * 1e6
                 if 'num_buffers' in cmd:
                     params['num_buffers'] = int(cmd['num_buffers'])
+                if 'settle_count' in cmd:
+                    params['settle_count'] = int(cmd['settle_count'])
                 if 'tx1_gain' in cmd:
                     params['tx1_gain'] = int(cmd['tx1_gain'])
                 if 'rx1_gain' in cmd:
@@ -192,6 +194,7 @@ class SDRServer:
                     self.sfcw.stop()
                 self._stop_all_streams()
                 self.driver.reset()
+                self.sfcw.invalidate_quick_tune_table()
                 await self._broadcast_status()
 
         except Exception as e:

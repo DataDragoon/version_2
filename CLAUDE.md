@@ -112,27 +112,59 @@ Next steps: SAR reconstruction integration.
   + 1 capture buffer, but the real wall time per step is 3.63 ms because RX callbacks
   overlap — the settle wait is for *new* callbacks arriving, not elapsed time).
 
-The actual per-step wait is `settle_count = 10` RX buffer callbacks in `_sweep_core`.
-The `settleTime` field was dead code (stored but never read by any sweep path) and has
-been removed from the engine, sdr_server, and the panel. The "Sweep" tile now uses the
-measured 3.63 ms/step. (`settle_count` is 10 only on the quick-tune path;
-the non-quick-tune fallback in `_sweep_core` uses 2.) Sweep RX buffers are 4096 samples
-at the 10 Msps set in `_configure_hardware`, i.e. 0.41 ms per buffer — `BUFFER_SAMPLES` /
-`SAMPLE_RATE` in `SfcwPanel.jsx` mirror those two numbers and must track the engine.
+The per-step wait is `settle_count` RX buffer callbacks in `_sweep_core`, now a
+user-controlled `SFCWEngine` param (default 10, exposed in the panel as "Settle",
+same param family as `num_buffers`/"Buffers") rather than hardcoded. Sweep RX buffers
+are 4096 samples at the 10 Msps set in `_configure_hardware`, i.e. 0.41 ms per buffer —
+`BUFFER_SAMPLES` / `SAMPLE_RATE` in `SfcwPanel.jsx` mirror those two numbers and must
+track the engine. `num_buffers` genuinely averages that many post-settle captures per
+step now (see Quick-tune master table below) — the panel's per-step estimate is
+`(settle_count + num_buffers) * 0.41ms`.
 
-**Regression, 2026-08-20 to 2026-08-23: do not drop `settle_count` below 10.** An
-optimization pass (`407e205`, `510a9fe`) cut the quick-tune `settle_count` from 10 to 7,
-gated behind an experimental `sweep_mode='fast'` flag with an explicit "reduced if Test C
-proves it safe" caveat — then the very next commit merged it in as the unconditional
-default and rewrote the caveat into an unsubstantiated "validated over 50 sweeps"
-claim, with no test artifact in the repo. Symptom: intermittent fully-garbled sweeps
-(good scans mostly, occasionally one random-looking sweep, rarely two in a row) — one
-step retuning late means its capture still holds the previous frequency's IQ, and since
-the range profile is one IFFT across all steps, a single bad bin corrupts the whole
-sweep rather than just that bin. Reverted to `settle_count = 10` in `_sweep_core`.
-If retuning ever needs to get faster again, that number needs a real per-step validation
-(e.g. flag/log which step index was corrupted, not just an aggregate correlation over
-whole sweeps — an aggregate metric is exactly what let this ship unnoticed).
+**Regression, 2026-08-20 to 2026-08-23 (fixed): do not drop `settle_count` below 10
+without a real per-step validation.** An optimization pass (`407e205`, `510a9fe`) cut
+the quick-tune `settle_count` from 10 to 7, gated behind an experimental
+`sweep_mode='fast'` flag with an explicit "reduced if Test C proves it safe" caveat —
+then the very next commit merged it in as the unconditional default and rewrote the
+caveat into an unsubstantiated "validated over 50 sweeps" claim, with no test artifact
+in the repo. Symptom: intermittent fully-garbled sweeps (good scans mostly,
+occasionally one random-looking sweep, rarely two in a row) — one step retuning late
+means its capture still holds the previous frequency's IQ, and since the range profile
+is one IFFT across all steps, a single bad bin corrupts the whole sweep rather than
+just that bin. Default reverted to 10. If it ever needs to drop again, validate with a
+per-step check (flag/log which step index was corrupted), not just an aggregate
+correlation over whole sweeps — an aggregate metric is exactly what let this ship
+unnoticed. `benchmark_sweep.py` is a leftover from that pass and is currently broken
+(references `_sweep_core_fast`/`sweep_mode`/`_qt_profiles_rx`, all since removed) —
+needs a rewrite against the current `_sweep_core`/master-table API before it's useful
+again.
+
+## Quick-tune master table (2026-08-23)
+
+Per-grid quick-tune profile caching is gone. `SFCWEngine._ensure_master_quick_tune_table()`
+generates one fixed table spanning `QT_MASTER_START_FREQ`–`QT_MASTER_STOP_FREQ` (1–6 GHz)
+at `QT_MASTER_STEP` (10 MHz) once per device connection — ~501 profiles, paying the full
+per-frequency VCO-cal cost (`bladerf_set_frequency` + `bladerf_get_quick_tune`) only that
+once, several seconds total. `set_params()` snaps `start_freq`/`stop_freq` to the nearest
+10 MHz and clamps them into that range, and snaps `step_size` to a 10 MHz multiple
+(`_snap_freq`/`_snap_step`), so every sweep's frequencies are guaranteed to land exactly on
+master grid points. `_build_sweep_grid()` then just indexes into the cached table — no
+regeneration, no device reset — so start/stop/step can change freely mid-session, live,
+with no interruption.
+
+This replaced the old scheme: profiles were cached per-`(start, stop, step)` combo, and
+changing any of those three flipped `_freq_grid_dirty`, which forced a full
+`driver.reset()` + reconfigure + restream on the next sweep (or mid-sweep, via
+`_reconfigure_for_new_grid()`). That reset path was unreliable in practice — bladeRF
+errors on the reopen — which is why it's gone rather than fixed. The master table only
+needs invalidating (`SFCWEngine.invalidate_quick_tune_table()`) after an explicit
+`device_reset` from the panel; `sdr_server.py`'s `device_reset` handler calls it.
+
+Consequence: the sweep range is now hard-bounded to 1–6 GHz (panel Start/Stop min is
+1000 MHz, was 47 MHz) — anything requested outside that gets clamped. If sub-1 GHz
+SFCW sweeps are ever needed, `QT_MASTER_START_FREQ` has to move down and the whole
+table regenerates at whatever range it covers; there's no fundamental reason it
+couldn't run 47 MHz–6 GHz instead, it just costs more startup time for more profiles.
 
 **Default step size is 60 MHz (51 steps, 2–5 GHz)** — `sfcwParams.stepSize` in
 `App.jsx` and `SFCWEngine.step_size` both carry it, and the groundstation pushes its
