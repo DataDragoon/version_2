@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import { Activity, Radio, Radar, ScanLine, Grid3x3, Map, Zap, Brain } from 'lucide-react';
+import { Activity, Radio, Radar, ScanLine, Grid3x3, Map, Zap, Brain, FlaskConical } from 'lucide-react';
 import ImuDisplay from './ImuDisplay';
 import WaveformDisplay from './WaveformDisplay';
 import ReceiverDisplay from './ReceiverDisplay';
@@ -11,6 +11,7 @@ import CscanDisplay from './CscanDisplay';
 import SarDisplay from './SarDisplay';
 import MapDisplay from './MapDisplay';
 import BgModelDisplay from './BgModelDisplay';
+import ImagingDisplay from './ImagingDisplay';
 
 export default function Viewport({
   activePanel,
@@ -54,6 +55,9 @@ export default function Viewport({
   bgModelCaptures,
   bgModelCapturing,
   bgModelStopFreq,
+  imagingSnapshot,
+  imagingEffect,
+  imagingParams,
 }) {
   const [bscanLiveRange, setBscanLiveRange] = useState({ min: 0, max: 0.3 });
   // Which C-scan cell the B-scan pane is showing the row for; null follows the
@@ -239,6 +243,35 @@ export default function Viewport({
             {!sfcwResult && !sfcwRunning && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No sweep data</span>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (activePanel === 'imaging') {
+    return (
+      <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
+        <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
+          <PaneHeader icon={FlaskConical} label="Imaging Bench" active={!!imagingSnapshot} color="cyan" />
+          <div className="flex-1 min-h-0 relative overflow-hidden">
+            {imagingSnapshot && (
+              <div className="absolute inset-0 pointer-events-none">
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#22d3ee]/4 blur-[80px] rounded-full" />
+              </div>
+            )}
+            <ImagingDisplay
+              snapshot={imagingSnapshot}
+              effect={imagingEffect}
+              params={imagingParams}
+            />
+            {!imagingSnapshot && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">
+                  No snapshot — export a waterfall from the SFCW panel
+                </span>
               </div>
             )}
           </div>

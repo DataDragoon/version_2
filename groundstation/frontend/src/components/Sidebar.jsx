@@ -1,9 +1,10 @@
-import { Activity, Radio, Radar, ScanLine, Grid3x3, Map, ChevronLeft, Wifi, WifiOff, Brain } from 'lucide-react';
+import { Activity, Radio, Radar, ScanLine, Grid3x3, Map, ChevronLeft, Wifi, WifiOff, Brain, FlaskConical } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ImuPanel from './ImuPanel';
 import RfCalibPanel from './RfCalibPanel';
 import BgModelPanel from './BgModelPanel';
 import SfcwPanel from './SfcwPanel';
+import ImagingPanel from './ImagingPanel';
 import CscanPanel from './CscanPanel';
 import SarPanel from './SarPanel';
 import MapPanel from './MapPanel';
@@ -12,6 +13,7 @@ const PANELS = [
   { id: 'imu',       label: 'IMU',       icon: Activity },
   { id: 'rfcalib',   label: 'RF Calibrate', icon: Radio },
   { id: 'sfcw',      label: 'SFCW',      icon: Radar },
+  { id: 'imaging',   label: 'Imaging Bench', icon: FlaskConical },
   { id: 'bgmodel',   label: 'BG Model',  icon: Brain },
   { id: 'cscan',     label: 'C-Scan',    icon: ScanLine },
   { id: 'sar',       label: 'SAR',       icon: Grid3x3 },
@@ -125,6 +127,14 @@ export default function Sidebar({
   bgModelSweepsPerCapture,
   onBgModelSweepsChange,
   onBgModelAction,
+  imagingSnapshot,
+  imagingSnapshotName,
+  onLoadImagingSnapshot,
+  onClearImagingSnapshot,
+  imagingEffect,
+  onImagingEffectChange,
+  imagingParams,
+  onImagingParamsChange,
 }) {
   return (
     <div className="flex h-screen shrink-0">
@@ -291,6 +301,18 @@ export default function Sidebar({
                   onCaptureBg={onCaptureSfcwBg}
                   onLoadBgModel={onLoadSfcwBgModel}
                   onClearBg={onClearSfcwBg}
+                />
+              )}
+              {activePanel === 'imaging' && (
+                <ImagingPanel
+                  snapshot={imagingSnapshot}
+                  snapshotName={imagingSnapshotName}
+                  onLoadSnapshot={onLoadImagingSnapshot}
+                  onClearSnapshot={onClearImagingSnapshot}
+                  effect={imagingEffect}
+                  onEffectChange={onImagingEffectChange}
+                  params={imagingParams}
+                  onParamsChange={onImagingParamsChange}
                 />
               )}
               {activePanel === 'cscan' && (

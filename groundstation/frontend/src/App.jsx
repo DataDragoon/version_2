@@ -10,6 +10,7 @@ import { computeCaptureStats } from './lib/bgCaptureStats';
 import { computeRangeProfile } from './lib/rangeProfile';
 import { applyBscanBg, bgForStandoff, freqGrid } from './lib/bscanBg';
 import { cellForIndex } from './lib/cscanGrid';
+import { DEFAULT_PARAMS as IMAGING_DEFAULT_PARAMS } from './lib/imagingEffects';
 
 const SPEED_OF_LIGHT = 299792458;
 
@@ -219,6 +220,46 @@ export default function App() {
     setSfcwBgRef(null);
     sfcwBgCaptureRef.current = false;
     setSfcwBgCapturing(false);
+  }, []);
+
+  // Imaging Bench state. Entirely offline — it reads a waterfall_snapshot
+  // exported from the SFCW panel and never touches the Pi, so none of this is
+  // wired to the SDR socket.
+  const [imagingSnapshot, setImagingSnapshot] = useState(null);
+  const [imagingSnapshotName, setImagingSnapshotName] = useState(null);
+  const [imagingEffect, setImagingEffect] = useState('none');
+  const [imagingParams, setImagingParams] = useState(IMAGING_DEFAULT_PARAMS);
+
+  const handleLoadImagingSnapshot = useCallback((snap, name) => {
+    setImagingSnapshot(snap);
+    setImagingSnapshotName(name);
+    // displayState is provenance, not processing: it seeds the "None" effect and
+    // the shared range-profile knobs so the bench opens on the image the
+    // operator was actually looking at, and is ignored everywhere else.
+    const ds = snap.displayState || {};
+    const maxRange = SPEED_OF_LIGHT / (2 * snap.common.step_size);
+    setImagingParams(prev => ({
+      ...prev,
+      none: { ...prev.none, ...(ds.scaleMode ? { scaleMode: ds.scaleMode } : {}) },
+      profile: {
+        ...prev.profile,
+        ...(ds.windowType ? { windowType: ds.windowType } : {}),
+        ...(ds.kaiserBeta != null ? { kaiserBeta: ds.kaiserBeta } : {}),
+        ...(ds.rangeComp != null ? { rangeComp: ds.rangeComp } : {}),
+      },
+      view: {
+        ...prev.view,
+        rangeMin: 0,
+        rangeMax: maxRange / 2,
+        sweepIndex: snap.sweeps.length - 1,
+        followLatest: true,
+      },
+    }));
+  }, []);
+
+  const handleClearImagingSnapshot = useCallback(() => {
+    setImagingSnapshot(null);
+    setImagingSnapshotName(null);
   }, []);
 
   // B-Scan state. Background subtraction has the same two mutually exclusive
@@ -991,6 +1032,14 @@ export default function App() {
         bgModelSweepsPerCapture={bgModelSweepsPerCapture}
         onBgModelSweepsChange={setBgModelSweepsPerCapture}
         onBgModelAction={handleBgModelAction}
+        imagingSnapshot={imagingSnapshot}
+        imagingSnapshotName={imagingSnapshotName}
+        onLoadImagingSnapshot={handleLoadImagingSnapshot}
+        onClearImagingSnapshot={handleClearImagingSnapshot}
+        imagingEffect={imagingEffect}
+        onImagingEffectChange={setImagingEffect}
+        imagingParams={imagingParams}
+        onImagingParamsChange={setImagingParams}
       />
       <Viewport
         activePanel={activePanel}
@@ -1034,6 +1083,9 @@ export default function App() {
         bgModelCaptures={bgModelCaptures}
         bgModelCapturing={bgModelCapturing}
         bgModelStopFreq={sfcwParams.stopFreq}
+        imagingSnapshot={imagingSnapshot}
+        imagingEffect={imagingEffect}
+        imagingParams={imagingParams}
       />
     </div>
   );

@@ -655,6 +655,13 @@ class SFCWEngine:
             'displayed_range_max': max_range / 2 - self.range_offset,
             'num_steps': num_steps,
             'step_size': step,
+            # The true swept frequency axis, so the groundstation never has to
+            # guess it from step_size alone (the Imaging Bench's dispersion and
+            # raw-S21 views need the actual RF frequencies). stop_freq is the
+            # last frequency actually visited, which equals self.stop_freq only
+            # when the step divides the span evenly.
+            'start_freq': int(start),
+            'stop_freq': int(start + (num_steps - 1) * step),
             'range_offset': self.range_offset,
             'timestamp': time.time(),
             'phase_coherence': {

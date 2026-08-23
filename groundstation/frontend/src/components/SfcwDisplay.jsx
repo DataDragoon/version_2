@@ -1,5 +1,11 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { cn } from '@/lib/utils';
+// Windows and CFAR are shared with the Imaging Bench so both panels run one
+// implementation — see lib/imagingEffects.js.
+import {
+  computeCFAR, kaiserWindow, hanningWindow, rectangularWindow,
+  CFAR_GUARD, CFAR_TRAIN, CFAR_ALPHA,
+} from '@/lib/imagingEffects';
 
 const BG = '#000000';
 const GRID_COLOR = '#1a1a1a';
@@ -18,66 +24,7 @@ function jet(t) {
   ];
 }
 
-const CFAR_GUARD = 4;
-const CFAR_TRAIN = 16;
-const CFAR_ALPHA = 6;
 const SPEED_OF_LIGHT = 299_792_458;
-
-function computeCFAR(mags, guardCells, trainCells, alphaDb) {
-  const n = mags.length;
-  const threshold = new Float64Array(n);
-  for (let i = 0; i < n; i++) {
-    let sum = 0;
-    let count = 0;
-    for (let side = -1; side <= 1; side += 2) {
-      for (let k = guardCells + 1; k <= guardCells + trainCells; k++) {
-        const idx = i + side * k;
-        if (idx >= 0 && idx < n) {
-          sum += mags[idx];
-          count++;
-        }
-      }
-    }
-    threshold[i] = (count > 0 ? sum / count : mags[i]) + alphaDb;
-  }
-  return threshold;
-}
-
-// Modified Bessel function I0 (for Kaiser window)
-function besselI0(x) {
-  let sum = 1.0;
-  let term = 1.0;
-  for (let k = 1; k <= 25; k++) {
-    term *= (x / (2 * k)) * (x / (2 * k));
-    sum += term;
-    if (term < sum * 1e-12) break;
-  }
-  return sum;
-}
-
-function kaiserWindow(n, beta) {
-  const w = new Float64Array(n);
-  const denom = besselI0(beta);
-  for (let i = 0; i < n; i++) {
-    const a = 2.0 * i / (n - 1) - 1.0;
-    w[i] = besselI0(beta * Math.sqrt(1.0 - a * a)) / denom;
-  }
-  return w;
-}
-
-function hanningWindow(n) {
-  const w = new Float64Array(n);
-  for (let i = 0; i < n; i++) {
-    w[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (n - 1)));
-  }
-  return w;
-}
-
-function rectangularWindow(n) {
-  const w = new Float64Array(n);
-  w.fill(1.0);
-  return w;
-}
 
 // Radix-2 FFT (in-place, decimation-in-time)
 function fft(re, im) {
@@ -184,6 +131,19 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
   const waterfallHistory = useRef([]);
   const WATERFALL_MAX_ROWS = 100;
 
+  // Parallel ring buffer of the raw complex sweeps behind those rows, untouched
+  // by window / range-comp / averaging / dB conversion. The Imaging Bench needs
+  // complex data (phase-as-hue, coherence, coherent integration, dispersion,
+  // raw S21), and the scalar waterfall rows have thrown all of that away.
+  // Pushed in the same effect as waterfallHistory so row i lines up with row i.
+  // It deliberately survives a scaleMode flip, which does wipe waterfallHistory
+  // — the raw sweeps are unit-agnostic, so there is nothing to invalidate. That
+  // one case is the only way the two buffers can differ in length.
+  const rawHistory = useRef([]);
+  // Mirrored into state purely so the EXPORT button can enable/disable itself;
+  // the buffer itself is never read through React.
+  const [rawCount, setRawCount] = useState(0);
+
   // Zoom/pan state for trace chart
   const [traceView, setTraceView] = useState({ xMin: 0, xMax: 1, yMin: -60, yMax: 40, autoY: true });
   const traceDrag = useRef(null);
@@ -220,6 +180,10 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
         step_size: sfcwResult.step_size,
         range_offset: sfcwResult.range_offset,
         num_steps: sfcwResult.num_steps,
+        start_freq: sfcwResult.start_freq,
+        stop_freq: sfcwResult.stop_freq,
+        timestamp: sfcwResult.timestamp,
+        phase_coherence: sfcwResult.phase_coherence,
       };
     }
   }, [sfcwResult]);
@@ -707,12 +671,37 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     if (waterfallHistory.current.length > WATERFALL_MAX_ROWS) {
       waterfallHistory.current.shift();
     }
+
+    // Same push, same cap — the raw complex sweep behind this row.
+    const hCal = hCalRef.current;
+    if (hCal && hCal.real && hCal.imag) {
+      rawHistory.current.push({
+        real: Float32Array.from(hCal.real),
+        imag: Float32Array.from(hCal.imag),
+        num_steps: hCal.num_steps,
+        step_size: hCal.step_size,
+        range_offset: hCal.range_offset,
+        start_freq: hCal.start_freq,
+        stop_freq: hCal.stop_freq,
+        timestamp: hCal.timestamp,
+        phase_coherence: hCal.phase_coherence,
+      });
+      if (rawHistory.current.length > WATERFALL_MAX_ROWS) {
+        rawHistory.current.shift();
+      }
+    }
+    setRawCount(rawHistory.current.length);
   }, [averaged, recomputed, sfcwResult]);
 
-  // Clear waterfall when scale mode changes
+  // Clear waterfall when scale mode changes. rawHistory is intentionally left
+  // alone — see its declaration.
   useEffect(() => {
     waterfallHistory.current = [];
   }, [scaleMode]);
+
+  // Drop the raw buffer on unmount so a panel switch does not leak sweeps into
+  // the next session.
+  useEffect(() => () => { rawHistory.current = []; }, []);
 
   useEffect(() => {
     const render = () => {
@@ -811,6 +800,42 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
   };
+
+  // Snapshot the raw ring buffer to disk for the Imaging Bench. Same
+  // Blob/anchor pattern as the C-scan export in App.jsx.
+  const handleExportWaterfall = useCallback(() => {
+    const buf = rawHistory.current;
+    if (buf.length === 0) return;
+    const ref = buf[buf.length - 1];
+    const r8 = (arr) => Array.from(arr, v => Math.round(v * 1e8) / 1e8);
+    const stamp = new Date().toISOString();
+    const snapshot = {
+      version: 1,
+      type: 'waterfall_snapshot',
+      timestamp: stamp,
+      common: {
+        num_steps: ref.num_steps,
+        step_size: ref.step_size,
+        start_freq: ref.start_freq,
+        stop_freq: ref.stop_freq,
+        range_offset: ref.range_offset,
+      },
+      displayState: { scaleMode, windowType, kaiserBeta, rangeComp, avgCount },
+      sweeps: buf.map(sw => ({
+        t: sw.timestamp,
+        real: r8(sw.real),
+        imag: r8(sw.imag),
+        phase_coherence: sw.phase_coherence || null,
+      })),
+    };
+    const blob = new Blob([JSON.stringify(snapshot)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `waterfall_${stamp.replace(/[:.]/g, '-')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [scaleMode, windowType, kaiserBeta, rangeComp, avgCount]);
 
   return (
     <div className="flex flex-col w-full h-full">
@@ -1004,6 +1029,19 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
             }}
             onMouseLeave={() => setCrosshairWaterfall(null)}
           />
+          {/* Snapshot the raw complex ring buffer for the Imaging Bench */}
+          <button
+            onClick={handleExportWaterfall}
+            title={rawCount > 0 ? `Export ${rawCount} raw sweeps` : 'No sweeps buffered'}
+            className={cn(
+              'absolute bottom-10 left-14 px-2 py-1 rounded text-[9px] font-medium uppercase tracking-wider transition-all border z-10',
+              rawCount > 0
+                ? 'bg-white/10 text-white/70 border-white/20 hover:text-white hover:border-white/40'
+                : 'bg-white/5 text-white/20 border-white/10 opacity-40 pointer-events-none'
+            )}
+          >
+            Export
+          </button>
         </div>
       )}
     </div>

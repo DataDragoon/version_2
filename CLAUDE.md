@@ -49,6 +49,8 @@ table's 256-profile hardware ceiling — see Quick-tune master table below) with
 Both RF panels share port 9003 — starting an SFCW sweep auto-stops any active TX/RX in RF Calib.
 C-scan panel rasters a 2D grid of positions over the target and shares the SFCW panel's
 background model machinery (see below).
+Imaging Bench panel replays an exported waterfall snapshot through 11 selectable imaging
+effects for offline A/B of processing chains — see below.
 
 ## SFCW Amplitude Scaling (Dynamic / Manual)
 
@@ -128,6 +130,156 @@ derived everything (step count, sweep time, max range) from different ones. `App
 The panel is the source of truth; keep new SFCW params in that payload or they will not
 reach the Pi.
 Next steps: SAR reconstruction integration.
+
+## Imaging Bench Panel — Offline Effect Comparison (2026-08-23)
+
+Panel id `imaging` (`ImagingPanel.jsx` + `ImagingDisplay.jsx` + `lib/imagingEffects.js`),
+sitting after `sfcw` in the `PANELS` array. It is **entirely offline**: it reads a
+`waterfall_snapshot` JSON exported from the live SFCW waterfall and re-processes it through
+a menu of 11 selectable imaging effects, so processing chains can be A/B'd against identical
+recorded data without going back to the bench. It never touches the SDR socket.
+
+**All effect math lives in `lib/imagingEffects.js` as pure `(snapshot, params)` functions**
+returning plain arrays plus axis metadata. `ImagingDisplay` contains no signal processing —
+it memoizes and draws. That split is what makes the effects testable head-first from node
+with no React (see the round-trip check below).
+
+### `rawHistory` — the raw complex ring buffer in SfcwDisplay
+
+`waterfallHistory` stores only scalar magnitude rows (dB or linear per `scaleMode`) and is
+wiped on every `scaleMode` change, so five of the effects — phase-as-hue, coherence, coherent
+integration, dispersion, raw S21 — could not be built from it. `rawHistory` is a parallel
+`useRef` buffer with the same `WATERFALL_MAX_ROWS = 100` cap, pushed in the same effect so
+row *i* of one lines up with row *i* of the other. Each entry is the sweep untouched by
+window / range-comp / averaging / dB conversion:
+
+```
+{ real: Float32Array, imag: Float32Array, num_steps, step_size, range_offset,
+  start_freq, stop_freq, timestamp, phase_coherence }
+```
+
+Source is `sfcwResult.h_cal_real/h_cal_imag` via `hCalRef` (which now also caches
+`start_freq` / `stop_freq` / `timestamp` / `phase_coherence`). It is cleared **only** on
+unmount, never on a `scaleMode` flip — raw sweeps are unit-agnostic so there is nothing to
+invalidate, and that is the one case where the two buffers can differ in length.
+
+A `rawCount` state mirror exists purely so the EXPORT button can enable/disable itself; the
+buffer is never read through React. The existing live render path is unchanged.
+
+### `waterfall_<ts>.json` v1 format
+
+Written by the neutral `EXPORT` button in the waterfall pane (`bottom-10 left-14`, inside the
+waterfall's own relative container, so it sits alongside — not over — the range profile's
+dB/LIN toggle). Gated on `!hideWaterfall`, so only the SFCW panel's instance has it; the
+C-scan and BG-model instances do not. Disabled and dimmed when the buffer is empty.
+
+```json
+{
+  "version": 1,
+  "type": "waterfall_snapshot",
+  "timestamp": "<ISO>",
+  "common": { "num_steps": 51, "step_size": 60000000, "start_freq": 2000000000,
+              "stop_freq": 5000000000, "range_offset": 0.5 },
+  "displayState": { "scaleMode": "linear", "windowType": "rectangular",
+                    "kaiserBeta": 3, "rangeComp": 0, "avgCount": 1 },
+  "sweeps": [ { "t": 1755900000.12, "real": [], "imag": [],
+                "phase_coherence": { "phase_std_rad": 0.11, "coherent": true } } ]
+}
+```
+
+`sweeps` is oldest-first; `real`/`imag` are rounded to 8 decimals like the Pi does. ~124 KB
+for 100 sweeps × 51 steps. `displayState` is **provenance only** — `App.jsx`
+`handleLoadImagingSnapshot()` uses it to seed the bench's "None" mode and the shared
+range-profile knobs so the bench opens on the image the operator was looking at, and it is
+applied to nothing else.
+
+**`sfcw_result` now carries `start_freq` / `stop_freq`** (`sfcw_engine.py` `_process_h_cal`).
+This is the only Pi-side change the panel required. `stop_freq` is the *last frequency
+actually visited* (`start + (num_steps-1)*step`), which equals `self.stop_freq` only when the
+step divides the span evenly. Dispersion and raw-S21 need the real RF axis and deriving it
+from `step_size` alone is guesswork. `snapshotFreqs()` falls back to step index for
+pre-`start_freq` snapshots and `freqsKnown()` flags it; the panel says so in the readout.
+
+### The 11 effects
+
+| # | id | What it computes |
+|---|---|---|
+| 0 | `none` | Reference image — identical processing to the live waterfall |
+| 1 | `compression` | `(\|H\|/peak)^p`, a continuous dial where dB and linear are two points |
+| 2 | `percentile` | Colour limits from percentiles, whole-history or per-row |
+| 3 | `binnorm` | Per-bin temporal normalisation — adaptive clutter map, no capture, no model |
+| 4 | `cfar` | Signal / CFAR threshold in dB, so 0 dB is the detection threshold |
+| 5 | `colormap` | Same image under all five maps side by side |
+| 6 | `phasehue` | Hue = phase of the complex profile, value = magnitude |
+| 7 | `coherence` | Normalised complex correlation at lag L over a sliding window |
+| 8 | `integration` | Coherent vs non-coherent averaging, and their ratio |
+| 9 | `dispersion` | Sub-band sweep — range across, sub-band centre frequency up |
+| 10 | `s21` | Calibrated `h_cal` against frequency, before any IFFT |
+
+Notes on the ones with non-obvious choices:
+
+- **Effects 3, 7, 8 need multiple sweeps.** They return `{kind:'message'}` on a one-sweep
+  snapshot and the dropdown disables them, rather than rendering garbage.
+- **Effect 8 integrates in the range domain, not on `h_cal`.** Averaging complex `h_cal` over
+  K sweeps and then transforming is *identical* to averaging the complex range profiles (the
+  IFFT is linear), and the non-coherent partner — a mean of magnitudes — only means anything
+  in the range domain. Averaging `|h_cal|` in frequency and then transforming would be
+  nonsense. Side-by-side gives coherent and non-coherent one shared colour scale, which is
+  the whole comparison; the ratio pane is a relative quantity in different units so it
+  carries its own scale, marked `OWN SCALE` in amber.
+- **Effect 9's sub-band count is capped by width and overlap.** `hop = subWidth*(1-overlap)`,
+  so `maxCount = floor((numSteps-subWidth)/hop)+1`; the count slider is clamped to that and
+  the canvas says so when it bites. The default `overlap` is **0.6**, which is where the
+  default 8 sub-bands actually fit across a 51-step sweep — at 0.5 only 6 do. A sub-band
+  starting at a non-zero step does not shift range (range is set by the *rate* of phase
+  change with frequency, not the offset), so all sub-bands share one range axis.
+- **Effect 10's residual mode is a direct corrupted-sweep detector** and is the reason it
+  exists — see the `settle_count` regression history above. A sweep is flagged red when
+  `max(computed_std, phase_coherence.phase_std_rad) > 0.3 rad`, matching the Pi's own cut.
+  `real & imag` has no single scalar to colour a waterfall with, so that combination stays a
+  line plot regardless of the display radio, and says so.
+- **CFAR and the window functions were lifted out of `SfcwDisplay` into
+  `imagingEffects.js`**, so both panels now call one implementation; CFAR gained GO/SO
+  variants (GO holds the threshold up on the far side of the wall return, where CA lets a
+  clutter edge drag it down). `computeCFAR` accumulates its CA sum in a side-then-k order
+  that looks redundant next to the per-half accumulators the GO/SO variants need — **do not
+  "simplify" it into `(loSum + hiSum) / (loCount + hiCount)`.** Float addition is not
+  associative and that rewrite shifts the threshold by ~3e-14 dB, which is what the current
+  form deliberately avoids: the live display's output is bit-identical to what it produced
+  before the lift, verified across window lengths 51–256, Kaiser β 2–14 and five CFAR
+  parameter sets.
+- **CFAR runs on the full profile and clips afterwards**, so the range-zoom edges do not get
+  a one-sided training window.
+- **Range compensation is folded into the complex profile** as an amplitude gain of
+  `r^(n/2)`, which is exactly the `+ n*10*log10(r)` dB the live display applies — doing it in
+  `prepare()` keeps magnitude and phase consistent for the complex effects.
+
+### Structure and cost
+
+`prepare(snapshot, profile)` does the windowing and zero-padded IFFTs once and is memoized on
+`[snapshot, params.profile]`; every range-domain effect reads its output, so switching effects
+or dragging an effect slider never redoes them. Measured on 100 sweeps × 51 steps: `prepare`
+7 ms, every effect ≤ 9 ms, worst case (sliding median, K=50, zero-pad ×8) 32 ms. No manual
+Apply button is needed and none exists — every parameter updates the render immediately.
+
+The View section's range zoom is applied **before** colour limits are computed, so percentiles
+and dynamic scaling describe what is actually on screen. The colormap choice is global: it
+persists as the active map across every effect, not just while entry 5 is selected.
+
+`ImagingDisplay` draws via an offscreen `nx × ny` canvas + `putImageData` + one scaled
+`drawImage`, not per-cell `fillRect` — at 100 × 1024 bins the latter is tens of thousands of
+fills per frame. Non-finite cells (short coherence windows, masked bins) render as a dark grey
+no colormap produces, so they are never mistaken for data.
+
+### Verification
+
+Effect math was checked head-first from node against a synthetic two-target scene: peak bins
+land within one bin of the true range (0.22 / 0.60 / 1.00 m → 0.2196 / 0.6002 / 1.0003 m at
+zero-pad ×8, 4.9 mm bins). The full export → import → validate → render chain was exercised
+with the verbatim export payload, and all 11 effects were rendered in a real browser to
+confirm the canvas output. There is no test runner in this repo, so those checks were
+throwaway scripts rather than committed tests — worth rebuilding as real tests if
+`imagingEffects.js` grows.
 
 ## Sweep Timing (measured 2026-08-20)
 
