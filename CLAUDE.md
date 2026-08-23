@@ -46,6 +46,27 @@ Both RF panels share port 9003 — starting an SFCW sweep auto-stops any active 
 C-scan panel rasters a 2D grid of positions over the target and shares the SFCW panel's
 background model machinery (see below).
 
+## SFCW Amplitude Scaling (Dynamic / Manual)
+
+The SFCW panel carries an `sfcwScaleRange = { dynamic, min, max, isDb }` (App.jsx), the
+same shape the C-scan panel uses for its colour scale. Dynamic (the default) is the old
+behaviour: the range profile's Y axis tracks session-wide extremes and the waterfall's
+colour range tracks its visible history. Manual pins **both** panes to one pair of limits.
+
+Seeding matters: the live limits are computed inside `SfcwDisplay`, not the panel, so the
+display publishes them every frame through `onDynamicScale` into an App-level **ref**
+(`sfcwDynamicScale`) — a ref, not state, so a 3–6 Hz sweep does not re-render the sidebar.
+The panel reads it via `getDynamicScale()` at the moment the toggle is clicked, so switching
+to manual never makes the colours or the axis jump.
+
+`isDb` records which units the pinned numbers are in. Flipping the display's dB/LIN button
+(or "Reset Scale") hands the scale back to dynamic, because dB limits are meaningless on a
+linear trace. Panes flag a pinned scale with an amber `MANUAL` next to their title, and the
+waterfall's colour-bar numbers turn amber too.
+
+The other two `SfcwDisplay` instances (C-scan and BG Model live sweep) pass no `scaleRange`
+and stay dynamic — `manual` is false whenever the prop is absent.
+
 ## Background Subtraction — Groundstation Only (SFCW + B-scan)
 
 All background subtraction happens on the groundstation. The Pi ships raw `h_cal`,
