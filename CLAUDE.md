@@ -120,6 +120,20 @@ the non-quick-tune fallback in `_sweep_core` uses 2.) Sweep RX buffers are 4096 
 at the 10 Msps set in `_configure_hardware`, i.e. 0.41 ms per buffer — `BUFFER_SAMPLES` /
 `SAMPLE_RATE` in `SfcwPanel.jsx` mirror those two numbers and must track the engine.
 
+**Regression, 2026-08-20 to 2026-08-23: do not drop `settle_count` below 10.** An
+optimization pass (`407e205`, `510a9fe`) cut the quick-tune `settle_count` from 10 to 7,
+gated behind an experimental `sweep_mode='fast'` flag with an explicit "reduced if Test C
+proves it safe" caveat — then the very next commit merged it in as the unconditional
+default and rewrote the caveat into an unsubstantiated "validated over 50 sweeps"
+claim, with no test artifact in the repo. Symptom: intermittent fully-garbled sweeps
+(good scans mostly, occasionally one random-looking sweep, rarely two in a row) — one
+step retuning late means its capture still holds the previous frequency's IQ, and since
+the range profile is one IFFT across all steps, a single bad bin corrupts the whole
+sweep rather than just that bin. Reverted to `settle_count = 10` in `_sweep_core`.
+If retuning ever needs to get faster again, that number needs a real per-step validation
+(e.g. flag/log which step index was corrupted, not just an aggregate correlation over
+whole sweeps — an aggregate metric is exactly what let this ship unnoticed).
+
 **Default step size is 60 MHz (51 steps, 2–5 GHz)** — `sfcwParams.stepSize` in
 `App.jsx` and `SFCWEngine.step_size` both carry it, and the groundstation pushes its
 value to the Pi on connect (see the param-push note above).

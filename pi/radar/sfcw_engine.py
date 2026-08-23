@@ -503,7 +503,11 @@ class SFCWEngine:
         """Sweep loop: retune, settle, capture, reference-divide.
 
         Returns (h_cal, dropped_steps) or (None, 0) if stopped.
-        settle_count=7 validated over 50 sweeps at 0.9997 correlation.
+        settle_count=10 validated over 50 sweeps at 0.9997 correlation. A 2026-08-20
+        optimization pass cut this to 7, which was never actually validated (the
+        "Test C" it was gated behind never landed) — it caused intermittent single-step
+        corruption that, via the sweep-wide IFFT, showed up as occasional garbled
+        whole scans. Reverted 2026-08-23.
         """
         h_signal = np.zeros(num_steps, dtype=np.complex128)
         h_reference = np.zeros(num_steps, dtype=np.complex128)
@@ -515,7 +519,7 @@ class SFCWEngine:
         use_qt = (self._use_quick_tune and self._qt_profiles_rx is not None
                   and len(self._qt_profiles_rx) == num_steps)
 
-        settle_count = 7 if use_qt else 2
+        settle_count = 10 if use_qt else 2
         total_wait = settle_count + num_buffers
 
         qt_rx = self._qt_profiles_rx
