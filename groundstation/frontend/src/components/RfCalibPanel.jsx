@@ -3,15 +3,15 @@ import { cn } from '@/lib/utils';
 import { Section, InfoTile, ToggleButton } from './Sidebar';
 
 export default function RfCalibPanel({ isConnected, sdrConnected, txActive, rxActive, showFFT, onToggleFFT, graphPaused, onTogglePause, sendSdr }) {
-  const [freq, setFreq] = useState(915);
-  const [txGain, setTxGain] = useState(47);
-  const [txAmp, setTxAmp] = useState(80);
-  const [rxGain, setRxGain] = useState(30);
+  const [freq, setFreq] = useState(2000);
+  const [txGain, setTxGain] = useState(50);
+  const [txAmp, setTxAmp] = useState(100);
+  const [rxGain, setRxGain] = useState(25);
   const [waveform, setWaveform] = useState('cw');
   const [cwOffset, setCwOffset] = useState(100);
   const [chirpBw, setChirpBw] = useState(500);
   const [chirpDur, setChirpDur] = useState(1);
-  const [sampleRate, setSampleRate] = useState(2);
+  const [sampleRate, setSampleRate] = useState(10);
 
   const canActivate = isConnected && sdrConnected;
 

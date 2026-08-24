@@ -106,6 +106,48 @@ unplug the LiDAR and jumper the Pi's TX (pin 8) straight to RX (pin 10) for a ba
 test — if that echoes back what's sent, the Pi's UART is fully exonerated and the module/its
 TX-RX leads are the remaining suspect (dead unit, or a lead nicked during the IMU rework).
 
+**RESOLVED (2026-08-24): root cause was a dead UART0 receiver on this Pi's RP1 chip — not
+the LiDAR module, not any wiring.** With a bare TX(pin 8)-RX(pin 10) short confirmed solid by
+continuity meter, a raw GPIO bit-bang test (toggle GPIO14, read GPIO15 with both pins pulled
+out of UART mode) passed perfectly — proving the pins and the physical short were both fine.
+But a live UART0 loopback still returned 0 bytes, and `TIOCGICOUNT` (via `fcntl.ioctl`,
+`0x545D`) showed why: `tx` incremented into the hundreds of thousands while streaming (real
+transmit activity, confirmed independently by `/proc/interrupts` counting real IRQs on the
+`uart-pl011` line), but `rx` stayed at exactly 0 with zero frame/overrun/parity errors —
+not even noise, total silence on the receive side specifically. Cross-check: live-applying
+a second UART (`sudo dtoverlay uart3-pi5`, no reboot needed, brings up `/dev/ttyAMA3` on
+GPIO8/9 = physical pins 24/21) and shorting *those* pins instead gave a clean, byte-perfect
+loopback (icount rx=5/tx=5 for 5 bytes sent) — so this is not a board-wide or software issue,
+it's UART0's receive path specifically. **Fix shipped:** `uart0-pi5` disabled (commented, not
+removed) and `uart3-pi5` made persistent in `config.txt`; `tflc02.py` `TFLC02.__init__`
+now defaults to `/dev/ttyAMA3` (was `/dev/serial0`) — **the earlier instruction above to
+default to `/dev/serial0` no longer applies now that UART0 is dead; don't move it back.**
+LiDAR now wired to physical pins 24 (TX) / 21 (RX) instead of 8/10; VCC (3.3V, not shared
+with the IMU — see above) and GND unchanged. Live-tested end to end afterward with clean,
+stable readings.
+
+**Also found and fixed while re-testing (2026-08-24): `read_distance()` ignored the
+protocol's own error code.** The TF-LC02 response includes an `error_code` byte (offset 6)
+that `_read_response()` computed but never checked — an invalid/no-return measurement comes
+back as literal distance `8888` with `error_code=4`, and the old code returned `8888` as if
+it were a real reading. Confirmed via `read_distance_with_error()` that ~30-40% of reads at
+the test bench alternated between valid (`error_code=0`) and this invalid sentinel — normal
+behavior for this class of sensor (weak/no return depending on target angle/reflectivity),
+not a hardware fault. `_read_response()` now returns `None` when `error_code != 0`, so
+callers see the same "no reading yet" signal they'd get from any other transient failure,
+instead of a spurious 8.888 m jump in the standoff display.
+
+**IMU was a red herring the whole time — it simply wasn't physically connected.** After the
+LiDAR fix, `i2cdetect -y 1` showed nothing at any address, matching CONTEXT.md's existing
+note that the BNO085's VCC/GND pins were never confirmed after the chip swap. User checked
+the bench and confirmed the BNO085 breakout was not plugged in at all. Once connected, it
+enumerates at `0x4A` as documented and streams real accel/gyro data (verified live: resting
+pose read `up ≈ 1.0g`, matching the axis-remap calibration check above). The original theory
+that started this whole investigation — IMU and LiDAR sharing a 5V rail, one dragging the
+other down — was wrong on every count: LiDAR VCC turned out to be 3.3V and not shared with
+the IMU at all, and the two failures were completely unrelated (one a dead UART peripheral,
+the other a bench cable never plugged back in).
+
 **IMU hardware swap (2026-08-24): MPU-6500 -> BNO085. Driver shipped, axis calibration
 still pending.** `mpu6500.py` is deleted (confirmed nothing else imported it); `pi/sensors/
 bno085.py` is the new driver, wired into `stream.py` in place of it. BNO085 lives at I2C

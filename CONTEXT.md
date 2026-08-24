@@ -100,7 +100,8 @@ with a simple framed binary protocol. Requirements:
 - Frequency range: 1–3 GHz (configurable, max ~3.8 GHz)
 - Step size: 10 MHz default
 - Dwell time per step: 1 ms (PLL settle)
-- TX power: 0.9 amplitude, gain 47 dB
+- TX power: 1.0 amplitude, gain 50 dB (RF Calib panel default; RX gain 25 dB, center freq
+  2000 MHz, sample rate 10 Msps — see `BladeRFDriver.__init__` / `RfCalibPanel.jsx`)
 - Antenna polarization: co-pol initially
 - Phase coherence: Dual-channel reference method — TX2→RX2 short SMA cable
   provides phase reference. Signal (RX1) divided by reference (RX2) cancels
@@ -123,20 +124,22 @@ this as a known gap.
 
 ## Wiring — TF-LC02 LiDAR (UART)
 
-**Corrected 2026-08-24: TF-LC02 runs on 3.3V, not the 5V this table originally claimed, and
-its VCC is not shared with the IMU.** Confirmed on the bench: wiring (VCC, GND, TX, RX) is
-correct and unchanged, and this exact connection was working before — so voltage is ruled out
-as the cause of the current silent-serial issue (see CLAUDE.md). Table below updated to match
-reality; exact 3.3V source pin not yet recorded here.
+**Moved to UART3 (2026-08-24) after UART0's receiver was found dead** — see CLAUDE.md's
+LiDAR silent-serial investigation for the full diagnostic trail (loopback + `TIOCGICOUNT`
+testing isolated it to UART0's RX peripheral specifically, not the module, not the wiring,
+not the Pi's GPIO pins themselves). VCC is 3.3V and not shared with the IMU, confirmed
+correct and unchanged throughout.
 
 | TF-LC02 Pin | Raspberry Pi | Notes |
 |---|---|---|
-| VCC | 3.3V rail (not Pin 2) | Not shared with IMU — confirmed correct and previously working |
+| VCC | 3.3V rail | Not shared with IMU |
 | GND | Pin 6 (GND) | Common ground |
-| TX | Pin 10 (GPIO 15 / RXD) | LiDAR TX → Pi RX |
-| RX | Pin 8 (GPIO 14 / TXD) | Pi TX → LiDAR RX |
+| TX | Pin 21 (GPIO 9 / RXD3) | LiDAR TX → Pi RX |
+| RX | Pin 24 (GPIO 8 / TXD3) | Pi TX → LiDAR RX |
 
-UART enabled via `raspi-config`, serial console disabled. Device: `/dev/serial0`.
+`uart3-pi5` overlay enabled in `config.txt` (`uart0-pi5` disabled, left commented rather than
+removed). Device: `/dev/ttyAMA3` (was `/dev/serial0`/`ttyAMA10` — do not revert to that, its
+receiver is dead). Serial console disabled.
 
 ## IMU Calibration & Orientation
 
