@@ -82,6 +82,30 @@ connection specifically since it's exactly the rail that would've been disturbed
 rewiring the IMU. Next step is physically checking the LiDAR's VCC/GND/TX/RX leads at the
 Pi header, not another round of software changes.
 
+**Voltage ruled out (2026-08-24).** Checked the bench wiring against the table above: VCC is
+3.3V and *not* shared with the IMU, contrary to what the table previously claimed (fixed in
+CONTEXT.md too) — but the TF-LC02 runs on 3.3V by design, and this exact connection was
+already confirmed working before, so this is not a mis-wiring and not the cause of the
+current silence. Back to square one on root cause: wiring (VCC/GND/TX/RX) is correct and
+was previously functional, yet the module now gives zero bytes both actively and passively
+across a power cycle. Worth checking next: whether the connector is fully seated (could have
+been jarred loose during the IMU rework even though it's on different pins), continuity
+along the full length of each lead (not just voltage presence) rather than just at the
+header, physical damage to the module or leads from handling during the IMU swap, and
+whether anything in `/boot/firmware/config.txt` (the `dtoverlay=uart0-pi5` line) regressed
+since it last worked. Still a bench/hardware problem, not a code problem.
+
+**Pi-side UART stack fully checked (2026-08-24) and ruled out.** `dtoverlay=uart0-pi5` intact
+in `config.txt`, `/dev/serial0` -> `ttyAMA10` as expected, `dmesg` shows clean PL011 init with
+no errors, nothing else has the port open (`lsof`), user is in `dialout`, and `pinctrl get
+14,15` shows both correctly muxed to UART0 TXD0/RXD0 (`a4`, idle-high — normal resting state).
+A live passive-listen + active-query test against `/dev/serial0` still returned 0 bytes both
+ways. Everything software/OS-side on the Pi is healthy — this is now isolated to the module
+itself or its TX/RX leads specifically (not VCC/GND, both already confirmed fine). Next step:
+unplug the LiDAR and jumper the Pi's TX (pin 8) straight to RX (pin 10) for a bare loopback
+test — if that echoes back what's sent, the Pi's UART is fully exonerated and the module/its
+TX-RX leads are the remaining suspect (dead unit, or a lead nicked during the IMU rework).
+
 **IMU hardware swap (2026-08-24): MPU-6500 -> BNO085. Driver shipped, axis calibration
 still pending.** `mpu6500.py` is deleted (confirmed nothing else imported it); `pi/sensors/
 bno085.py` is the new driver, wired into `stream.py` in place of it. BNO085 lives at I2C

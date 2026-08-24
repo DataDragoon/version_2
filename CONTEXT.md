@@ -123,9 +123,15 @@ this as a known gap.
 
 ## Wiring — TF-LC02 LiDAR (UART)
 
+**Corrected 2026-08-24: TF-LC02 runs on 3.3V, not the 5V this table originally claimed, and
+its VCC is not shared with the IMU.** Confirmed on the bench: wiring (VCC, GND, TX, RX) is
+correct and unchanged, and this exact connection was working before — so voltage is ruled out
+as the cause of the current silent-serial issue (see CLAUDE.md). Table below updated to match
+reality; exact 3.3V source pin not yet recorded here.
+
 | TF-LC02 Pin | Raspberry Pi | Notes |
 |---|---|---|
-| VCC | Pin 2 (5V) | Shares 5V rail with IMU |
+| VCC | 3.3V rail (not Pin 2) | Not shared with IMU — confirmed correct and previously working |
 | GND | Pin 6 (GND) | Common ground |
 | TX | Pin 10 (GPIO 15 / RXD) | LiDAR TX → Pi RX |
 | RX | Pin 8 (GPIO 14 / TXD) | Pi TX → LiDAR RX |
