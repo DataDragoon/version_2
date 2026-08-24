@@ -9,7 +9,7 @@ CMD_GET_DISTANCE = bytes([0x55, 0xAA, 0x81, 0x00, 0xFA])
 
 
 class TFLC02:
-    def __init__(self, port='/dev/ttyAMA0', baudrate=115200):
+    def __init__(self, port='/dev/serial0', baudrate=115200):
         self.ser = serial.Serial(port, baudrate=baudrate, timeout=0.1)
         self.ser.reset_input_buffer()
         time.sleep(0.2)

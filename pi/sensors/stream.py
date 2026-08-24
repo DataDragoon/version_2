@@ -29,16 +29,19 @@ async def broadcast(msg):
 
 
 async def sensor_loop(rate, skip_cal=False):
-    raw_imu = MPU6500()
     lidar = TFLC02()
 
-    who = raw_imu.who_am_i()
-    if who not in (0x70, 0x71, 0x73):
-        print(f"WARNING: IMU WHO_AM_I = 0x{who:02X}, expected 0x70/0x71")
-    else:
-        print(f"MPU-6500 detected (WHO_AM_I = 0x{who:02X})")
-
-    imu = CalibratedIMU(raw_imu, auto_calibrate=not skip_cal)
+    imu = None
+    try:
+        raw_imu = MPU6500()
+        who = raw_imu.who_am_i()
+        if who not in (0x70, 0x71, 0x73):
+            print(f"WARNING: IMU WHO_AM_I = 0x{who:02X}, expected 0x70/0x71")
+        else:
+            print(f"MPU-6500 detected (WHO_AM_I = 0x{who:02X})")
+        imu = CalibratedIMU(raw_imu, auto_calibrate=not skip_cal)
+    except Exception as e:
+        print(f"WARNING: IMU init failed ({e!r}), streaming without IMU")
 
     print(f"TF-LC02 on {lidar.ser.port}")
 
@@ -49,14 +52,18 @@ async def sensor_loop(rate, skip_cal=False):
         while True:
             t0 = time.monotonic()
 
-            body = imu.read_body()
+            if imu is not None:
+                body = imu.read_body()
+                accel, gyro, temp = body['accel'].tolist(), body['gyro'].tolist(), body['temp']
+            else:
+                accel = gyro = temp = None
 
             dist = lidar.read_distance()
 
             packet = {
-                'accel': body['accel'].tolist(),
-                'gyro': body['gyro'].tolist(),
-                'temp': body['temp'],
+                'accel': accel,
+                'gyro': gyro,
+                'temp': temp,
                 'lidar': dist,
                 'timestamp': time.time(),
             }
@@ -65,7 +72,8 @@ async def sensor_loop(rate, skip_cal=False):
             elapsed = time.monotonic() - t0
             await asyncio.sleep(max(0, interval - elapsed))
     finally:
-        imu.close()
+        if imu is not None:
+            imu.close()
         lidar.close()
 
 
@@ -89,8 +97,14 @@ async def main():
     loop.add_signal_handler(signal.SIGINT, request_stop)
     loop.add_signal_handler(signal.SIGTERM, request_stop)
 
+    def log_task_exception(t):
+        if not t.cancelled() and t.exception() is not None:
+            print(f"sensor_loop crashed: {t.exception()!r}")
+            request_stop()
+
     async with websockets.serve(register, '0.0.0.0', args.port):
         task = asyncio.create_task(sensor_loop(args.rate, skip_cal=args.skip_cal))
+        task.add_done_callback(log_task_exception)
         await stop
         task.cancel()
 

@@ -24,10 +24,29 @@ See CONTEXT.md for full system description.
 ## Hardware Context
 
 - Raspberry Pi with AI HAT+ (Hailo-8L accelerator)
-- LiDAR: TF-LC02 (UART, 115200 baud default)
+- LiDAR: TF-LC02 (UART, 115200 baud default) — **wired to `/dev/serial0`, not `/dev/ttyAMA0`.**
+  On this Pi 5, `dtoverlay=uart0-pi5` (the GPIO14/15 header UART, `/boot/firmware/config.txt`)
+  enumerates as `ttyAMA10`, which `/dev/serial0` symlinks to. `/dev/ttyAMA0` is a *different,
+  always-present* PL011 UART used internally for Bluetooth (`hci_uart_bcm`) — it opens
+  successfully with no error, so a driver defaulting to it doesn't crash, it just silently
+  reads nothing forever. `pi/sensors/tflc02.py` `TFLC02.__init__` now defaults to
+  `/dev/serial0`; don't change it back to `/dev/ttyAMA0`. The `config.txt` comment above the
+  overlay line still says "creates /dev/ttyAMA0", which is wrong for the Pi 5 — go by
+  `/dev/serial0` in code, not that comment.
 - IMU: MPU-6500 (I2C, address 0x68)
 - SDR: bladeRF (USB, use libbladeRF / pybladeRF)
 - Antennas: 2x Vivaldi (wideband, one TX one RX)
+
+**IMU failure must not take LiDAR streaming down with it (fixed 2026-08-24).**
+`pi/sensors/stream.py` `sensor_loop()` used to construct `MPU6500()` *before*
+`TFLC02()`. When the IMU isn't responding on the I2C bus (`OSError: [Errno 121]
+Remote I/O error` — confirm with `i2cdetect -y 1`, address `0x68` absent), that
+constructor throws and kills `sensor_loop` before the LiDAR is ever initialized —
+so a dead/disconnected IMU presented as "the lidar isn't working" even though the
+LiDAR wiring and driver were completely fine. `sensor_loop` now builds the LiDAR
+first and wraps IMU init in try/except: on failure it logs a warning and streams
+`accel`/`gyro`/`temp` as `null` while LiDAR keeps working normally. Keep this
+independence — don't let either sensor's failure gate the other.
 
 ## Living Documentation Rule
 
