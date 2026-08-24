@@ -89,6 +89,10 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
   const bandwidth = (stopFreq - startFreq) * 1e6;
   const rangeRes = bandwidth > 0 ? (299792458 / (2 * bandwidth)) : Infinity;
   const maxRange = stepSize > 0 ? (299792458 / (4 * stepSize * 1e6) - rangeOffset) : Infinity;
+  // "0-3m" display mode never shows past the sweep's actual unambiguous range
+  // (matches sfcw_engine.py _process_h_cal's displayed_range_max) — no point
+  // sizing the axis past where real data can ever land.
+  const bigRangeMax = Math.max(0.5, Math.min(maxRange, 3));
   const captureTimeMs = numBuffers * BUFFER_TIME_MS;
   // Per-step wait is (settleCount + numBuffers) buffer arrivals — see
   // pi/radar/sfcw_engine.py _sweep_core. Real time tends to run a bit under this
@@ -384,15 +388,15 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
 
       <Section label="Display Range">
         <button
-          onClick={() => onRangeScaleChange(rangeScale && rangeScale.max === 0.3 ? { min: 0, max: 3 } : { min: 0, max: 0.3 })}
+          onClick={() => onRangeScaleChange(rangeScale && rangeScale.max === 0.5 ? { min: 0, max: bigRangeMax } : { min: 0, max: 0.5 })}
           className={cn(
             'w-full px-3 py-2 rounded-lg text-xs font-medium transition-all border',
-            rangeScale && rangeScale.max === 0.3
+            rangeScale && rangeScale.max === 0.5
               ? 'bg-[#D1855C]/10 border-[#D1855C]/30 text-[#D1855C]'
               : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
           )}
         >
-          {rangeScale && rangeScale.max === 0.3 ? '● 0 – 0.3 m' : '0 – 3 m'}
+          {rangeScale && rangeScale.max === 0.5 ? '● 0 – 0.5 m' : `0 – ${bigRangeMax < 1 ? (bigRangeMax * 100).toFixed(0) + ' cm' : bigRangeMax.toFixed(2) + ' m'}`}
         </button>
       </Section>
     </>
