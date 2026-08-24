@@ -1,1 +1,1 @@
-# Sensor drivers: TF-LC02 LiDAR, MPU-6500 IMU
+# Sensor drivers: TF-LC02 LiDAR, BNO085 IMU

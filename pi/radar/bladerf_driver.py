@@ -68,10 +68,12 @@ class BladeRFDriver:
         ch_rx.gain_mode = MGC
         ch_tx.frequency = int(self.center_freq)
         ch_tx.sample_rate = int(self.sample_rate)
+        self._warn_if_rate_snapped('TX0', ch_tx.sample_rate)
         ch_tx.bandwidth = int(self.bandwidth)
         ch_tx.gain = int(self.tx_gain)
         ch_rx.frequency = int(self.center_freq)
         ch_rx.sample_rate = int(self.sample_rate)
+        self._warn_if_rate_snapped('RX0', ch_rx.sample_rate)
         ch_rx.bandwidth = int(self.bandwidth)
         ch_rx.gain = int(self.rx_gain)
 
@@ -80,21 +82,35 @@ class BladeRFDriver:
         dev_ptr = self.device.dev[0]
         gains_tx = [int(self.tx_gain), int(self.tx2_gain)]
         gains_rx = [int(self.rx_gain), int(self.rx2_gain)]
+        actual_rate = ffi.new('unsigned int *')
 
         for ch_idx in range(2):
             tx_ch = bladerf.CHANNEL_TX(ch_idx)
             rx_ch = bladerf.CHANNEL_RX(ch_idx)
             libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, int(self.center_freq))
-            libbladeRF.bladerf_set_sample_rate(dev_ptr, tx_ch, int(self.sample_rate), ffi.NULL)
+            libbladeRF.bladerf_set_sample_rate(dev_ptr, tx_ch, int(self.sample_rate), actual_rate)
+            self._warn_if_rate_snapped(f'TX{ch_idx}', actual_rate[0])
             libbladeRF.bladerf_set_bandwidth(dev_ptr, tx_ch, int(self.bandwidth), ffi.NULL)
             libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, int(self.center_freq))
-            libbladeRF.bladerf_set_sample_rate(dev_ptr, rx_ch, int(self.sample_rate), ffi.NULL)
+            libbladeRF.bladerf_set_sample_rate(dev_ptr, rx_ch, int(self.sample_rate), actual_rate)
+            self._warn_if_rate_snapped(f'RX{ch_idx}', actual_rate[0])
             libbladeRF.bladerf_set_bandwidth(dev_ptr, rx_ch, int(self.bandwidth), ffi.NULL)
             libbladeRF.bladerf_set_gain_mode(dev_ptr, rx_ch, MGC)
             libbladeRF.bladerf_set_gain(dev_ptr, rx_ch, gains_rx[ch_idx])
             libbladeRF.bladerf_set_gain(dev_ptr, tx_ch, gains_tx[ch_idx])
 
         print(f"[bladerf] Dual-channel configured: TX1={gains_tx[0]}dB TX2={gains_tx[1]}dB RX1={gains_rx[0]}dB RX2={gains_rx[1]}dB")
+
+    def _warn_if_rate_snapped(self, label, actual_hz):
+        """bladerf_set_sample_rate can silently round the requested rate to the
+        nearest one the RFIC's clock/decimation chain can actually produce —
+        the call succeeds either way. Surface it instead of discarding `actual`,
+        since a snapped rate is exactly what drives the total-throughput warning
+        libbladeRF logs (it sums the *actual* per-channel rate, not the requested one).
+        """
+        if actual_hz != int(self.sample_rate):
+            print(f"[bladerf] NOTE: {label} sample rate snapped to {actual_hz/1e6:g} Msps "
+                  f"(requested {self.sample_rate/1e6:g} Msps)")
 
     def reapply_dual_gains(self):
         """Re-push TX1/TX2/RX1/RX2 gains after enabling TX/RX modules.
@@ -159,15 +175,19 @@ class BladeRFDriver:
             ch_tx = self.device.Channel(bladerf.CHANNEL_TX(0))
             ch_rx = self.device.Channel(bladerf.CHANNEL_RX(0))
             ch_tx.sample_rate = self.sample_rate
+            self._warn_if_rate_snapped('TX0', ch_tx.sample_rate)
             ch_tx.bandwidth = self.bandwidth
             ch_rx.sample_rate = self.sample_rate
+            self._warn_if_rate_snapped('RX0', ch_rx.sample_rate)
             ch_rx.bandwidth = self.bandwidth
             if self._dual_channel:
                 ch_tx2 = self.device.Channel(bladerf.CHANNEL_TX(1))
                 ch_rx2 = self.device.Channel(bladerf.CHANNEL_RX(1))
                 ch_tx2.sample_rate = self.sample_rate
+                self._warn_if_rate_snapped('TX1', ch_tx2.sample_rate)
                 ch_tx2.bandwidth = self.bandwidth
                 ch_rx2.sample_rate = self.sample_rate
+                self._warn_if_rate_snapped('RX1', ch_rx2.sample_rate)
                 ch_rx2.bandwidth = self.bandwidth
             self._tx_buffer = self._generate(int(self.sample_rate * 0.01))
             if self._dual_channel:

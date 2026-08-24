@@ -66,6 +66,112 @@ tells the two cases apart. Hz blank -> the sensor stream (port 9001) is down, ch
 `stream.py`'s stdout on the Pi. Hz live but Standoff `—` -> the stream is up and
 `read_distance()` is returning `None`, so it's the TF-LC02 serial path (`/dev/serial0`).
 
+**LiDAR silent-serial investigation (2026-08-24), unresolved — needs a bench check, not
+more code.** `read_distance()` returns `None` because the TF-LC02 gives back literally zero
+bytes on `/dev/serial0` — confirmed both actively (sending the `55 AA 81 00 FA` query) and
+passively (just listening for 3s with nothing sent), before *and* after a physical power
+cycle of the LiDAR board. A powered TF-LC02 replies to something; total silence on both
+fronts across a power cycle rules out a code/protocol bug and points at wiring/connector,
+not firmware or timing. Two things already ruled out, don't re-check them: (1) the driver
+protocol itself — byte-for-byte identical to a completely separate fork on this same machine
+(`~/version-venom`, different GitHub remote), so it isn't a broken deviation from something
+that used to work; (2) no lost/alternate C-level implementation exists anywhere — full git
+history and a filesystem-wide search turned up nothing, the driver has only ever been this
+Python file. Per CONTEXT.md, TF-LC02 VCC shares Pin 2 (5V) with the IMU — worth checking that
+connection specifically since it's exactly the rail that would've been disturbed while
+rewiring the IMU. Next step is physically checking the LiDAR's VCC/GND/TX/RX leads at the
+Pi header, not another round of software changes.
+
+**IMU hardware swap (2026-08-24): MPU-6500 -> BNO085. Driver shipped, axis calibration
+still pending.** `mpu6500.py` is deleted (confirmed nothing else imported it); `pi/sensors/
+bno085.py` is the new driver, wired into `stream.py` in place of it. BNO085 lives at I2C
+`0x4A` (was `0x68` for the MPU-6500) and speaks SHTP over I2C, not simple register
+read/write — a hand-rolled raw driver on `smbus2`/`i2c_msg`, matching this repo's other
+sensor drivers (no framework dependency). `adafruit-circuitpython-bno08x` +
+`adafruit-blinka` are installed on the Pi (`pip3 install --break-system-packages`, not in
+`requirements.txt`) from cross-checking the protocol during bring-up; not used by the
+shipped driver, safe to leave installed or remove.
+
+**Bring-up history, useful if this ever needs debugging again:** initially every
+`SET_FEATURE_COMMAND` (enable accelerometer/gyroscope/rotation vector) got zero response
+while Product ID queries worked fine — the classic signature of the SH-2 application
+firmware not running (stuck in bootloader/reduced mode). Ruled out corrected per-channel TX
+sequence numbers (adafruit's library conflates host-TX/device-RX sequence counters into one
+list — a real bug, see its `__init__.py` `_sequence_number` TODO — but not the cause here),
+long settle times, full channel drains. **Fixed by power-cycling the board** — confirms it
+really was a firmware-not-running state, not a protocol bug. If this regresses, power-cycle
+before re-chasing protocol theories.
+
+Packet shape (`accel`/`gyro`/`temp` fields, same consumers) is unchanged from the MPU-6500
+era rather than switching to the chip's onboard sensor fusion (rotation vector) — smaller
+blast radius, `imu_calibration.py`'s axis remap and the groundstation's Madgwick filter in
+`ImuDisplay.jsx` keep working unmodified. `bno085.py` converts the calibrated accelerometer
+report (m/s^2, Q8) to g (÷9.80665) and gyroscope report (rad/s, Q9) to deg/s (×180/π), so
+nothing downstream needed to change for units. BNO085's SH-2 report set has no plain
+temperature report — `temp` streams `null` for this driver, which every consumer already
+handles gracefully (see the null-accel `ImuDisplay.jsx` crash fixed the same day).
+
+**Known bug, not yet fixed: `imu_calibration.py`'s R_ACCEL/R_GYRO axis remap is wrong for
+the BNO085.** Those matrices were discovered for the MPU-6500's mounting (gravity on raw
++X). Confirmed on the actual BNO085 hardware: lying flat on the bench, its raw gravity reads
+~0.98g on +Y, ~0.02g on X/Z — a completely different axis is dominant. Run through the
+current R_ACCEL unchanged, that reports body "left" ≈1g and "up" ≈0 for a board lying flat,
+which is visibly wrong, and `calibrate_gyro_bias`'s accel-bias step (hardcoded to expect
+gravity on X) will subtract that ~1g of real gravity on Y as if it were bias/noise. Needs
+re-discovery on the BNO085 (roll/pitch/yaw through known motions, same procedure as the
+original MPU-6500 discovery documented in `imu_calibration.py`'s module docstring) before
+`ImuDisplay`'s 3D orientation or any body-frame consumer can be trusted. Gyro bias
+calibration itself is chip-agnostic and fine as-is.
+
+**Testing trap: don't use "does the resting pose look level" as a check that the axis
+remap is fine — it's a false negative.** `auto_calibrate` reruns on every `stream.py`
+startup and its accel-bias step subtracts whatever the raw reading was *at that moment*
+from the expected-gravity vector. If you calibrate while the board is resting in one pose
+and then immediately read body-frame accel in that *same* static pose, the bias subtraction
+cancels the wrong-axis error and "up" reads ~1g regardless of whether R_ACCEL is actually
+correct — confirmed this directly after fixing the calibration hang below. The remap is
+still wrong; it only looks right because nothing moved. The real test is dynamic: tilt the
+board through a known roll/pitch/yaw and see if the *reported* axis matches the *physical*
+one, same as the original discovery procedure.
+
+**Fixed: BNO085's report backlog could hang `calibrate_gyro_bias` indefinitely.** Initial
+`bno085.py` used a 128-byte read buffer and 10ms/100Hz report intervals for both
+accelerometer and gyroscope. Each I2C read transaction has real cost regardless of whether
+data is pending -- measured 12ms for a 128-byte read on this Pi's I2C bus, vs. 3.2ms at 32
+bytes -- and the BNO085 pushes reports on its own schedule whether or not the host is
+draining them. At 100Hz+100Hz combined against ~12ms/read, `read_all()`'s drain loop could
+never catch up: every call hit its 32-read cap, batched packets grew past the 128-byte
+buffer and got silently truncated, and `calibrate_gyro_bias`'s 200Hz sampling loop (400
+samples, meant to take 2s) didn't finish within 20s in testing. Fixed by cutting the read
+buffer to 48 bytes and both report intervals to 20ms/50Hz (matching `stream.py`'s default
+loop rate) -- confirmed steady-state `read_all()` now does 3-5 reads per call, never near
+the cap, and calibration completes in ~2s as intended. If report intervals ever need to
+drop for a smoother display, drop the per-call read cap first and re-measure steady-state
+read count before assuming it's fine -- don't just lower the interval and move on.
+
+**bladeRF total-sample-throughput warnings explained (2026-08-24).** The
+`check_total_sample_rate` warning in libbladeRF sums each active channel's *actual* achieved
+sample rate (`bladerf2.c` reads it back via `get_sample_rate`), not the rate Python
+requested. `bladerf_driver.py` `_configure_channels_dual()` was calling
+`bladerf_set_sample_rate(..., ffi.NULL)` for the `actual` out-param — silently discarding
+whether the RFIC's clock/decimation chain rounded the requested rate to something else.
+SFCW's `_configure_hardware()` requests 10 Msps; the observed warning math (92.16 / 3
+channels, 122.88 / 4 channels) both divide out to exactly 30.72 Msps per channel, so that's
+almost certainly what the hardware actually snapped to. Fixed by capturing `actual` (both in
+the raw-ffi dual-channel path and by reading back `Channel.sample_rate` after the
+Python-wrapped single-channel sets) and logging a `[bladerf] NOTE: <ch> sample rate snapped
+to X Msps (requested Y Msps)` line when it differs — visibility only, no behavior change, so
+it's safe without live hardware to test against. **Not yet verified against real hardware**
+(bladeRF wasn't attached when this was diagnosed) — next run should confirm the 30.72 Msps
+hypothesis via the new NOTE lines. Actually eliminating the warning (picking a request rate
+the RFIC can hit exactly, e.g. a rate near the well-known 30.72 Msps LTE-grid family) needs
+live-hardware validation before changing — RF gain/timing code in this repo has a history of
+regressions from unverified changes (see the `settle_count`/`num_buffers` regressions
+above), so don't just guess a lower rate to silence it without testing on the bench.
+The `[INFO @ .../version.c]` firmware/FPGA-newer-than-compatibility-table lines are harmless
+and expected — libbladeRF's bundled compatibility table just lags the flashed firmware/FPGA
+versions; ignore them, don't chase a libbladeRF upgrade just to silence an INFO line.
+
 ## Living Documentation Rule
 
 CLAUDE.md and CONTEXT.md are living documents. Whenever you learn key information

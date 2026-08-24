@@ -8,7 +8,7 @@ import signal
 
 import websockets
 
-from mpu6500 import MPU6500
+from bno085 import BNO085
 from tflc02 import TFLC02
 from imu_calibration import CalibratedIMU
 
@@ -33,12 +33,8 @@ async def sensor_loop(rate, skip_cal=False):
 
     imu = None
     try:
-        raw_imu = MPU6500()
-        who = raw_imu.who_am_i()
-        if who not in (0x70, 0x71, 0x73):
-            print(f"WARNING: IMU WHO_AM_I = 0x{who:02X}, expected 0x70/0x71")
-        else:
-            print(f"MPU-6500 detected (WHO_AM_I = 0x{who:02X})")
+        raw_imu = BNO085()
+        print(f"BNO085 detected (part number {raw_imu.who_am_i()})")
         imu = CalibratedIMU(raw_imu, auto_calibrate=not skip_cal)
     except Exception as e:
         print(f"WARNING: IMU init failed ({e!r}), streaming without IMU")

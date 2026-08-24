@@ -1,6 +1,7 @@
 """IMU calibration: bias estimation and axis remapping.
 
-Calibration discovery results:
+Calibration discovery results (measured on the MPU-6500, NOT re-verified since the
+2026-08-24 swap to BNO085 -- see the CLAUDE.md IMU section):
   Gravity when level: accel +X = +1g  -> IMU +X = physical UP
   Roll right:  gyro +Z (+70.6 deg)    -> IMU Z = roll/forward axis
   Pitch down:  gyro -Y (-40.1 deg)    -> IMU Y = pitch/left axis
@@ -14,6 +15,13 @@ Accel mapping:  body = R_ACCEL @ imu
 
 Gyro mapping:  body = R_GYRO @ imu
   roll_rate(+right) = +gyro_z, pitch_rate(+up) = +gyro_y, yaw_rate(+right) = -gyro_x
+
+KNOWN WRONG for BNO085: with the board flat on the bench, the BNO085's raw gravity
+reading lands almost entirely on its own +Y axis (~0.98g), not +X. Run through R_ACCEL
+below as-is, that reports body "left" near 1g and "up" near 0 for a board lying flat --
+visibly wrong. R_ACCEL/R_GYRO need re-discovery on the BNO085 (roll/pitch/yaw through
+known motions, same procedure as above) before ImuDisplay's orientation output can be
+trusted. Bias calibration (calibrate_gyro_bias below) is chip-agnostic and unaffected.
 """
 
 import json
@@ -59,7 +67,7 @@ def calibrate_gyro_bias(imu, duration=2.0, rate=200):
     """Capture stationary gyro samples and compute zero-rate bias.
 
     Args:
-        imu: MPU6500 instance
+        imu: sensor driver instance (read_all() -> {accel, gyro, temp}, close())
         duration: seconds to sample
         rate: approximate sample rate (Hz)
 
@@ -92,7 +100,10 @@ def calibrate_gyro_bias(imu, duration=2.0, rate=200):
     accel_mean = accel_arr.mean(axis=0).tolist()
 
     # Accel bias: subtract expected gravity from the dominant axis
-    # Gravity should be +1g on IMU X axis when level
+    # Gravity should be +1g on IMU X axis when level -- true for the MPU-6500's
+    # mounting, NOT the BNO085 (its gravity lands on raw +Y, see the module
+    # docstring). Until R_ACCEL is re-discovered for the BNO085, this silently
+    # treats ~1g of real gravity on Y as "bias" and subtracts it out.
     accel_bias = [
         accel_mean[0] - 1.0,  # X has gravity
         accel_mean[1] - 0.0,
@@ -100,12 +111,16 @@ def calibrate_gyro_bias(imu, duration=2.0, rate=200):
     ]
 
     gyro_std = gyro_arr.std(axis=0).tolist()
-    temp_mean = np.mean(temps)
+    # Not every driver reports temperature (the BNO085's SH-2 report set has no plain
+    # temperature report, so its read_all() always returns temp: None) -- skip rather
+    # than feed None into np.mean, which raises.
+    valid_temps = [t for t in temps if t is not None]
+    temp_mean = float(np.mean(valid_temps)) if valid_temps else None
 
     print(f"  Gyro bias: [{gyro_bias[0]:.4f}, {gyro_bias[1]:.4f}, {gyro_bias[2]:.4f}] deg/s")
     print(f"  Gyro noise (std): [{gyro_std[0]:.4f}, {gyro_std[1]:.4f}, {gyro_std[2]:.4f}] deg/s")
     print(f"  Accel bias: [{accel_bias[0]:.4f}, {accel_bias[1]:.4f}, {accel_bias[2]:.4f}] g")
-    print(f"  Temperature: {temp_mean:.1f} °C")
+    print(f"  Temperature: {temp_mean:.1f} °C" if temp_mean is not None else "  Temperature: n/a")
     print(f"  Samples: {len(samples_gyro)}")
 
     config = {
@@ -124,12 +139,12 @@ def calibrate_gyro_bias(imu, duration=2.0, rate=200):
 
 
 class CalibratedIMU:
-    """Wrapper around MPU6500 that applies bias correction and axis remapping."""
+    """Wrapper around an IMU driver that applies bias correction and axis remapping."""
 
     def __init__(self, imu, auto_calibrate=True, cal_duration=2.0):
         """
         Args:
-            imu: MPU6500 instance
+            imu: sensor driver instance (read_all() -> {accel, gyro, temp}, close())
             auto_calibrate: if True, run gyro bias calibration on init
             cal_duration: seconds for bias calibration
         """
