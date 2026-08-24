@@ -77,7 +77,7 @@ export default function ImuDisplay({ imuData }) {
   }, []);
 
   useEffect(() => {
-    if (!imuData || !sceneRef.current) return;
+    if (!imuData || !imuData.accel || !imuData.gyro || !sceneRef.current) return;
 
     const { group } = sceneRef.current;
     const [aFwd, aLeft, aUp] = imuData.accel;
