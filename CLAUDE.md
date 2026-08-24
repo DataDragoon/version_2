@@ -783,3 +783,47 @@ far more than any modelling choice.
 entire background sits within 2–6 cm of range, and 3 GHz of bandwidth gives ~50 mm range
 resolution. The "gated" metric therefore tracks the full-band metric closely. Separating a
 target from the face needs more bandwidth or aperture, not better background subtraction.
+
+## RF Calib panel gains are NOT the SFCW sweep's gains (2026-08-25)
+
+Easy to conflate since both transmit the same 100 kHz-offset CW tone (`set_waveform('cw',
+offset=100_000, ...)`), but they carry **independent** gain state. RF Calib panel drives
+`BladeRFDriver.tx_gain`/`rx_gain` directly (defaulting to 50 dB / 25 dB — see the RF Calib
+defaults change above). `SFCWEngine._configure_hardware()` (`sfcw_engine.py:443-450`)
+overwrites those same driver fields from its own `tx1_gain`/`rx1_gain`/`tx2_gain`/`rx2_gain`
+and `amplitude=0.9` right before every sweep — these are set **independently** in both
+`App.jsx` (`sfcwParams.tx1Gain`/`rx1Gain`) and `sfcw_engine.py`'s own `__init__` defaults,
+and must be kept in sync manually; there's no shared source between the two.
+
+**Verified 2026-08-25: user bench-tested the RF Calib panel at 60 dB TX / 90% amplitude /
+40 dB RX (SFCW's gain point at the time) per the recommendation below, and confirmed the
+result acceptable.** SFCW's own `tx1_gain`/`rx1_gain` defaults were then dropped from
+60/40 to **50/25** (both `App.jsx` `sfcwParams` and `SFCWEngine.__init__`) to match the RF
+Calib panel's defaults, since 50/25 was the tested-good operating point. `tx2_gain`/
+`rx2_gain` (reference channel) were untouched. If SFCW's gains are ever changed again,
+retest via the RF Calib panel at the *exact* new tx1/rx1 numbers first — testing at
+whatever the RF Calib panel happens to default to does not characterize the sweep unless
+the two are known to match, which is why they were brought into alignment here.
+
+**Why harmonics of that 100 kHz tone (seen on the RF Calib panel's live FFT as spurs at
+odd multiples — ~3×, ~5× — of the 100 kHz offset, tens of dB down) mostly don't reach the
+SFCW range profile.** The RF Calib panel's FFT is a wideband capture — it shows everything
+in the passband, harmonics included. `SFCWEngine._sweep_core` (`sfcw_engine.py:598-601`)
+never does a wideband FFT at all: it demodulates by multiplying the raw RX IQ against
+`exp(-j*2*pi*cw_offset*t)` and taking the mean over n=4096 samples — a single-frequency-bin
+coherent extraction (matched filter) at exactly the 100 kHz reference frequency, not a
+spectrum. Bin spacing at n=4096/10 Msps is ~2.44 kHz; a harmonic ~200-400 kHz away sits
+roughly 80-165 bins off-target, which a rectangular-window single-bin DFT rejects by very
+roughly another 45-55 dB beyond whatever level it already sits at in the wideband FFT. That
+headroom is why the specific spurs found on the RF Calib panel are not expected to be a
+first-order concern for h_cal quality — confirmed adequate at the 60/90/40 bench test above.
+
+**What can actually corrupt h_cal, and isn't checked in software:** (1) TX compression at
+the fundamental itself (100 kHz offset) — amplitude/phase nonlinearity right at the
+frequency being measured isn't filtered out by the coherent extraction the way a harmonic
+is, though it partially cancels through the `h_signal / h_reference` ratio if TX1/TX2
+compress similarly; (2) RX ADC clipping from RX gain pushed too high — confirmed by grep,
+there is no clipping/saturation check anywhere in `sfcw_engine.py` or `bladerf_driver.py`
+(`_process_h_cal`'s phase-coherence check catches retune-timing corruption, not amplitude
+clipping). Both are real, unguarded failure modes; the odd-harmonic spurs from the RF Calib
+panel are, by contrast, structurally rejected by the demod and a lower-priority concern.

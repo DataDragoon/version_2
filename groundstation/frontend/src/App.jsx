@@ -163,8 +163,8 @@ export default function App() {
     stepSize: 60,
     numBuffers: 4,
     settleCount: 10,
-    tx1Gain: 60,
-    rx1Gain: 40,
+    tx1Gain: 50,
+    rx1Gain: 25,
     rangeOffset: 0.5,
   });
 

@@ -46,8 +46,8 @@ class SFCWEngine:
         self.step_size = 60_000_000
         self.num_buffers = 4
         self.settle_count = 10
-        self.tx1_gain = 60
-        self.rx1_gain = 40
+        self.tx1_gain = 50
+        self.rx1_gain = 25
         self.tx2_gain = 30
         self.rx2_gain = 20
         self.rx_gain_min = 5
