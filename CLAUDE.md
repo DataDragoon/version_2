@@ -111,34 +111,41 @@ nothing downstream needed to change for units. BNO085's SH-2 report set has no p
 temperature report — `temp` streams `null` for this driver, which every consumer already
 handles gracefully (see the null-accel `ImuDisplay.jsx` crash fixed the same day).
 
-**Fixed (2026-08-24): `imu_calibration.py`'s R_ACCEL/R_GYRO axis remap for the BNO085,**
-based on two data points rather than a from-scratch physical re-discovery: (1) lying flat on
-the bench, the BNO085's raw gravity reads ~0.98g on +Y (not +X like the MPU-6500), and (2)
-live rotation testing reported pitch showing up as yaw and vice versa through the old
-mapping. Both point at the same explanation — the BNO085 sits rotated ~90 deg about the
-forward/roll axis relative to the MPU-6500's mounting, so X and Y swap roles (left<->up,
-pitch<->yaw) while Z (forward/roll) is untouched (rotating a sensor about its own axis
-doesn't change what that axis measures). Applied as a straight row swap in both matrices —
-no new sign guessing, see `imu_calibration.py`'s module docstring for the exact mapping —
-and updated `calibrate_gyro_bias`'s hardcoded "gravity is on X" assumption to Y to match.
-Verified: fresh calibration + reading the resting pose now gives `up ≈ 1.0g, forward ≈ 0,
-left ≈ 0` as expected. **Not fully verified**: this fixes axis *identity* from the reported
-symptom, not necessarily every sign/direction — if pitch or yaw still reads backwards (e.g.
-nose-down shows as nose-up) after live testing, that's a single sign flip on the affected
-row, not a re-derivation. Confirming direction needs actually rotating the board through
-known roll/pitch/yaw and checking sign, which wasn't done here.
+**Fixed (2026-08-24) after TWO rounds of live testing: `imu_calibration.py`'s R_ACCEL/R_GYRO
+axis remap for the BNO085.** Round 1's fix (a simple X<->Y swap, reasoned from the gravity
+measurement + "pitch reads as yaw") was WRONG on its own terms — round 2's live feedback
+was "pitch and roll are now swapped," meaning the true axis identity is a full relabeling of
+all three raw axes, not the two-axis swap round 1 assumed:
+  raw X -> roll axis (forward), raw Z -> pitch axis (left), raw Y -> yaw axis (up)
+This resolves self-consistently: yaw was never reported wrong across either round, so raw Y
+= up = yaw axis stands throughout (also matches the direct gravity measurement). Current
+`R_GYRO`: `roll = -gyro_x, pitch = +gyro_z, yaw = +gyro_y`. **`R_ACCEL`'s forward/left rows
+are inferred, not independently measured** — set equal to `R_GYRO`'s rows on the reasoning
+that BNO085's SH-2 reports are documented to share one common sensor frame across
+accel/gyro/mag (true for this chip, was NOT true for the MPU-6500 — its original R_ACCEL and
+R_GYRO were genuinely different matrices, so don't assume this equivalence generalizes to
+other hardware without checking). Verified: fresh calibration + resting pose gives
+`up ≈ 1.0g, forward ≈ 0, left ≈ 0`.
+
+**If a third round of "X is now swapped with Y" feedback comes in, stop patching
+incrementally and ask for a full walk-through instead** (rotate slowly through each of
+roll/pitch/yaw individually, one at a time, reporting the sign and which body-frame value
+actually moves for each) — two rounds of partial feedback already produced one wrong
+intermediate fix (round 1's swap), and a third partial round risks the same. A single
+complete pass pins all three axes and their signs at once instead of iterating on which pair
+is currently swapped.
 
 **Testing trap: don't use "does the resting pose look level" as a check that the axis
-remap is fine — it's a false negative for detecting a *remaining* problem, though it did
-correctly confirm this fix's axis identity above.** `auto_calibrate` reruns on every
-`stream.py` startup and its accel-bias step subtracts whatever the raw reading was *at that
-moment* from the expected-gravity vector. If you calibrate while the board is resting in one
-pose and then immediately read body-frame accel in that *same* static pose, the bias
-subtraction cancels out ANY remaining wrong-axis error and "up" reads ~1g regardless of
-whether R_ACCEL is fully correct — confirmed this masking effect directly while testing the
-original (wrong) mapping. The real test for whether the fix above actually holds is dynamic:
-tilt the board through a known roll/pitch/yaw and see if the *reported* axis and *sign*
-match the *physical* motion, same as the original MPU-6500 discovery procedure.
+remap is fine — it's a false negative for detecting a *remaining* problem,** even though it
+correctly reproduces `up ≈ 1g` for whichever mapping is currently in place (round 1's WRONG
+mapping also passed this exact check). `auto_calibrate` reruns on every `stream.py` startup
+and its accel-bias step subtracts whatever the raw reading was *at that moment* from the
+expected-gravity vector — calibrating and then immediately reading the *same* static pose
+cancels out any remaining wrong-axis error, "up" reads ~1g regardless of whether R_ACCEL is
+actually correct. The only real test is dynamic: tilt the board through a known roll/pitch/
+yaw and see if the *reported* axis and *sign* match the *physical* motion — same as the
+original MPU-6500 discovery procedure, and the only thing that's actually caught a problem
+so far in this whole BNO085 remap effort.
 
 **Fixed: BNO085's report backlog could hang `calibrate_gyro_bias` indefinitely.** Initial
 `bno085.py` used a 128-byte read buffer and 10ms/100Hz report intervals for both

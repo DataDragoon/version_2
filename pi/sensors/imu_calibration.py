@@ -9,22 +9,33 @@ Original calibration discovery results (measured on the MPU-6500):
 Body frame (right-hand):
   Body X = FORWARD, Body Y = LEFT, Body Z = UP
 
-BNO085 remap (2026-08-24): the BNO085 sits rotated ~90 deg about the forward/roll
-axis relative to how the MPU-6500 was mounted. Confirmed empirically: board flat on
-the bench, BNO085 raw gravity lands on +Y (~0.98g), not +X like the MPU-6500 -- and
-live rotation testing showed pitch motion reading out as yaw and vice versa. Forward
-(Z) and roll are unaffected -- rotating a sensor about its own axis doesn't change
-what that axis measures. So X and Y swap roles (left<->up, pitch<->yaw) below; Z
-(forward/roll) is untouched. This was derived from the reported pitch/yaw mixup plus
-the gravity measurement, not from live-verified sign/direction on every axis --
-if pitch or yaw still reads backwards (e.g. nose-down showing as nose-up), that's a
-single sign flip on the affected row below, not a re-derivation.
+BNO085 remap (2026-08-24, revised after two rounds of live testing): raw gravity
+lands on +Y (~0.98g, board flat on the bench -- confirmed directly), which fixes
+raw Y = physical UP = the yaw axis. The gyro axis identities were resolved from two
+rounds of live rotation feedback, not derived in one pass:
+  Round 1 (MPU-6500 mapping applied unchanged to the BNO085): pitch read out as yaw.
+    -> true pitch involves raw X (whatever was in the "yaw" slot).
+  Round 2 (after swapping pitch/yaw to route raw X into pitch): roll and pitch read
+    swapped. -> true roll is whatever round 1's fix put in the "pitch" slot (raw X),
+    true pitch is whatever was still in "roll" (raw Z). Yaw was not reported wrong
+    either round, so it stays on raw Y.
+Net result: raw X = roll axis (forward), raw Z = pitch axis (left), raw Y = yaw axis
+(up) -- a full relabeling of all three axes, not the simpler two-axis swap the round-1
+fix assumed (that assumption is what round 2's feedback disproved).
+
+R_ACCEL's forward/left rows are NOT independently verified -- there's no live accel
+test analogous to the gyro rotation tests above, only the confirmed gravity/up
+measurement. They're set equal to R_GYRO's rows on the reasoning that the BNO085's
+SH-2 reports (unlike the MPU-6500's) are documented to share one common sensor frame
+across accel/gyro/mag, so the same axis-identity-and-sign relabeling should carry
+over directly. If "forward" or "left" prove backwards under a real accel test (e.g.
+nose-down tilt, or roll onto one side), that's the part to re-derive -- "up" is solid.
 
 Accel mapping:  body = R_ACCEL @ imu
-  forward = -imu_z, left = imu_x, up = imu_y
+  forward = -imu_x, left = imu_z, up = imu_y
 
 Gyro mapping:  body = R_GYRO @ imu
-  roll_rate(+right) = +gyro_z, pitch_rate(+up) = -gyro_x, yaw_rate(+right) = +gyro_y
+  roll_rate(+right) = -gyro_x, pitch_rate(+up) = +gyro_z, yaw_rate(+right) = +gyro_y
 """
 
 import json
@@ -35,14 +46,14 @@ import numpy as np
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'imu_cal.json')
 
 R_ACCEL = np.array([
-    [0,  0, -1],   # forward = -imu_z
-    [1,  0,  0],   # left    =  imu_x
+    [-1, 0,  0],   # forward = -imu_x
+    [0,  0,  1],   # left    =  imu_z
     [0,  1,  0],   # up      =  imu_y
 ], dtype=np.float64)
 
 R_GYRO = np.array([
-    [0,  0,  1],   # roll  = +gyro_z  (positive = right)
-    [-1, 0,  0],   # pitch = -gyro_x  (positive = up)
+    [-1, 0,  0],   # roll  = -gyro_x  (positive = right)
+    [0,  0,  1],   # pitch = +gyro_z  (positive = up)
     [0,  1,  0],   # yaw   = +gyro_y  (positive = right)
 ], dtype=np.float64)
 
