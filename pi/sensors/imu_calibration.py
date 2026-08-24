@@ -1,7 +1,6 @@
 """IMU calibration: bias estimation and axis remapping.
 
-Calibration discovery results (measured on the MPU-6500, NOT re-verified since the
-2026-08-24 swap to BNO085 -- see the CLAUDE.md IMU section):
+Original calibration discovery results (measured on the MPU-6500):
   Gravity when level: accel +X = +1g  -> IMU +X = physical UP
   Roll right:  gyro +Z (+70.6 deg)    -> IMU Z = roll/forward axis
   Pitch down:  gyro -Y (-40.1 deg)    -> IMU Y = pitch/left axis
@@ -10,18 +9,22 @@ Calibration discovery results (measured on the MPU-6500, NOT re-verified since t
 Body frame (right-hand):
   Body X = FORWARD, Body Y = LEFT, Body Z = UP
 
+BNO085 remap (2026-08-24): the BNO085 sits rotated ~90 deg about the forward/roll
+axis relative to how the MPU-6500 was mounted. Confirmed empirically: board flat on
+the bench, BNO085 raw gravity lands on +Y (~0.98g), not +X like the MPU-6500 -- and
+live rotation testing showed pitch motion reading out as yaw and vice versa. Forward
+(Z) and roll are unaffected -- rotating a sensor about its own axis doesn't change
+what that axis measures. So X and Y swap roles (left<->up, pitch<->yaw) below; Z
+(forward/roll) is untouched. This was derived from the reported pitch/yaw mixup plus
+the gravity measurement, not from live-verified sign/direction on every axis --
+if pitch or yaw still reads backwards (e.g. nose-down showing as nose-up), that's a
+single sign flip on the affected row below, not a re-derivation.
+
 Accel mapping:  body = R_ACCEL @ imu
-  forward = -imu_z, left = imu_y, up = imu_x
+  forward = -imu_z, left = imu_x, up = imu_y
 
 Gyro mapping:  body = R_GYRO @ imu
-  roll_rate(+right) = +gyro_z, pitch_rate(+up) = +gyro_y, yaw_rate(+right) = -gyro_x
-
-KNOWN WRONG for BNO085: with the board flat on the bench, the BNO085's raw gravity
-reading lands almost entirely on its own +Y axis (~0.98g), not +X. Run through R_ACCEL
-below as-is, that reports body "left" near 1g and "up" near 0 for a board lying flat --
-visibly wrong. R_ACCEL/R_GYRO need re-discovery on the BNO085 (roll/pitch/yaw through
-known motions, same procedure as above) before ImuDisplay's orientation output can be
-trusted. Bias calibration (calibrate_gyro_bias below) is chip-agnostic and unaffected.
+  roll_rate(+right) = +gyro_z, pitch_rate(+up) = -gyro_x, yaw_rate(+right) = +gyro_y
 """
 
 import json
@@ -33,14 +36,14 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'imu_cal.json')
 
 R_ACCEL = np.array([
     [0,  0, -1],   # forward = -imu_z
-    [0,  1,  0],   # left    =  imu_y
-    [1,  0,  0],   # up      =  imu_x
+    [1,  0,  0],   # left    =  imu_x
+    [0,  1,  0],   # up      =  imu_y
 ], dtype=np.float64)
 
 R_GYRO = np.array([
     [0,  0,  1],   # roll  = +gyro_z  (positive = right)
-    [0,  1,  0],   # pitch = +gyro_y  (positive = up)
-    [-1, 0,  0],   # yaw   = -gyro_x  (positive = right)
+    [-1, 0,  0],   # pitch = -gyro_x  (positive = up)
+    [0,  1,  0],   # yaw   = +gyro_y  (positive = right)
 ], dtype=np.float64)
 
 
@@ -99,14 +102,13 @@ def calibrate_gyro_bias(imu, duration=2.0, rate=200):
     gyro_bias = gyro_arr.mean(axis=0).tolist()
     accel_mean = accel_arr.mean(axis=0).tolist()
 
-    # Accel bias: subtract expected gravity from the dominant axis
-    # Gravity should be +1g on IMU X axis when level -- true for the MPU-6500's
-    # mounting, NOT the BNO085 (its gravity lands on raw +Y, see the module
-    # docstring). Until R_ACCEL is re-discovered for the BNO085, this silently
-    # treats ~1g of real gravity on Y as "bias" and subtracts it out.
+    # Accel bias: subtract expected gravity from the dominant axis.
+    # Gravity should be +1g on IMU Y axis when level, for the BNO085's mounting
+    # (was X for the MPU-6500 -- see the module docstring's remap note). Keep this
+    # in sync with R_ACCEL above; they encode the same physical fact.
     accel_bias = [
-        accel_mean[0] - 1.0,  # X has gravity
-        accel_mean[1] - 0.0,
+        accel_mean[0] - 0.0,
+        accel_mean[1] - 1.0,  # Y has gravity
         accel_mean[2] - 0.0,
     ]
 

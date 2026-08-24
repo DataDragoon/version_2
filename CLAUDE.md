@@ -111,28 +111,34 @@ nothing downstream needed to change for units. BNO085's SH-2 report set has no p
 temperature report — `temp` streams `null` for this driver, which every consumer already
 handles gracefully (see the null-accel `ImuDisplay.jsx` crash fixed the same day).
 
-**Known bug, not yet fixed: `imu_calibration.py`'s R_ACCEL/R_GYRO axis remap is wrong for
-the BNO085.** Those matrices were discovered for the MPU-6500's mounting (gravity on raw
-+X). Confirmed on the actual BNO085 hardware: lying flat on the bench, its raw gravity reads
-~0.98g on +Y, ~0.02g on X/Z — a completely different axis is dominant. Run through the
-current R_ACCEL unchanged, that reports body "left" ≈1g and "up" ≈0 for a board lying flat,
-which is visibly wrong, and `calibrate_gyro_bias`'s accel-bias step (hardcoded to expect
-gravity on X) will subtract that ~1g of real gravity on Y as if it were bias/noise. Needs
-re-discovery on the BNO085 (roll/pitch/yaw through known motions, same procedure as the
-original MPU-6500 discovery documented in `imu_calibration.py`'s module docstring) before
-`ImuDisplay`'s 3D orientation or any body-frame consumer can be trusted. Gyro bias
-calibration itself is chip-agnostic and fine as-is.
+**Fixed (2026-08-24): `imu_calibration.py`'s R_ACCEL/R_GYRO axis remap for the BNO085,**
+based on two data points rather than a from-scratch physical re-discovery: (1) lying flat on
+the bench, the BNO085's raw gravity reads ~0.98g on +Y (not +X like the MPU-6500), and (2)
+live rotation testing reported pitch showing up as yaw and vice versa through the old
+mapping. Both point at the same explanation — the BNO085 sits rotated ~90 deg about the
+forward/roll axis relative to the MPU-6500's mounting, so X and Y swap roles (left<->up,
+pitch<->yaw) while Z (forward/roll) is untouched (rotating a sensor about its own axis
+doesn't change what that axis measures). Applied as a straight row swap in both matrices —
+no new sign guessing, see `imu_calibration.py`'s module docstring for the exact mapping —
+and updated `calibrate_gyro_bias`'s hardcoded "gravity is on X" assumption to Y to match.
+Verified: fresh calibration + reading the resting pose now gives `up ≈ 1.0g, forward ≈ 0,
+left ≈ 0` as expected. **Not fully verified**: this fixes axis *identity* from the reported
+symptom, not necessarily every sign/direction — if pitch or yaw still reads backwards (e.g.
+nose-down shows as nose-up) after live testing, that's a single sign flip on the affected
+row, not a re-derivation. Confirming direction needs actually rotating the board through
+known roll/pitch/yaw and checking sign, which wasn't done here.
 
 **Testing trap: don't use "does the resting pose look level" as a check that the axis
-remap is fine — it's a false negative.** `auto_calibrate` reruns on every `stream.py`
-startup and its accel-bias step subtracts whatever the raw reading was *at that moment*
-from the expected-gravity vector. If you calibrate while the board is resting in one pose
-and then immediately read body-frame accel in that *same* static pose, the bias subtraction
-cancels the wrong-axis error and "up" reads ~1g regardless of whether R_ACCEL is actually
-correct — confirmed this directly after fixing the calibration hang below. The remap is
-still wrong; it only looks right because nothing moved. The real test is dynamic: tilt the
-board through a known roll/pitch/yaw and see if the *reported* axis matches the *physical*
-one, same as the original discovery procedure.
+remap is fine — it's a false negative for detecting a *remaining* problem, though it did
+correctly confirm this fix's axis identity above.** `auto_calibrate` reruns on every
+`stream.py` startup and its accel-bias step subtracts whatever the raw reading was *at that
+moment* from the expected-gravity vector. If you calibrate while the board is resting in one
+pose and then immediately read body-frame accel in that *same* static pose, the bias
+subtraction cancels out ANY remaining wrong-axis error and "up" reads ~1g regardless of
+whether R_ACCEL is fully correct — confirmed this masking effect directly while testing the
+original (wrong) mapping. The real test for whether the fix above actually holds is dynamic:
+tilt the board through a known roll/pitch/yaw and see if the *reported* axis and *sign*
+match the *physical* motion, same as the original MPU-6500 discovery procedure.
 
 **Fixed: BNO085's report backlog could hang `calibrate_gyro_bias` indefinitely.** Initial
 `bno085.py` used a 128-byte read buffer and 10ms/100Hz report intervals for both
@@ -148,6 +154,23 @@ loop rate) -- confirmed steady-state `read_all()` now does 3-5 reads per call, n
 the cap, and calibration completes in ~2s as intended. If report intervals ever need to
 drop for a smoother display, drop the per-call read cap first and re-measure steady-state
 read count before assuming it's fine -- don't just lower the interval and move on.
+
+**Fixed (2026-08-24): the whole sensor stream was capped at ~7-10Hz by the dead LiDAR,
+not by the BNO085 swap.** `TFLC02.read_distance()` blocks on a 100ms UART timeout when the
+sensor doesn't answer (measured directly: every call took exactly ~100ms while the LiDAR
+issue above was unresolved), and `sensor_loop` used to `await` it inline in the same loop
+that reads the IMU and broadcasts -- so a silent LiDAR throttled the *entire* stream to
+~1/0.1s = 10Hz regardless of the `--rate` flag, IMU included. This was reported as "the IMU
+feels choppy, worse than the MPU" -- plausible red herring, since the MPU-6500 setup was
+presumably running while the LiDAR still answered quickly, so the same blocking-inline
+pattern never showed up as a problem. `sensor_loop` now runs `imu_poll_loop` and
+`lidar_poll_loop` as separate background tasks, each polling its sensor in its own uncapped
+loop via `run_in_executor` and publishing the latest reading into a shared dict; the
+broadcast loop just reads those dicts and never awaits either sensor directly. Verified: a
+still-unresponsive LiDAR (100ms/read, unchanged) no longer affects IMU rate at all --
+measured 48-48.7Hz broadcast throughput at `--rate 50`, up from 7.67Hz before this fix. This
+also means the stream will keep running at full rate once the LiDAR hardware issue above is
+eventually fixed, not just work around it today.
 
 **bladeRF total-sample-throughput warnings explained (2026-08-24).** The
 `check_total_sample_rate` warning in libbladeRF sums each active channel's *actual* achieved
