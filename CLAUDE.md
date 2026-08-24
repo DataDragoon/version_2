@@ -48,6 +48,24 @@ first and wraps IMU init in try/except: on failure it logs a warning and streams
 `accel`/`gyro`/`temp` as `null` while LiDAR keeps working normally. Keep this
 independence — don't let either sensor's failure gate the other.
 
+**Extended 2026-08-24: the per-iteration reads are guarded too.** Init-time protection
+was not enough — an IMU that enumerates fine at startup can drop off the bus later, and
+`MPU6500._read_raw` -> `read_i2c_block_data` then raises `OSError 121` on *every* loop
+iteration. That exception escaped `sensor_loop`, hit `log_task_exception`, and called
+`request_stop()` — killing the whole `stream.py` process, so port 9001 went dead and the
+groundstation reconnect-looped. Symptom: LiDAR/standoff reads `—` in the SFCW, C-scan and
+BG Model panels (they all share `App.jsx`'s `lidarMm`) and the sidebar's IMU Hz tile also
+reads `—`, while the SDR panel on port 9003 keeps working normally — which looks like a
+LiDAR bug but is the IMU killing the shared stream. `sensor_loop` now wraps the IMU read
+in try/except (streaming nulls) and disables the IMU after `IMU_FAIL_LIMIT = 20`
+consecutive failures, because each failing read costs an I2C timeout that would otherwise
+throttle the LiDAR rate. The LiDAR read is guarded the same way.
+
+**Diagnosing a missing standoff readout:** the sidebar's IMU Hz tile is on every panel and
+tells the two cases apart. Hz blank -> the sensor stream (port 9001) is down, check
+`stream.py`'s stdout on the Pi. Hz live but Standoff `—` -> the stream is up and
+`read_distance()` is returning `None`, so it's the TF-LC02 serial path (`/dev/serial0`).
+
 ## Living Documentation Rule
 
 CLAUDE.md and CONTEXT.md are living documents. Whenever you learn key information

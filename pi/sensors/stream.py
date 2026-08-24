@@ -48,17 +48,40 @@ async def sensor_loop(rate, skip_cal=False):
     interval = 1.0 / rate
     print(f"Streaming sensors at {rate}Hz on ws://0.0.0.0:9001")
 
+    # An IMU that enumerates at startup can still drop off the I2C bus later
+    # (loose wire, brownout) -- read_i2c_block_data then raises OSError 121 on
+    # every iteration. Unguarded that kills sensor_loop and takes the LiDAR
+    # stream down with it, which is exactly the failure mode the init-time
+    # try/except above exists to prevent. Guard the read too, and stop touching
+    # the bus once it is clearly gone (each failing read costs an I2C timeout,
+    # which would otherwise throttle the LiDAR rate).
+    imu_ok = imu is not None
+    imu_fail_streak = 0
+    IMU_FAIL_LIMIT = 20
+
     try:
         while True:
             t0 = time.monotonic()
 
-            if imu is not None:
-                body = imu.read_body()
-                accel, gyro, temp = body['accel'].tolist(), body['gyro'].tolist(), body['temp']
-            else:
-                accel = gyro = temp = None
+            accel = gyro = temp = None
+            if imu_ok:
+                try:
+                    body = imu.read_body()
+                    accel, gyro, temp = body['accel'].tolist(), body['gyro'].tolist(), body['temp']
+                    imu_fail_streak = 0
+                except Exception as e:
+                    imu_fail_streak += 1
+                    if imu_fail_streak == 1:
+                        print(f"WARNING: IMU read failed ({e!r}), streaming IMU as null")
+                    if imu_fail_streak >= IMU_FAIL_LIMIT:
+                        print(f"IMU failed {IMU_FAIL_LIMIT} reads in a row, giving up on it; LiDAR continues")
+                        imu_ok = False
 
-            dist = lidar.read_distance()
+            try:
+                dist = lidar.read_distance()
+            except Exception as e:
+                print(f"WARNING: LiDAR read failed ({e!r})")
+                dist = None
 
             packet = {
                 'accel': accel,
@@ -73,7 +96,10 @@ async def sensor_loop(rate, skip_cal=False):
             await asyncio.sleep(max(0, interval - elapsed))
     finally:
         if imu is not None:
-            imu.close()
+            try:
+                imu.close()
+            except Exception:
+                pass
         lidar.close()
 
 
