@@ -27,7 +27,17 @@ self.onmessage = (e) => {
 
     self.postMessage({
       type: 'complete',
-      result: { ...model, quality, numSamples: model.numPositions },
+      result: {
+        ...model,
+        quality,
+        numSamples: model.numPositions,
+        // Geometry stamp: the standoff axis this model is indexed by is
+        // `lidar_reading - lidarAntennaOffsetMm`, so the model is only
+        // meaningful under that offset and those sweep params. Recorded here
+        // rather than at save time so it cannot be lost by a save path that
+        // forgets to add it. See App.jsx handleSfcwLoadBgModel for the check.
+        geometry: config?.geometry || null,
+      },
     });
   } catch (err) {
     self.postMessage({ type: 'error', message: err.message });

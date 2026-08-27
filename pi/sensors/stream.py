@@ -14,6 +14,11 @@ from imu_calibration import CalibratedIMU
 
 clients = set()
 
+# The TF-LC02's internal measurement updates at ~17 Hz (measured 2026-08-27),
+# so polling faster only returns the same value again. 20 Hz stays just above
+# the sensor without spinning the worker thread at ~584 Hz for nothing.
+LIDAR_POLL_HZ = 20
+
 
 async def register(ws):
     clients.add(ws)
@@ -52,8 +57,8 @@ async def imu_poll_loop(imu, state):
                 return
 
 
-async def lidar_poll_loop(lidar, state):
-    """Reads the LiDAR in its own uncapped loop, publishing the latest reading into
+async def lidar_poll_loop(lidar, state, rate=LIDAR_POLL_HZ):
+    """Reads the LiDAR in its own loop, publishing the latest reading into
     `state`. This is deliberately NOT awaited inline in sensor_loop's broadcast
     loop: TFLC02.read_distance() blocks on a 100ms UART timeout whenever the
     sensor doesn't answer, which happened to be true throughout the 2026-08-24
@@ -62,21 +67,37 @@ async def lidar_poll_loop(lidar, state):
     read_distance() in isolation. Running it here, in its own task via
     run_in_executor, means a slow or dead LiDAR only slows *this* loop; the
     broadcast loop below keeps running at its full requested rate using
-    whatever LiDAR reading was most recently published, stale or not."""
+    whatever LiDAR reading was most recently published, stale or not.
+
+    Capped at LIDAR_POLL_HZ. Measured 2026-08-27: the driver will poll at
+    ~584 Hz but the TF-LC02's *internal* measurement only updates at ~17 Hz
+    (median run of 34 identical consecutive polls), so the extra ~567 polls/s
+    are duplicate reads that burn a worker thread and I2C/UART time for no new
+    information. `lidar_seq` increments only on a successful read, so the
+    groundstation can tell genuinely-new samples from repeats of the same
+    packet and average only distinct ones."""
     loop = asyncio.get_running_loop()
     fail_streak = 0
+    interval = 1.0 / rate if rate and rate > 0 else 0.0
     while True:
+        t0 = time.monotonic()
         try:
-            state['dist'] = await loop.run_in_executor(None, lidar.read_distance)
+            dist = await loop.run_in_executor(None, lidar.read_distance)
+            state['dist'] = dist
+            if dist is not None:
+                state['seq'] += 1
+                state['ts'] = time.time()
             fail_streak = 0
         except Exception as e:
             fail_streak += 1
             if fail_streak == 1:
                 print(f"WARNING: LiDAR read failed ({e!r})")
             state['dist'] = None
+        if interval:
+            await asyncio.sleep(max(0, interval - (time.monotonic() - t0)))
 
 
-async def sensor_loop(rate, skip_cal=False):
+async def sensor_loop(rate, skip_cal=False, lidar_rate=LIDAR_POLL_HZ):
     lidar = TFLC02()
 
     imu = None
@@ -93,8 +114,11 @@ async def sensor_loop(rate, skip_cal=False):
     print(f"Streaming sensors at {rate}Hz on ws://0.0.0.0:9001")
 
     imu_state = {'accel': None, 'gyro': None, 'temp': None}
-    lidar_state = {'dist': None}
-    poll_tasks = [asyncio.create_task(lidar_poll_loop(lidar, lidar_state))]
+    # seq increments once per *successful* read, so a consumer can dedupe the
+    # repeats that come from broadcasting faster than the LiDAR updates.
+    lidar_state = {'dist': None, 'seq': 0, 'ts': None}
+    print(f"LiDAR polled at {lidar_rate}Hz (sensor updates internally at ~17Hz)")
+    poll_tasks = [asyncio.create_task(lidar_poll_loop(lidar, lidar_state, lidar_rate))]
     if imu is not None:
         poll_tasks.append(asyncio.create_task(imu_poll_loop(imu, imu_state)))
 
@@ -107,6 +131,10 @@ async def sensor_loop(rate, skip_cal=False):
                 'gyro': imu_state['gyro'],
                 'temp': imu_state['temp'],
                 'lidar': lidar_state['dist'],
+                # Provenance for the LiDAR sample: seq identifies the reading,
+                # ts is when it was taken (not when this packet was sent).
+                'lidar_seq': lidar_state['seq'],
+                'lidar_ts': lidar_state['ts'],
                 'timestamp': time.time(),
             }
 
@@ -134,6 +162,9 @@ async def main():
     parser.add_argument('--port', type=int, default=9001, help='WebSocket port (default: 9001)')
     parser.add_argument('--rate', type=int, default=50, help='Sample rate in Hz (default: 50)')
     parser.add_argument('--skip-cal', action='store_true', help='Skip gyro calibration (use saved)')
+    parser.add_argument('--lidar-rate', type=float, default=LIDAR_POLL_HZ,
+                        help=f'LiDAR poll rate in Hz (default: {LIDAR_POLL_HZ}; '
+                             '0 = uncapped, the pre-2026-08-27 behaviour)')
     args = parser.parse_args()
 
     stop = asyncio.get_event_loop().create_future()
@@ -155,7 +186,8 @@ async def main():
             request_stop()
 
     async with websockets.serve(register, '0.0.0.0', args.port):
-        task = asyncio.create_task(sensor_loop(args.rate, skip_cal=args.skip_cal))
+        task = asyncio.create_task(sensor_loop(args.rate, skip_cal=args.skip_cal,
+                                              lidar_rate=args.lidar_rate))
         task.add_done_callback(log_task_exception)
         await stop
         task.cancel()

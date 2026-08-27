@@ -5,13 +5,43 @@ import { Section, InfoTile, ToggleButton } from './Sidebar';
 
 const LIDAR_AVG_WINDOW = 20;
 
+function fmtDeg(v) {
+  return v == null || !isFinite(v) ? '—' : `${v.toFixed(1)}°`;
+}
+
+// Does a loaded model's build-time geometry still describe the current rig?
+// A model is indexed by `lidar_reading - offset`, so a changed offset shifts
+// every inference by that difference. The danger is not the shift itself but
+// where it lands: shifted far enough, every query falls outside the model's
+// captured span and silently clamps, which costs ~20 dB and past ~20 mm makes
+// the subtraction add energy rather than remove it. Sweep params are checked
+// for the same reason -- they change what h_cal is.
+function geometryMismatch(bgModel, lidarOffsetMm, params) {
+  if (!bgModel) return null;
+  const g = bgModel.geometry;
+  if (!g) return { unknown: true };
+  const out = [];
+  if (g.lidarAntennaOffsetMm != null && lidarOffsetMm != null
+      && Math.abs(g.lidarAntennaOffsetMm - lidarOffsetMm) > 0.01) {
+    out.push(`offset ${g.lidarAntennaOffsetMm} mm → ${lidarOffsetMm} mm`);
+  }
+  const gp = g.sfcwParams || {};
+  for (const k of ['startFreq', 'stopFreq', 'stepSize', 'tx1Gain', 'rx1Gain', 'numBuffers', 'settleCount']) {
+    if (gp[k] != null && params?.[k] != null && gp[k] !== params[k]) {
+      out.push(`${k} ${gp[k]} → ${params[k]}`);
+    }
+  }
+  return out.length ? { fields: out } : null;
+}
+
 // Must match pi/radar/sfcw_engine.py: _start_tx_rx() captures n = 4096 samples
 // per buffer at the 10 Msps set in _configure_hardware().
 const BUFFER_SAMPLES = 4096;
 const SAMPLE_RATE = 10_000_000;
 const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
-export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, rangeScale, onRangeScaleChange, scaleRange, onScaleRangeChange, getDynamicScale, lidarMm, bgModel, bgRef, bgCapturing, onCaptureBg, onLoadBgModel, onClearBg }) {
+export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, rangeScale, onRangeScaleChange, scaleRange, onScaleRangeChange, getDynamicScale, lidarMm, bgModel, bgRef, bgCapturing, onCaptureBg, onLoadBgModel, onClearBg,
+  bgDiag, bgStats, onResetBgStats, lidarProvenance, lidarOffsetMm, onLidarOffsetChange }) {
   const { startFreq, stopFreq, stepSize, numBuffers, settleCount, tx1Gain, rx1Gain, rangeOffset } = params;
   const [coherenceRunning, setCoherenceRunning] = useState(false);
   const lidarBuf = useRef([]);
@@ -31,6 +61,8 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
     const avg = buf.reduce((s, v) => s + v, 0) / buf.length;
     setLidarAvg(avg);
   }, [lidarMm]);
+
+  const geoMismatch = geometryMismatch(bgModel, lidarOffsetMm, params);
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
@@ -178,6 +210,52 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
               {lidarAvg != null ? lidarAvg.toFixed(1) : '—'} <span className="text-xs font-semibold text-[#888888]">mm</span>
             </span>
           </div>
+          {/* Provenance of the standoff the last sweep actually used. `n` is
+              DISTINCT lidar readings (deduped by lidar_seq), not packets --
+              measured 5.3 per 250 ms sweep at the 20 Hz poll rate, vs 13.0
+              packets before deduping. sigma is the spread of those samples
+              (the sweep uses their mean, whose error is smaller).
+
+              There is deliberately no "suppression ceiling" tile here. The
+              obvious one -- treat sigma as a phase error on a single echo at
+              12 deg/mm -- was measured on real data (2026-08-28) to be
+              structurally pessimistic, because the dominant background
+              component sits at path multiplier alpha ~ 0 and does not depend
+              on standoff at all. At the measured sigma of 0.4 mm the true cost
+              is 0.37 dB, not the ~20 dB that bound implies. Showing it would
+              point every future investigation at the wrong suspect. What
+              actually limits live suppression is the BG-applied block below
+              (span clamping, 20.6 dB) and per-sweep SNR (5.2 dB). */}
+          <div className="grid grid-cols-2 gap-2">
+            <InfoTile
+              label="σ"
+              value={lidarProvenance?.lidar_std != null ? `${lidarProvenance.lidar_std.toFixed(2)} mm` : '—'}
+            />
+            <InfoTile
+              label="n"
+              value={lidarProvenance?.lidar_n != null ? String(lidarProvenance.lidar_n) : '—'}
+            />
+          </div>
+          {lidarProvenance?.lidar_n === 0 && (
+            <div className="px-2 text-[9px] text-red-400/80 leading-relaxed">
+              No lidar readings arrived during that sweep — the standoff is stale.
+            </div>
+          )}
+          <EditableField
+            label="Lidar→antenna offset"
+            value={lidarOffsetMm}
+            unit="mm"
+            onChange={(v) => onLidarOffsetChange && onLidarOffsetChange(v)}
+            min={-2000}
+            max={2000}
+            disabled={!onLidarOffsetChange}
+          />
+          {(lidarProvenance?.roll_deg != null || lidarProvenance?.pitch_deg != null) && (
+            <div className="grid grid-cols-2 gap-2">
+              <InfoTile label="Roll" value={fmtDeg(lidarProvenance.roll_deg)} />
+              <InfoTile label="Pitch" value={fmtDeg(lidarProvenance.pitch_deg)} />
+            </div>
+          )}
         </div>
       </Section>
 
@@ -257,6 +335,62 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             Clear BG
           </button>
         </div>
+
+        {/* Phase 0.4 -- what the subtraction ACTUALLY did on the last sweep.
+            "A model is loaded" and "the model was applied" are different
+            statements, and only the second one is visible here. Every path
+            that declines to subtract reports its reason instead of warning to
+            a console nobody has open. */}
+        {bgDiag && !(bgDiag.reason === 'no background selected') && (
+          <div className="mt-2 flex flex-col gap-1.5 px-3 py-2 rounded-xl border border-white/8 bg-[#0a0a0a]/60">
+            <div className="flex items-baseline justify-between">
+              <span className="text-[10px] font-medium uppercase tracking-wider text-[#555555]">BG applied</span>
+              <span className={cn('text-xs font-bold font-mono',
+                bgDiag.applied ? (bgDiag.clamped ? 'text-[#f59e0b]' : 'text-emerald-400') : 'text-red-400')}>
+                {bgDiag.applied ? (bgDiag.clamped ? 'YES (CLAMPED)' : 'YES') : 'NO'}
+                {bgDiag.applied && bgDiag.source ? ` · ${bgDiag.source}` : ''}
+              </span>
+            </div>
+            {!bgDiag.applied && bgDiag.reason && (
+              <div className="text-[9px] text-red-400/80 leading-relaxed">{bgDiag.reason}</div>
+            )}
+            {bgDiag.clamped && (
+              <div className="text-[9px] text-[#f59e0b]/80 leading-relaxed">
+                Standoff {bgDiag.standoffMm?.toFixed(1)} mm is {bgDiag.clampedBy?.toFixed(1)} mm outside the
+                model span {bgDiag.modelSpan?.min?.toFixed(0)}–{bgDiag.modelSpan?.max?.toFixed(0)} mm.
+                The model clamps, so it is subtracting a background measured at a different standoff.
+              </div>
+            )}
+            {bgStats?.total > 0 && (
+              <div className="flex items-baseline justify-between pt-1 border-t border-white/5">
+                <span className="text-[9px] text-white/30">
+                  clamped {bgStats.clamped}/{bgStats.total}
+                  {' '}({(100 * bgStats.clamped / bgStats.total).toFixed(0)}%)
+                  {bgStats.skipped > 0 && ` · skipped ${bgStats.skipped}`}
+                </span>
+                <button
+                  onClick={onResetBgStats}
+                  className="text-[9px] text-white/30 hover:text-white/60 underline underline-offset-2"
+                >
+                  reset
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Phase 0.3 -- the loaded model's build-time geometry vs the rig now. */}
+        {geoMismatch && (
+          <div className={cn('mt-2 px-3 py-2 rounded-xl border text-[9px] leading-relaxed',
+            geoMismatch.unknown
+              ? 'border-white/10 bg-[#0a0a0a]/60 text-white/35'
+              : 'border-[#f59e0b]/30 bg-[#f59e0b]/5 text-[#f59e0b]/90')}>
+            {geoMismatch.unknown
+              ? 'This model predates geometry stamping — the lidar offset and sweep params it was built under are unknown, so a mismatch cannot be detected.'
+              : <>Model was built under different settings: {geoMismatch.fields.join(', ')}. A changed lidar offset shifts every inference by that difference.</>}
+          </div>
+        )}
+
         <div className="mt-2 flex flex-col gap-2">
           <button
             onClick={fetchModels}

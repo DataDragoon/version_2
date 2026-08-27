@@ -784,6 +784,216 @@ entire background sits within 2–6 cm of range, and 3 GHz of bandwidth gives ~5
 resolution. The "gated" metric therefore tracks the full-band metric closely. Separating a
 target from the face needs more bandwidth or aperture, not better background subtraction.
 
+## Background subtraction: standoff instrumentation and the false-target hunt (2026-08-28)
+
+Investigating false targets (spurious returns where there is nothing) from the Akima
+interpolating background model (`lib/bgModelInterp.js`), which scores 20.2 dB
+leave-one-position-out on the bench but misbehaves live.
+
+### `LIDAR_ANTENNA_OFFSET_MM` was 315 mm and that is wrong for this mounting — now 160 mm, and user-editable
+
+**Measured on the bench 2026-08-28:** with the antenna aperture at the wall (true zero
+standoff) the TF-LC02 reads **164.83 mm ± 0.68**. So the lidar→antenna offset is ~165 mm,
+not 315 mm. The default is now **160 mm** (measured − 5 mm, so a real zero-standoff pose
+reports slightly positive rather than negative), it lives in App.jsx state persisted to
+`localStorage.lidar_antenna_offset_mm`, and it is editable in the SFCW panel's Standoff
+section. **It is a per-mounting quantity — re-measure it after any re-mount** by putting
+the aperture against the wall and reading the lidar.
+
+Consequences worth understanding, because they are not all the same:
+- A *constant* offset error **cancels exactly** for a model trained and used under that
+  same offset: the unwind factor is common to every knot, factors through the linear
+  interpolation, and is undone by the rewind. So the wrong 315 did not, by itself, break a
+  freshly-trained model — which is consistent with the reported observation that fresh
+  models fail the same way. Do not expect fixing the offset alone to fix false targets.
+- What it *did* break is every standoff number being unphysical (150 mm behind the actual
+  aperture), and any model built under a *different* offset being silently mis-indexed.
+  `models/4th model.json` has knots spanning 11–167 mm; under the 315 offset the operating
+  standoff is `lidar − 315`, and since the lidar reads ~165–315 mm in real use, that is
+  −150…0 mm — **entirely below the model's span, so it clamped on every single sweep**,
+  subtracting a background measured somewhere the rig never goes. That is a genuine
+  false-target mechanism, and it was completely invisible: `inferInterpModel` clamps
+  silently and the live SFCW path had no span check at all.
+
+**The brief's premise that the operating range is 326–482 mm was wrong**, and so was the
+claim that the earlier 164 mm noise characterization was "measured at the wrong distance".
+164 mm *is* the zero-standoff position. Real operation is lidar ≈ **165–315 mm**.
+
+### Phase 0 — instrumentation (no compensation math was changed)
+
+`pi/sensors/stream.py`:
+- `lidar_poll_loop` is capped at `LIDAR_POLL_HZ = 20` (was uncapped, measured **584 Hz** for
+  a sensor whose internal measurement only updates at ~11–17 Hz). `--lidar-rate 0` restores
+  the old uncapped behaviour for comparison. Measured effect: broadcast rate unchanged
+  (48.79 → 48.35 Hz), IMU update rate unchanged/slightly better (**32.66 → 33.83 Hz**).
+- Packet now carries `lidar_seq` (increments per *successful read*) and `lidar_ts`. At
+  20 Hz the seq sequence seen by a client is contiguous — every reading reaches a packet.
+
+`App.jsx`:
+- `lidarAccumRef` dedupes by `lidar_seq` before averaging. Measured against live packets:
+  **13.01 → 5.27** accumulated samples per 250 ms sweep. Without this, `lidar_std` would be
+  fiction (repeats deflate the spread) and readings would be weighted by how long they
+  happened to be held.
+- Every sweep record, C-scan cell and BG-model sample now carries `lidar_n`, `lidar_std`,
+  `lidar_offset_mm`, `roll_deg`, `pitch_deg` via one shared `provenance` object, so the
+  three record types cannot drift apart. Pose is tilt-from-gravity (accel is body-frame
+  [forward, left, up]); no yaw, which gravity cannot observe.
+- `processedSfcwResult` became `sfcwProcessed = { result, diag }`. Every path that declines
+  to subtract now reports a reason, the out-of-span/clamp case is detected and reported
+  (matching `CscanPanel.jsx`), and a running clamp fraction is kept. The SFCW panel shows
+  "BG applied: YES / YES (CLAMPED) / NO" plus the reason — **"a model is loaded" and "the
+  model was applied" are different statements** and only the second is now visible.
+- Models record a `geometry` stamp (`lidarAntennaOffsetMm`, full `sfcwParams`, `builtAt`)
+  in `bgmodel.worker.js`; the panel warns visibly when a loaded model's stamp disagrees
+  with current settings, and says so distinctly for pre-stamp models where it cannot tell.
+
+### Phase 1.1 — LiDAR noise across the real operating range
+
+`pi/sensors/lidar_noise_char.py` (keepable tool). 40 s per distance, 584 Hz polling,
+**100% valid reads (`error_code=0`) at every distance**, 1 mm quantisation:
+
+| lidar reads | σ(τ=250 ms, one sweep) | internal update | autocorr half-life | raw σ |
+|---|---|---|---|---|
+| 164.8 mm (standoff 0) | **0.396 mm** | 17.2 Hz | 37 ms | 0.68 mm |
+| 261.7 mm (standoff ~100) | **0.433 mm** | 11.5 Hz | 45 ms | 0.66 mm |
+| 339.7 mm (standoff ~180) | **0.560 mm** | 11.5 Hz | 58 ms | 0.78 mm |
+
+σ degrades only mildly with distance. Averaging follows σ ∝ τ^−0.12…−0.30, far shallower
+than white noise's τ^−0.5, and plateaus by ~2 s — so **longer averaging does not rescue
+it**; there is a correlated/drift floor around 0.15–0.33 mm.
+
+### Phase 1.2 — the oracle test says this is NOT standoff-limited
+
+Reconstructed the 29 training spectra from `models/4th model.json` by rewinding its stored
+unwound knots, then for each position built a leave-one-out model and searched standoff
+over ±15 mm (0.05 mm grid; ±15 mm is the unambiguous window, two-way λ/2 at 5 GHz = 30 mm)
+for the standoff maximising suppression. The numpy port reproduces the browser's own stored
+LOO numbers to **1.1e-14 dB**, so the port is not the variable.
+
+- Suppression at the recorded lidar standoff: **20.22 dB** mean.
+- Suppression at the *oracle* standoff: **23.19 dB** mean. **The oracle buys only 3.0 dB.**
+- `d_oracle − d_lidar` is **zero-mean** (−0.10 mm, σ 1.88 mm, t = −0.30 on 28 df) with no
+  trend against position (r = −0.26). No constant bias → not a geometry/offset error at
+  capture depth. No drift → not thermal/mechanical creep.
+
+The ±1.88 mm scatter is **not** lidar error: these knots are 40-sweep coherent means whose
+standoffs average to σ ≈ 0.05 mm, and a genuine 1.9 mm standoff error would cap suppression
+at ~8 dB, not the 20 dB actually observed. The oracle offset is a free parameter absorbing
+*model* error, not recovering a true standoff.
+
+**Measured standoff sensitivity is far gentler than the analytic single-echo table**, which
+is the key physical result. Deliberately offsetting the inference standoff by ε (LOO, real
+data, mean over 29 positions):
+
+| ε | 0.25 mm | 0.5 mm | 1 mm | 2 mm | 3 mm | 5 mm | 10 mm |
+|---|---|---|---|---|---|---|---|
+| analytic (single echo, α=0.93) | 26.2 | 20.2 | 14.2 | 8.2 | 4.8 | 0.6 | −4.4 |
+| **measured** | **19.9** | **19.5** | **18.5** | **15.8** | **13.3** | **9.6** | **4.2** |
+
+The reason is in CLAUDE.md's own echo decomposition: the **dominant** background component
+sits at **α ≈ 0 — a static cable/coupling reflection that does not depend on standoff at
+all** (confirmed here: the background range-profile peak sits at 0.53–0.54 m and moves by
+σ 0.022 m across a 156 mm standoff span, i.e. it does not move). Only the weaker α ≈ 0.93
+wall face is standoff-sensitive. So the analytic table, which assumes *all* energy is at
+α = 0.93, is structurally pessimistic — **do not use it to predict suppression.** The
+SFCW panel deliberately shows no suppression-ceiling tile for this reason: an early draft
+had one and it pointed straight at the wrong suspect. Only σ and n are shown, as
+measurements rather than predictions.
+
+Monte-Carlo over the real data, adding Gaussian standoff noise at inference:
+
+| σ | 0.05 | 0.25 | 0.43 | 1.0 | 2.0 | 5.0 mm |
+|---|---|---|---|---|---|---|
+| suppression | 20.19 | 19.99 | **19.74** | 18.80 | 16.78 | 12.58 dB |
+
+At the measured per-sweep σ = 0.43 mm the penalty is **0.5 dB**, not the predicted ~15 dB.
+
+**Where the residual actually goes (the false-target mechanism).** The LOO residual peaks
+at −21 dB relative to the background peak, with peak/rms ≈ 5.0 (a flat noise-like residual
+gives 3–4; a discrete false target gives ≫10). Its location clusters in two places: right
+at the background peak (0.51–0.66 m) and a short-range group at 0.07–0.12 m. At the larger
+standoffs the residual peak sits 8–12 cm *beyond* the background peak — and since
+subtraction removes the true wall return, that residual becomes the largest feature left on
+screen. So the false targets are **the model's own incompletely-cancelled wall/coupling
+residual, re-ranked to the top by the subtraction**, not a standoff-noise artifact.
+
+### Phase 1.3 — the regime gap is 5.3 dB, and standoff owns 0.4 dB of it
+
+Fresh 24-position set captured 2026-08-28 under the corrected 160 mm offset
+(`data/bgmodel_pass1.json`, gitignored): span 101.2 mm, **median gap 4.1 mm** (inside the
+≤5 mm "well sampled" band), 40 sweeps each, SNR 21.3 dB/sweep, pose stable to ±0.04°.
+Per-sweep standoff scatter within a static capture measured **0.388 mm**, independently
+confirming Phase 1.1's σ(250 ms) of 0.40–0.43 mm.
+
+Four scorings on the same data (`scratchpad/regime_gap.py`), each one step closer to what
+live operation actually does:
+
+| | spectrum | standoff | mean suppression |
+|---|---|---|---|
+| A | 40-sweep mean | capture mean | **24.27 dB** ← what `evaluateLoo` reports |
+| B | 40-sweep mean | per-sweep | 23.90 dB |
+| C | single sweep | capture mean | 19.11 dB |
+| D | single sweep | per-sweep | **18.99 dB** ← what live operation gets |
+
+**Regime gap D−A = 5.3 dB, not the predicted ~15 dB.** Decomposed: standoff noise costs
+**0.37 dB** (A−B), single-sweep measurement noise costs **5.16 dB** (A−C). The 0.37 dB
+matches the Phase 1.2 Monte-Carlo prediction of 0.48 dB at this σ. **The leading hypothesis
+is falsified on both counts** — the gap is 3× smaller than predicted and the mechanism it
+named contributes almost none of it. C is bounded by per-sweep SNR itself (21.3 dB): no
+subtraction of a single sweep can beat its own noise floor, whatever the model does.
+
+### The actual false-target mechanism: querying the model OUTSIDE its captured span
+
+This is the finding that matters. On the fresh set, leave-one-out splits cleanly by whether
+the held-out position is bracketed by other knots:
+
+- **interior (interpolated): 25.98 dB** mean, worst 19.35
+- **endpoints (clamped): 5.43 dB** mean
+- **penalty for being outside the span: 20.55 dB**
+
+How fast it falls off just past the edge (query below the model's lowest knot, scored
+against the nearest real capture):
+
+| outside by | 1 mm | 2 mm | 5 mm | 10 mm | 20 mm | 40 mm |
+|---|---|---|---|---|---|---|
+| suppression | 20.6 dB | 14.6 dB | 6.8 dB | 1.1 dB | **−3.5 dB** | **−5.2 dB** |
+
+Negative means **the subtraction adds more energy than it removes** — it manufactures a
+return where there is nothing. That is the false-target mechanism, and `inferInterpModel`
+enters it silently: it clamps to the nearest knot and returns a confident-looking spectrum.
+
+**Why this fired constantly with the old 315 mm offset.** Standoff = `lidar − offset`. The
+lidar reads ~165–315 mm in real operation (measured), so under offset 315 every live query
+was `−150…0 mm`, while `models/4th model.json` spans 11–167 mm. **Every single sweep was
+clamped, by 11 to 161 mm** — i.e. essentially always in the energy-adding regime of the
+table above. A model trained under a *different* mounting is the case where the otherwise
+exact offset cancellation does not apply.
+
+Note this also explains why *freshly* trained models failed the same way, which had been
+taken as ruling the geometry out: a fresh model trained and used under the same offset does
+cancel, but it only covers the span the operator actually swept. Pressing the aperture
+closer than the nearest training knot puts the query outside the span at the near edge,
+where 5 mm already costs 19 dB. Span coverage, not offset, is the thing to check.
+
+**Residual shape confirms it.** On interior positions of the fresh set the residual sits
+−28 dB below the background peak with peak/rms **2.58** — genuinely noise-like (a discrete
+false target would be ≫10). So a correctly-queried model leaves no false target at all.
+
+**Verdict: not standoff-limited, and not really model-limited either — span-limited.**
+Ranked by cost: clamping outside the span **20.6 dB**, single-sweep SNR **5.2 dB**,
+standoff noise **0.4 dB**. Chasing lidar precision would buy at most a few tenths of a dB.
+
+### Tooling added
+
+- `pi/sensors/lidar_noise_char.py` — noise vs averaging window at a given distance.
+- `pi/radar/capture_bgmodel.py` — captures a `bgmodel_training_data` v2 set headlessly
+  (same format the BG Model panel exports, plus per-sweep `lidar_n`/`lidar_std`/pose
+  columns). **The SDR socket must be drained continuously**: `sfcw_start` free-runs, so a
+  move window that does not read the socket lets sweeps pile up, and the capture then
+  drains the backlog with several sweeps sharing one instant — every standoff after the
+  first came back `None` in the first version. The reader task now pairs each sweep with
+  the lidar samples that arrived since the previous one, at arrival time.
+
 ## RF Calib panel gains are NOT the SFCW sweep's gains (2026-08-25)
 
 Easy to conflate since both transmit the same 100 kHz-offset CW tone (`set_waveform('cw',

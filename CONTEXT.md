@@ -141,6 +141,21 @@ correct and unchanged throughout.
 removed). Device: `/dev/ttyAMA3` (was `/dev/serial0`/`ttyAMA10` — do not revert to that, its
 receiver is dead). Serial console disabled.
 
+## LiDAR → Antenna Offset (measured 2026-08-28)
+
+**165 mm measured; 160 mm used** (5 mm buffer so a true zero-standoff pose reports
+slightly positive). With the antenna aperture placed against the wall, the TF-LC02 reads
+**164.83 mm ± 0.68**. Standoff = `lidar_reading − offset`, so real operation spans a lidar
+reading of roughly **165–315 mm** for 0–150 mm of standoff.
+
+The value was hardcoded at 315 mm in `App.jsx` until 2026-08-28 and did not match this
+mounting. It is now App.jsx state, persisted to `localStorage.lidar_antenna_offset_mm` and
+editable in the SFCW panel's Standoff section. **Re-measure it after any re-mount** — put
+the aperture against the wall, read the lidar, subtract 5. Background models record the
+offset they were built under (`geometry.lidarAntennaOffsetMm`) and the panel warns when a
+loaded model disagrees with the current setting. See CLAUDE.md's background-subtraction
+section for why a *constant* offset error cancels but a *changed* one does not.
+
 ## IMU Calibration & Orientation
 
 **Stale as of 2026-08-24 — measured for the MPU-6500, not re-verified for the BNO085 that

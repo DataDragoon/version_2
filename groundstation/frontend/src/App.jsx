@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo, useReducer } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
@@ -122,6 +122,9 @@ export default function App() {
   const [imuRate, setImuRate] = useState(0);
   const imuCountRef = useRef(0);
   const [lidarMm, setLidarMm] = useState(null);
+  // Provenance of the standoff used for the most recent sweep (Phase 0.1/0.2):
+  // { lidar_standoff_mm, lidar_n, lidar_std, lidar_offset_mm, roll_deg, pitch_deg }
+  const [sfcwLidarProvenance, setSfcwLidarProvenance] = useState(null);
 
   // SDR / RF Calib state — antenna (TX1/RX1) and reference (TX2/RX2) both stream
   // simultaneously now, so RX preview/FFT are tracked per channel.
@@ -275,9 +278,50 @@ export default function App() {
   const bscanCaptureRef = useRef(false);
   const bscanBgCaptureRef = useRef(false);
 
-  // Lidar accumulator for averaging during SFCW sweeps
-  const LIDAR_ANTENNA_OFFSET_MM = 315;
+  // Distance from the lidar's reference plane to the antenna aperture, so
+  // standoff = lidar_reading - offset. It is a property of the mounting and
+  // changes whenever the head is re-mounted, so it is user-editable and
+  // persisted rather than hardcoded.
+  //
+  // Measured on the bench 2026-08-28: with the aperture against the wall (true
+  // zero standoff) the lidar reads 164.83 mm +/- 0.68. 160 keeps a 5 mm buffer
+  // so a real zero-standoff pose reports slightly positive rather than negative.
+  // Re-measure after any re-mount.
+  //
+  // Getting this wrong is not symmetric. A constant offset error *cancels
+  // exactly* for a model trained and used under that same offset: the unwind
+  // factor is common to every knot, factors through the interpolation, and is
+  // undone by the rewind. What it does break is the model's span. The previous
+  // hardcoded 315 mm put zero standoff 150 mm behind the actual aperture, so
+  // every live query against models/4th model.json (knots 11-167 mm) landed at
+  // -150..0 mm -- outside the span on every single sweep, where inferInterpModel
+  // silently clamps. Measured cost of that: ~20 dB, and past ~20 mm outside the
+  // subtraction adds energy instead of removing it, which manufactures targets.
+  // Hence the geometry stamp on new models (handleBgModelAction 'build') and the
+  // out-of-span reporting in sfcwProcessed below.
+  const [lidarOffsetMm, setLidarOffsetMmState] = useState(() => {
+    const v = parseFloat(localStorage.getItem('lidar_antenna_offset_mm'));
+    return Number.isFinite(v) ? v : 160;
+  });
+  const setLidarOffsetMm = useCallback((v) => {
+    localStorage.setItem('lidar_antenna_offset_mm', String(v));
+    setLidarOffsetMmState(v);
+  }, []);
+  const lidarOffsetRef = useRef(lidarOffsetMm);
+  lidarOffsetRef.current = lidarOffsetMm;
+
+  // Distinct lidar readings seen since the last sweep. Deduped by `lidar_seq`
+  // (added to the Pi packet 2026-08-28): the stream broadcasts at ~50 Hz while
+  // the LiDAR is polled at 20 Hz and only updates internally at ~17 Hz, so most
+  // packets repeat the previous reading. Averaging the repeats would understate
+  // the spread and silently weight each reading by how long it happened to be
+  // held, so `lidar_n` and `lidar_std` recorded on each sweep would be fiction.
   const lidarAccumRef = useRef([]);
+  const lidarLastSeqRef = useRef(null);
+  // Roll/pitch accumulated over the same window (Phase 0.2). Recorded so it is
+  // possible to test later whether the background depends on pose as well as
+  // standoff -- cheap to capture now, impossible to backfill.
+  const poseAccumRef = useRef([]);
   // C-scan raster: a hCount x vCount grid captured along a snake path (see
   // lib/cscanGrid.js). vCount = 1 degenerates to the old single-line B-scan.
   const [bscanParams, setBscanParams] = useState({
@@ -458,33 +502,53 @@ export default function App() {
 
   // Apply BG subtraction to the live SFCW result: model or captured reference,
   // never both. Complex (vector) subtraction in all cases.
-  const processedSfcwResult = useMemo(() => {
-    if (!sfcwResult) return sfcwResult;
-    if (!sfcwResult.h_cal_real || !sfcwResult.h_cal_imag) return sfcwResult;
+  //
+  // Every way this can decline to subtract now reports itself (Phase 0.4).
+  // Previously each one either warned to a console nobody has open or, in the
+  // out-of-span case, did not check at all -- inferInterpModel silently clamps
+  // to the nearest captured knot, so a standoff well outside the model's range
+  // produced a confident-looking subtraction against a background measured
+  // somewhere else entirely. That is indistinguishable on screen from a working
+  // subtraction, and is a prime suspect for the false targets.
+  const sfcwProcessed = useMemo(() => {
+    const noop = (reason) => ({ result: sfcwResult, diag: { applied: false, reason } });
+    if (!sfcwResult) return { result: sfcwResult, diag: null };
+    if (!sfcwResult.h_cal_real || !sfcwResult.h_cal_imag) return noop('sweep carries no h_cal');
 
     const numSteps = sfcwResult.h_cal_real.length;
     let bgReal = null;
     let bgImag = null;
+    const diag = { applied: true, reason: null, source: null, clamped: false, standoffMm: sfcwStandoffMm };
 
     if (sfcwBgModel) {
+      diag.source = 'model';
       if (numSteps !== sfcwBgModel.sfcwParams.numSteps) {
-        console.warn('[BG Model] numSteps mismatch:', numSteps, 'vs model:', sfcwBgModel.sfcwParams.numSteps);
-        return sfcwResult;
+        return noop(`numSteps mismatch: sweep ${numSteps} vs model ${sfcwBgModel.sfcwParams.numSteps}`);
       }
-      if (sfcwStandoffMm == null) {
-        console.warn('[BG Model] no lidar standoff available');
-        return sfcwResult;
+      if (sfcwStandoffMm == null) return noop('no lidar standoff available');
+      // Out-of-span check, matching CscanPanel.jsx. The model is only valid
+      // between its first and last captured knot; outside that the inference
+      // clamps, so the "background" it returns is not for this standoff.
+      const md = sfcwBgModel.d;
+      if (Array.isArray(md) && md.length) {
+        diag.modelSpan = { min: md[0], max: md[md.length - 1] };
+        if (sfcwStandoffMm < md[0] || sfcwStandoffMm > md[md.length - 1]) {
+          diag.clamped = true;
+          diag.clampedBy = sfcwStandoffMm < md[0]
+            ? md[0] - sfcwStandoffMm
+            : sfcwStandoffMm - md[md.length - 1];
+        }
       }
       ({ bgReal, bgImag } = inferBgModel(sfcwBgModel, sfcwStandoffMm, numSteps));
     } else if (sfcwBgRef) {
+      diag.source = 'ref';
       if (sfcwBgRef.h_cal_real.length !== numSteps) {
-        console.warn('[BG Ref] numSteps mismatch:', numSteps, 'vs ref:', sfcwBgRef.h_cal_real.length);
-        return sfcwResult;
+        return noop(`numSteps mismatch: sweep ${numSteps} vs ref ${sfcwBgRef.h_cal_real.length}`);
       }
       bgReal = sfcwBgRef.h_cal_real;
       bgImag = sfcwBgRef.h_cal_imag;
     } else {
-      return sfcwResult;
+      return noop('no background selected');
     }
 
     const subReal = new Array(numSteps);
@@ -498,13 +562,48 @@ export default function App() {
     // SfcwDisplay recomputes its own profile from h_cal_* (windowing/range comp),
     // so the subtracted spectrum must replace them or the subtraction is discarded.
     return {
-      ...sfcwResult,
-      h_cal_real: subReal,
-      h_cal_imag: subImag,
-      magnitudes: rp.magnitudes,
-      distances: rp.distances,
+      result: {
+        ...sfcwResult,
+        h_cal_real: subReal,
+        h_cal_imag: subImag,
+        magnitudes: rp.magnitudes,
+        distances: rp.distances,
+      },
+      diag,
     };
   }, [sfcwResult, sfcwBgModel, sfcwBgRef, sfcwStandoffMm]);
+
+  const processedSfcwResult = sfcwProcessed.result;
+
+  // Running tally of how often the model was asked for a standoff it never saw.
+  // A single clamped sweep is easy to miss; a clamp *fraction* is not, and it
+  // is the difference between "the model is wrong" and "the model is being
+  // asked the wrong question".
+  //
+  // Kept in a ref and mutated, not in state -- the same reason sfcwDynamicScale
+  // is a ref: sweeps arrive at 3-6 Hz and a setState here would add a second
+  // render pass to every one of them. App already re-renders per sweep (see
+  // setSfcwResult below), so a snapshot taken during render is always current
+  // to within one sweep, which is ample for a running tally.
+  const sfcwBgStatsRef = useRef({ total: 0, clamped: 0, skipped: 0 });
+  const [, bumpBgStats] = useReducer(x => x + 1, 0);
+  const sfcwBgDiag = sfcwProcessed.diag;
+  useEffect(() => {
+    if (!sfcwBgDiag) return;
+    // Only count sweeps where a background was actually selected; "no
+    // background selected" is not a failure to report.
+    if (!sfcwBgDiag.applied && sfcwBgDiag.reason === 'no background selected') return;
+    const st = sfcwBgStatsRef.current;
+    st.total += 1;
+    if (sfcwBgDiag.clamped) st.clamped += 1;
+    if (!sfcwBgDiag.applied) st.skipped += 1;
+  }, [sfcwBgDiag]);
+  const sfcwBgStats = { ...sfcwBgStatsRef.current };
+
+  const resetSfcwBgStats = useCallback(() => {
+    sfcwBgStatsRef.current = { total: 0, clamped: 0, skipped: 0 };
+    bumpBgStats();  // nothing else would repaint if the sweep is stopped
+  }, []);
 
   // IMU WebSocket
   const handleImuMessage = useCallback((msg) => {
@@ -512,7 +611,26 @@ export default function App() {
     setImuData(msg);
     if (msg.lidar !== null && msg.lidar !== undefined) {
       setLidarMm(msg.lidar);
-      lidarAccumRef.current.push(msg.lidar);
+      // Only accumulate genuinely-new readings. A Pi without `lidar_seq`
+      // (pre-2026-08-28 stream.py) reports undefined, in which case every
+      // packet is accumulated -- the old behaviour, so the panel degrades
+      // rather than silently recording zero samples.
+      const seq = msg.lidar_seq;
+      if (seq === undefined || seq === null || seq !== lidarLastSeqRef.current) {
+        lidarLastSeqRef.current = seq;
+        lidarAccumRef.current.push(msg.lidar);
+      }
+    }
+    // Pose from the gravity vector. accel is body-frame [forward, left, up] in
+    // g (see CONTEXT.md), so this is tilt only -- no yaw, which gravity cannot
+    // observe. Good enough to answer "did the head tilt between captures".
+    const a = msg.accel;
+    if (Array.isArray(a) && a.length === 3 && a.every(v => typeof v === 'number')) {
+      const [fwd, left, up] = a;
+      poseAccumRef.current.push({
+        roll: Math.atan2(left, up) * 180 / Math.PI,
+        pitch: Math.atan2(-fwd, Math.hypot(left, up)) * 180 / Math.PI,
+      });
     }
   }, []);
 
@@ -542,13 +660,45 @@ export default function App() {
       setSfcwRunning(msg.running);
       setSfcwStatus(msg);
     } else if (msg.type === 'sfcw_result') {
-      // Compute averaged lidar standoff for this sweep
+      // Averaged lidar standoff for this sweep, plus the provenance needed to
+      // judge it: how many DISTINCT readings went into the mean and how far
+      // they spread.
+      //
+      // Recorded for attribution, not because standoff noise is the limit --
+      // it measurably is not. Scoring the same 24-position set four ways
+      // (2026-08-28) put the benchmark-to-live gap at 5.3 dB, of which standoff
+      // noise owns 0.37 dB and single-sweep SNR owns 5.16 dB. What these fields
+      // are actually for is telling a bad standoff apart from a bad model when
+      // a sweep does cancel poorly, which was previously impossible: lidar_n
+      // near zero means the standoff is stale, not that the model is wrong.
       const accum = lidarAccumRef.current;
-      const avgLidarMm = accum.length > 0
-        ? accum.reduce((s, v) => s + v, 0) / accum.length
+      const lidarN = accum.length;
+      const avgLidarMm = lidarN > 0
+        ? accum.reduce((s, v) => s + v, 0) / lidarN
         : null;
-      const standoffMm = avgLidarMm !== null ? avgLidarMm - LIDAR_ANTENNA_OFFSET_MM : null;
+      const lidarStd = lidarN > 1
+        ? Math.sqrt(accum.reduce((s, v) => s + (v - avgLidarMm) ** 2, 0) / (lidarN - 1))
+        : null;
+      const standoffMm = avgLidarMm !== null ? avgLidarMm - lidarOffsetRef.current : null;
       lidarAccumRef.current = [];
+
+      const pose = poseAccumRef.current;
+      const poseN = pose.length;
+      const rollDeg = poseN > 0 ? pose.reduce((s, v) => s + v.roll, 0) / poseN : null;
+      const pitchDeg = poseN > 0 ? pose.reduce((s, v) => s + v.pitch, 0) / poseN : null;
+      poseAccumRef.current = [];
+
+      // One object, spread into every record below, so the sweep record, the
+      // C-scan cell and the BG-model sample can never drift apart.
+      const provenance = {
+        lidar_standoff_mm: standoffMm,
+        lidar_n: lidarN,
+        lidar_std: lidarStd,
+        lidar_offset_mm: lidarOffsetRef.current,
+        roll_deg: rollDeg,
+        pitch_deg: pitchDeg,
+      };
+      setSfcwLidarProvenance(provenance);
 
       // Always update live display
       setSfcwResult(msg);
@@ -562,7 +712,7 @@ export default function App() {
           num_steps: msg.num_steps,
           step_size: msg.step_size,
           range_offset: msg.range_offset,
-          lidar_standoff_mm: standoffMm,
+          ...provenance,
         });
         sfcwBgCaptureRef.current = false;
         setSfcwBgCapturing(false);
@@ -583,7 +733,7 @@ export default function App() {
             num_steps: msg.num_steps,
             step_size: msg.step_size,
             range_offset: msg.range_offset,
-            lidar_standoff_mm: standoffMm,
+            ...provenance,
             grid_ix: cell.ix,
             grid_iy: cell.iy,
             x_cm: cell.ix * grid.hStep,
@@ -602,7 +752,7 @@ export default function App() {
           num_steps: msg.num_steps,
           step_size: msg.step_size,
           range_offset: msg.range_offset,
-          lidar_standoff_mm: standoffMm,
+          ...provenance,
         });
         bscanBgCaptureRef.current = false;
         setBscanBgCapturing(false);
@@ -612,7 +762,7 @@ export default function App() {
         accum.samples.push({
           h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
           h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
-          lidar_standoff_mm: standoffMm,
+          ...provenance,
           num_steps: msg.num_steps,
           step_size: msg.step_size,
           range_offset: msg.range_offset,
@@ -633,7 +783,7 @@ export default function App() {
         test.samples.push({
           h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
           h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
-          lidar_standoff_mm: standoffMm,
+          ...provenance,
           num_steps: msg.num_steps,
           step_size: msg.step_size,
         });
@@ -709,7 +859,7 @@ export default function App() {
         timestamp: new Date().toISOString(),
         params: bscanParams,
         sfcwParams: sfcwParams,
-        lidarAntennaOffsetMm: LIDAR_ANTENNA_OFFSET_MM,
+        lidarAntennaOffsetMm: lidarOffsetMm,
         data: bscanData,
         bgRef: bscanBgRef,
         bgModelName: bscanBgModel ? (bscanBgModel.name || null) : null,
@@ -802,7 +952,20 @@ export default function App() {
           : c.samples[0]
       )).filter(s => s && s.h_cal_real && s.lidar_standoff_mm != null);
       if (allSamples.length < 5) return;
-      bgModelWorker.startTraining(allSamples, sfcwParams);
+      // Geometry stamp. The model is a function of standoff, and standoff is
+      // `lidar_reading - lidarOffsetMm`, so a model is only valid under the
+      // offset it was built with -- a change between training and inference
+      // shifts every query, and shifted past the captured span it clamps
+      // silently (~20 dB, and worse than useless past ~20 mm out). The full
+      // sfcwParams go along because gains, step size and settle count all
+      // change what h_cal actually is.
+      bgModelWorker.startTraining(allSamples, sfcwParams, {
+        geometry: {
+          lidarAntennaOffsetMm: lidarOffsetMm,
+          sfcwParams: { ...sfcwParams },
+          builtAt: new Date().toISOString(),
+        },
+      });
     } else if (action === 'save_model') {
       if (!bgModelWorker.resultRef.current || !payload) return;
       const modelData = {
@@ -828,7 +991,7 @@ export default function App() {
         type: 'bgmodel_training_data',
         timestamp: new Date().toISOString(),
         sfcwParams: sfcwParams,
-        lidarAntennaOffsetMm: LIDAR_ANTENNA_OFFSET_MM,
+        lidarAntennaOffsetMm: lidarOffsetMm,
         sweepsPerCapture: bgModelSweepsPerCapture,
         common: {
           num_steps: ref.num_steps,
@@ -958,6 +1121,10 @@ export default function App() {
         sfcwBgModel={sfcwBgModel}
         sfcwBgRef={sfcwBgRef}
         sfcwBgCapturing={sfcwBgCapturing}
+        sfcwBgDiag={sfcwBgDiag}
+        sfcwBgStats={sfcwBgStats}
+        onResetSfcwBgStats={resetSfcwBgStats}
+        sfcwLidarProvenance={sfcwLidarProvenance}
         onCaptureSfcwBg={handleSfcwCaptureBg}
         onLoadSfcwBgModel={handleSfcwLoadBgModel}
         onClearSfcwBg={handleSfcwClearBg}
@@ -969,7 +1136,8 @@ export default function App() {
         onCaptureBscanBg={handleBscanCaptureBg}
         onLoadBscanBgModel={handleBscanLoadBgModel}
         onClearBscanBg={handleBscanClearBg}
-        lidarOffsetMm={LIDAR_ANTENNA_OFFSET_MM}
+        lidarOffsetMm={lidarOffsetMm}
+        onLidarOffsetChange={setLidarOffsetMm}
         bgApplied={bgApplied}
         onBgAppliedChange={setBgApplied}
         bscanParams={bscanParams}

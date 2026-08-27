@@ -53,6 +53,10 @@ export default function Sidebar({
   sfcwBgModel,
   sfcwBgRef,
   sfcwBgCapturing,
+  sfcwBgDiag,
+  sfcwBgStats,
+  onResetSfcwBgStats,
+  sfcwLidarProvenance,
   onCaptureSfcwBg,
   onLoadSfcwBgModel,
   onClearSfcwBg,
@@ -65,6 +69,7 @@ export default function Sidebar({
   onLoadBscanBgModel,
   onClearBscanBg,
   lidarOffsetMm,
+  onLidarOffsetChange,
   bgApplied,
   onBgAppliedChange,
   bscanParams,
@@ -298,6 +303,12 @@ export default function Sidebar({
                   bgModel={sfcwBgModel}
                   bgRef={sfcwBgRef}
                   bgCapturing={sfcwBgCapturing}
+                  bgDiag={sfcwBgDiag}
+                  bgStats={sfcwBgStats}
+                  onResetBgStats={onResetSfcwBgStats}
+                  lidarProvenance={sfcwLidarProvenance}
+                  lidarOffsetMm={lidarOffsetMm}
+                  onLidarOffsetChange={onLidarOffsetChange}
                   onCaptureBg={onCaptureSfcwBg}
                   onLoadBgModel={onLoadSfcwBgModel}
                   onClearBg={onClearSfcwBg}
