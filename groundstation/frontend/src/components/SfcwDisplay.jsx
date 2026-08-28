@@ -24,6 +24,87 @@ function jet(t) {
   ];
 }
 
+// Perceptually-uniform maps. jet is kept because existing screenshots and
+// habits are calibrated to it, but it bands sharply in smooth gradients, which
+// makes post-subtraction noise read as structure -- the exact failure mode this
+// panel is trying to avoid. viridis/inferno have a dark, low-contrast bottom so
+// sub-threshold noise recedes instead of shimmering.
+const VIRIDIS = [
+  [68, 1, 84], [72, 40, 120], [62, 74, 137], [49, 104, 142], [38, 130, 142],
+  [31, 158, 137], [53, 183, 121], [109, 205, 89], [253, 231, 37],
+];
+const INFERNO = [
+  [0, 0, 4], [22, 11, 57], [66, 10, 104], [106, 23, 110], [147, 38, 103],
+  [188, 55, 84], [221, 81, 58], [243, 120, 25], [252, 255, 164],
+];
+
+function rampLookup(ramp, t) {
+  t = Math.max(0, Math.min(1, t));
+  const x = t * (ramp.length - 1);
+  const i = Math.min(ramp.length - 2, Math.floor(x));
+  const f = x - i;
+  const a = ramp[i], b = ramp[i + 1];
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * f),
+    Math.round(a[1] + (b[1] - a[1]) * f),
+    Math.round(a[2] + (b[2] - a[2]) * f),
+  ];
+}
+
+export const COLORMAPS = { jet, viridis: (t) => rampLookup(VIRIDIS, t), inferno: (t) => rampLookup(INFERNO, t) };
+
+// Waterfall display transforms. RAW is the historical behaviour. DREF and CFAR
+// both put a physically meaningful zero on the colour scale, which is what lets
+// them be shown on FIXED limits -- with dynamic limits a new maximum rescales
+// the whole image, so a target appearing DARKENS everything else instead of
+// lighting one cell up.
+// defaultSpan is the +/- dB the fixed colour scale uses. They differ a lot:
+// measured on a static bench pair, dREF puts target-free background inside
+// +/-0.23 dB (rms 0.07) and a real target at +4.5 dB, so +/-5 dB uses nearly the
+// whole scale. CFAR values are offsets from a threshold already sitting ~alpha
+// dB above the clutter mean, so they run wider.
+export const WF_MODES = {
+  raw:  { label: 'RAW',  needsDb: false, zeroed: false, defaultSpan: 12 },
+  dref: { label: 'dREF', needsDb: true,  zeroed: true,  defaultSpan: 5  },
+  cfar: { label: 'CFAR', needsDb: true,  zeroed: true,  defaultSpan: 12 },
+};
+
+// One waterfall row, transformed for display. Returns dB-relative values whose
+// zero is meaningful (at the reference / at the detection threshold), or the row
+// unchanged for RAW. Never mutates the input.
+export function transformWfRow(rowDb, mode, ref, cfar) {
+  if (mode === 'dref') {
+    if (!ref || ref.length !== rowDb.length) return rowDb;
+    const out = new Array(rowDb.length);
+    for (let i = 0; i < rowDb.length; i++) out[i] = rowDb[i] - ref[i];
+    return out;
+  }
+  if (mode === 'cfar') {
+    const thr = computeCFAR(rowDb, cfar.guard, cfar.train, cfar.alpha, cfar.variant);
+    const out = new Array(rowDb.length);
+    for (let i = 0; i < rowDb.length; i++) out[i] = rowDb[i] - thr[i];
+    return out;
+  }
+  return rowDb;
+}
+
+// Componentwise median across the last N rows. Median rather than mean so a
+// single corrupted sweep (or one that caught a transient) cannot poison the
+// reference the whole session is then measured against.
+export function medianRows(rows) {
+  if (!rows.length) return null;
+  const n = rows[0].length;
+  const out = new Array(n);
+  const col = new Array(rows.length);
+  for (let i = 0; i < n; i++) {
+    for (let r = 0; r < rows.length; r++) col[r] = rows[r][i];
+    col.sort((a, b) => a - b);
+    const m = col.length >> 1;
+    out[i] = col.length % 2 ? col[m] : 0.5 * (col[m - 1] + col[m]);
+  }
+  return out;
+}
+
 const SPEED_OF_LIGHT = 299_792_458;
 
 // Radix-2 FFT (in-place, decimation-in-time)
@@ -129,6 +210,8 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
 
   // Waterfall history buffer
   const waterfallHistory = useRef([]);
+  // Display-transformed mirror of waterfallHistory, row-for-row.
+  const wfDisplay = useRef([]);
   const WATERFALL_MAX_ROWS = 100;
 
   // Parallel ring buffer of the raw complex sweeps behind those rows, untouched
@@ -153,6 +236,32 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
   const [cfarTrain, setCfarTrain] = useState(CFAR_TRAIN);
   const [cfarAlpha, setCfarAlpha] = useState(CFAR_ALPHA);
   const [cfarEnabled, setCfarEnabled] = useState(true);
+  // CA is the historical variant. GO holds the threshold up on the far side of
+  // a strong return; SO is the one that survives an EXTENDED target, which is
+  // what a real return looks like here (~50 mm range resolution plus sidelobes
+  // smears a point scatterer across ~10 bins, and a CA/GO training window
+  // sitting on that raises its own threshold and self-masks).
+  const [cfarVariant, setCfarVariant] = useState('ca');
+
+  // Display experiments — all four are independent so they can be A/B'd live
+  // and the losers deleted. None of them touch the processing path: exports,
+  // SAR input and BG-model training data are unaffected by every one.
+  const [colormap, setColormap] = useState('jet');
+  const [wfMode, setWfMode] = useState('raw');
+  const [wfFixed, setWfFixed] = useState(true);     // fixed limits in zeroed modes
+  const [wfSpan, setWfSpan] = useState(12);         // +/- dB when fixed
+  const [spanTouched, setSpanTouched] = useState(false);
+  const [refWindow, setRefWindow] = useState(16);   // frames medianed into a reference
+  const [applyModeToTrace, setApplyModeToTrace] = useState(true);
+  // 'session' never shrinks, so one early transient permanently squashes the
+  // axis; 'frame' tracks the current sweep only.
+  const [yMode, setYMode] = useState('session');
+
+  // dREF reference row (dB). Held in a ref so capturing one does not re-render
+  // at sweep rate; refVersion exists only to trigger the recompute effect.
+  const refRow = useRef(null);
+  const [refVersion, setRefVersion] = useState(0);
+  const [hasRef, setHasRef] = useState(false);
 
   // Recomputed profile state
   const [recomputed, setRecomputed] = useState(null);
@@ -283,7 +392,8 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
 
     const {
       mags, dists, view, traceColor, title, crosshair,
-      showCFAR, isDb, sessionY, manual, manualMin, manualMax, onScale
+      showCFAR, isDb, sessionY, manual, manualMin, manualMax, onScale,
+      useSession = true, zeroLine = false
     } = opts;
     const n = mags.length;
     const pad = { top: 24, bottom: 36, left: 52, right: 16 };
@@ -296,7 +406,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     if (manual) {
       yMin = manualMin;
       yMax = manualMax;
-    } else if (view.autoY && sessionY) {
+    } else if (view.autoY && sessionY && useSession) {
       // Update session extremes with current frame data
       for (let i = 0; i < n; i++) {
         if (mags[i] < sessionY.current.min) sessionY.current.min = mags[i];
@@ -360,6 +470,26 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
       ctx.font = '9px monospace';
       ctx.textAlign = 'center';
       ctx.fillText(`${dist.toFixed(2)} m`, x, h - pad.bottom + 14);
+    }
+
+    // In a zeroed mode 0 is the decision line (at the reference / at the CFAR
+    // threshold), so draw it: "above this" is the call the operator is making.
+    if (zeroLine && 0 > yMin && 0 < yMax) {
+      const zy = yToPixel(0);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(78, 205, 196, 0.55)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(pad.left, zy);
+      ctx.lineTo(w - pad.right, zy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(78, 205, 196, 0.8)';
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText('0 dB', pad.left + 4, zy - 3);
+      ctx.restore();
     }
 
     // CFAR threshold + noise shading
@@ -508,7 +638,10 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     return { pad, plotW, plotH, yMin, yMax };
   }, [cfarGuard, cfarTrain, cfarAlpha, cfarEnabled]);
 
-  const drawWaterfall = useCallback((canvas, dists, view, crosshair, isDb, manual, manualMin, manualMax) => {
+  const drawWaterfall = useCallback((canvas, dists, view, crosshair, isDb, manual, manualMin, manualMax, opts = {}) => {
+    const cmap = COLORMAPS[opts.colormap] || jet;
+    const modeInfo = WF_MODES[opts.mode] || WF_MODES.raw;
+    const zeroed = modeInfo.zeroed && isDb;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const rect = canvas.getBoundingClientRect();
@@ -522,7 +655,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     ctx.fillStyle = BG;
     ctx.fillRect(0, 0, w, h);
 
-    const history = waterfallHistory.current;
+    const history = (zeroed || opts.mode === 'raw') && opts.rows ? opts.rows : waterfallHistory.current;
     if (history.length === 0) {
       ctx.fillStyle = '#333333';
       ctx.font = '11px monospace';
@@ -548,6 +681,11 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     if (manual) {
       vMin = manualMin;
       vMax = manualMax;
+    } else if (zeroed && opts.fixed) {
+      // The whole point of a zeroed mode: pinned symmetric limits, so a new
+      // maximum lights up its own cell instead of rescaling every other one.
+      vMin = -opts.span;
+      vMax = opts.span;
     } else {
       for (let row = 0; row < numRows; row++) {
         for (let bin = startBin; bin <= endBin; bin++) {
@@ -568,7 +706,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     for (let row = 0; row < numRows; row++) {
       for (let bin = startBin; bin <= endBin; bin++) {
         const t = (history[row][bin] - vMin) / (vMax - vMin);
-        const [r, g, b] = jet(t);
+        const [r, g, b] = cmap(t);
         ctx.fillStyle = `rgb(${r},${g},${b})`;
         const x = pad.left + (bin - startBin) * cellW;
         const y = pad.top + (numRows - 1 - row) * cellH;
@@ -604,7 +742,9 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     ctx.fillStyle = '#D1855C';
     ctx.font = 'bold 10px monospace';
     ctx.textAlign = 'left';
-    const wfTitle = isDb ? 'WATERFALL (dB)' : 'WATERFALL (LINEAR)';
+    const wfTitle = zeroed
+      ? `WATERFALL (${modeInfo.label} dB)`
+      : (isDb ? 'WATERFALL (dB)' : 'WATERFALL (LINEAR)');
     ctx.fillText(wfTitle, pad.left, 14);
     if (manual) {
       const tw = ctx.measureText(wfTitle).width;
@@ -625,11 +765,26 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     const barY = pad.top;
     for (let i = 0; i < barH; i++) {
       const t = 1 - i / barH;
-      const [r, g, b] = jet(t);
+      const [r, g, b] = cmap(t);
       ctx.fillStyle = `rgb(${r},${g},${b})`;
       ctx.fillRect(barX, barY + i, barW, 1);
     }
-    ctx.fillStyle = manual ? '#f59e0b' : '#555555';
+    // Where 0 falls on the bar -- the detection threshold in CFAR, "unchanged"
+    // in dREF. Without it the operator has no anchor for what the colours mean.
+    if (zeroed && vMin < 0 && vMax > 0) {
+      const zy = barY + barH * (1 - (0 - vMin) / (vMax - vMin));
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(barX - 3, zy);
+      ctx.lineTo(barX + barW + 3, zy);
+      ctx.stroke();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '8px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText('0', barX - 5, zy + 3);
+    }
+    ctx.fillStyle = manual ? '#f59e0b' : (zeroed && opts.fixed ? '#4ecdc4' : '#555555');
     ctx.font = '8px monospace';
     ctx.textAlign = 'left';
     if (isDb) {
@@ -662,6 +817,29 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     }
   }, []);
 
+  // Capture the current background as the dREF reference. Median over the last
+  // refWindow rows, so one bad sweep cannot poison it.
+  const captureRef = useCallback(() => {
+    const med = medianRows(waterfallHistory.current.slice(-refWindow));
+    if (!med) return;
+    refRow.current = med;
+    setHasRef(true);
+    setWfMode('dref');
+    setRefVersion(v => v + 1);
+  }, [refWindow]);
+
+  useEffect(() => {
+    if (spanTouched) return;
+    const d = (WF_MODES[wfMode] || {}).defaultSpan;
+    if (d) setWfSpan(d);
+  }, [wfMode, spanTouched]);
+
+  const clearRef = useCallback(() => {
+    refRow.current = null;
+    setHasRef(false);
+    setRefVersion(v => v + 1);
+  }, []);
+
   // Push new data into waterfall history
   useEffect(() => {
     const dbMags = averaged || (recomputed ? recomputed.magnitudes : (sfcwResult && sfcwResult.magnitudes));
@@ -690,13 +868,38 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
         rawHistory.current.shift();
       }
     }
+    // Transformed copy for display, computed once per row rather than per frame:
+    // CFAR over 100 rows every animation frame would be tens of millions of ops
+    // a second. Switching mode rebuilds this from waterfallHistory (below), so a
+    // mode change re-renders the whole existing history instantly.
+    if (scaleMode === 'db') {
+      wfDisplay.current.push(transformWfRow(row, wfMode, refRow.current, {
+        guard: cfarGuard, train: cfarTrain, alpha: cfarAlpha, variant: cfarVariant,
+      }));
+    } else {
+      wfDisplay.current.push(row);
+    }
+    if (wfDisplay.current.length > WATERFALL_MAX_ROWS) wfDisplay.current.shift();
+
     setRawCount(rawHistory.current.length);
-  }, [averaged, recomputed, sfcwResult]);
+  }, [averaged, recomputed, sfcwResult, scaleMode, wfMode, cfarGuard, cfarTrain, cfarAlpha, cfarVariant]);
+
+  // Rebuild the transformed history whenever the transform itself changes.
+  useEffect(() => {
+    const cfar = { guard: cfarGuard, train: cfarTrain, alpha: cfarAlpha, variant: cfarVariant };
+    wfDisplay.current = scaleMode === 'db'
+      ? waterfallHistory.current.map(r => transformWfRow(r, wfMode, refRow.current, cfar))
+      : waterfallHistory.current.slice();
+    // The zeroed modes are in different units from RAW, so session extremes
+    // carried across a mode change would be meaningless.
+    sessionY.current = { min: Infinity, max: -Infinity };
+  }, [wfMode, refVersion, cfarGuard, cfarTrain, cfarAlpha, cfarVariant, scaleMode]);
 
   // Clear waterfall when scale mode changes. rawHistory is intentionally left
   // alone — see its declaration.
   useEffect(() => {
     waterfallHistory.current = [];
+    wfDisplay.current = [];
   }, [scaleMode]);
 
   // Drop the raw buffer on unmount so a panel switch does not leak sweeps into
@@ -711,8 +914,18 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
         const dbMags = averaged || (recomputed ? recomputed.magnitudes : result.magnitudes);
         const isDb = scaleMode === 'db';
         const mags = isDb ? dbMags : Array.from(dbMags).map(db => Math.pow(10, db / 20));
+        const modeInfo = WF_MODES[wfMode] || WF_MODES.raw;
+        const zeroed = modeInfo.zeroed && isDb;
+        const traceOn = zeroed && applyModeToTrace;
+        // Same transform the waterfall row got, so the two panes agree.
+        const shownMags = traceOn
+          ? transformWfRow(Array.from(mags), wfMode, refRow.current,
+              { guard: cfarGuard, train: cfarTrain, alpha: cfarAlpha, variant: cfarVariant })
+          : mags;
         const traceColor = isDb ? TRACE_COLOR : LINEAR_TRACE;
-        const title = isDb ? 'RANGE PROFILE (dB)' : 'RANGE PROFILE (LINEAR)';
+        const title = traceOn
+          ? `RANGE PROFILE (${modeInfo.label} dB)`
+          : (isDb ? 'RANGE PROFILE (dB)' : 'RANGE PROFILE (LINEAR)');
 
         // Apply range scale to view
         let view = traceView;
@@ -726,26 +939,33 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
         }
 
         drawChart(rangeCanvasRef.current, {
-          mags, dists, view, traceColor,
+          mags: shownMags, dists, view, traceColor,
           title, crosshair: crosshairTrace,
-          showCFAR: cfarEnabled && isDb, isDb, sessionY,
+          // Already CFAR-normalised: overlaying the threshold again would draw
+          // it at 0 and shade the entire plot.
+          showCFAR: cfarEnabled && isDb && !(traceOn && wfMode === 'cfar'),
+          isDb, sessionY,
           manual: manualScale,
           manualMin: scaleRange ? scaleRange.min : 0,
           manualMax: scaleRange ? scaleRange.max : 1,
           onScale: reportScale.current,
+          useSession: yMode === 'session',
+          zeroLine: traceOn,
         });
         drawWaterfall(
           waterfallCanvasRef.current, dists, view, crosshairWaterfall, isDb,
           manualScale,
           scaleRange ? scaleRange.min : 0,
           scaleRange ? scaleRange.max : 1,
+          { colormap, mode: wfMode, fixed: wfFixed, span: wfSpan, rows: wfDisplay.current },
         );
       }
       animRef.current = requestAnimationFrame(render);
     };
     animRef.current = requestAnimationFrame(render);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [drawChart, drawWaterfall, traceView, crosshairTrace, crosshairWaterfall, cfarEnabled, averaged, recomputed, scaleMode, rangeScale, manualScale, scaleRange]);
+  }, [drawChart, drawWaterfall, traceView, crosshairTrace, crosshairWaterfall, cfarEnabled, averaged, recomputed, scaleMode, rangeScale, manualScale, scaleRange,
+      colormap, wfMode, wfFixed, wfSpan, applyModeToTrace, yMode, cfarGuard, cfarTrain, cfarAlpha, cfarVariant]);
 
   // Zoom handler
   const handleWheel = (e) => {
@@ -951,8 +1171,125 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
               />
               <span className="text-[9px] text-white/20">dB</span>
             </div>
+            {/* SO is the variant that survives an extended return; CA/GO can
+                self-mask when the training window lands on the target. */}
+            <select value={cfarVariant} onChange={e => setCfarVariant(e.target.value)}
+              className="bg-white/5 border border-white/10 rounded px-1 py-0.5 text-[10px] text-white/70 outline-none">
+              <option value="ca">CA</option>
+              <option value="go">GO</option>
+              <option value="so">SO</option>
+            </select>
           </>
         )}
+
+        {!hideWaterfall && (
+          <>
+            <div className="w-px h-3 bg-white/10" />
+
+            {/* Waterfall display mode */}
+            <div className="flex items-center gap-1">
+              {Object.entries(WF_MODES).map(([k, v]) => (
+                <button
+                  key={k}
+                  onClick={() => setWfMode(k)}
+                  disabled={v.needsDb && scaleMode !== 'db'}
+                  title={v.needsDb && scaleMode !== 'db' ? 'needs dB scale' : undefined}
+                  className={cn(
+                    'px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-medium transition-all border',
+                    wfMode === k
+                      ? 'bg-[#4ecdc4]/20 text-[#4ecdc4] border-[#4ecdc4]/30'
+                      : 'bg-white/5 text-white/30 border-white/10',
+                    v.needsDb && scaleMode !== 'db' && 'opacity-30 cursor-not-allowed',
+                  )}
+                >
+                  {v.label}
+                </button>
+              ))}
+            </div>
+
+            {wfMode === 'dref' && (
+              <>
+                <button
+                  onClick={captureRef}
+                  className="px-2 py-0.5 rounded text-[9px] uppercase tracking-wider font-medium border bg-[#D1855C]/20 text-[#D1855C] border-[#D1855C]/30 hover:bg-[#D1855C]/30 transition-all"
+                >
+                  {hasRef ? 'Re-Ref' : 'Set Ref'}
+                </button>
+                <button
+                  onClick={clearRef}
+                  disabled={!hasRef}
+                  className={cn('px-2 py-0.5 rounded text-[9px] border transition-all',
+                    hasRef ? 'text-white/40 border-white/10 hover:text-white/70' : 'text-white/15 border-white/5 cursor-not-allowed')}
+                >
+                  Clr
+                </button>
+                <div className="flex items-center gap-1">
+                  <span className="text-[9px] text-white/30">N</span>
+                  <input type="number" min={1} max={100} value={refWindow}
+                    onChange={e => setRefWindow(Math.max(1, Number(e.target.value) || 1))}
+                    className="w-8 bg-white/5 border border-white/10 rounded px-1 py-0.5 text-[10px] text-white/70 outline-none"
+                  />
+                </div>
+                {!hasRef && <span className="text-[9px] text-amber-400/70">no ref</span>}
+              </>
+            )}
+
+            {(WF_MODES[wfMode] || {}).zeroed && (
+              <>
+                <button
+                  onClick={() => setWfFixed(f => !f)}
+                  className={cn('px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-medium border transition-all',
+                    wfFixed ? 'bg-[#4ecdc4]/20 text-[#4ecdc4] border-[#4ecdc4]/30' : 'bg-white/5 text-white/30 border-white/10')}
+                  title="Pin the colour scale so a new maximum does not rescale every other cell"
+                >
+                  Fix
+                </button>
+                {wfFixed && (
+                  <div className="flex items-center gap-1">
+                    <span className="text-[9px] text-white/30">±</span>
+                    <input type="number" min={1} max={60} step="0.5" value={wfSpan}
+                      onChange={e => { setSpanTouched(true); setWfSpan(Math.max(0.5, Number(e.target.value) || 1)); }}
+                      className="w-8 bg-white/5 border border-white/10 rounded px-1 py-0.5 text-[10px] text-white/70 outline-none"
+                    />
+                    <span className="text-[9px] text-white/20">dB</span>
+                  </div>
+                )}
+                <button
+                  onClick={() => setApplyModeToTrace(t => !t)}
+                  className={cn('px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-medium border transition-all',
+                    applyModeToTrace ? 'bg-[#4ecdc4]/20 text-[#4ecdc4] border-[#4ecdc4]/30' : 'bg-white/5 text-white/30 border-white/10')}
+                  title="Apply the same transform to the range profile"
+                >
+                  Trace
+                </button>
+              </>
+            )}
+
+            <div className="w-px h-3 bg-white/10" />
+
+            {/* Colormap */}
+            <select value={colormap} onChange={e => setColormap(e.target.value)}
+              className="bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-[10px] text-white/70 outline-none"
+              title="jet bands sharply and makes noise read as structure">
+              <option value="jet">jet</option>
+              <option value="viridis">viridis</option>
+              <option value="inferno">inferno</option>
+            </select>
+          </>
+        )}
+
+        <div className="w-px h-3 bg-white/10" />
+
+        {/* Y-axis tracking */}
+        <div className="flex items-center gap-1">
+          <span className="text-[9px] text-white/40 uppercase tracking-wider">Y</span>
+          <select value={yMode} onChange={e => { setYMode(e.target.value); sessionY.current = { min: Infinity, max: -Infinity }; }}
+            className="bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-[10px] text-white/70 outline-none"
+            title="Session extremes never shrink, so one transient permanently squashes the axis">
+            <option value="session">Session</option>
+            <option value="frame">Frame</option>
+          </select>
+        </div>
 
         <div className="flex-1" />
 

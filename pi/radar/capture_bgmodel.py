@@ -30,6 +30,7 @@ import asyncio
 import json
 import math
 import os
+import random
 import statistics
 import sys
 import time
@@ -58,6 +59,36 @@ SFCW_PARAMS = {
     'tx1Gain': 50, 'rx1Gain': 25, 'tx2Gain': 50, 'rx2Gain': 25,
     'rangeOffset': 0.5,
 }
+
+
+def position_schedule(n, lo, hi, max_gap=7.0, seed=None):
+    """Irregular standoff targets spanning [lo, hi] mm.
+
+    Deliberately irregular rather than uniform: uniform undersampling folds alias
+    energy coherently onto one wrong spatial frequency, while irregular spacing
+    scatters it. Spacings are drawn from +/-30% of nominal and renormalised onto
+    the span, which keeps the largest gap under the ~7.5 mm where an alpha=3
+    triple bounce starts to alias (see CLAUDE.md's spacing limits).
+
+    Endpoints are pinned to lo and hi: the span edges are the whole point, because
+    querying outside the captured span costs ~20 dB and eventually goes negative.
+    """
+    rng = random.Random(seed)
+    gaps = None
+    for _ in range(200):
+        g = [rng.uniform(0.7, 1.3) for _ in range(n - 1)]
+        scale = (hi - lo) / sum(g)
+        g = [x * scale for x in g]
+        if max(g) <= max_gap:
+            gaps = g
+            break
+    if gaps is None:  # span too wide for n positions at this max_gap
+        gaps = [(hi - lo) / (n - 1)] * (n - 1)
+    pos, x = [lo], lo
+    for step in gaps:
+        x += step
+        pos.append(x)
+    return pos
 
 
 class LidarTracker:
@@ -194,6 +225,14 @@ async def run(args):
         stop.set(); await st
         return 1
 
+    targets = None
+    if args.span_lo is not None and args.span_hi is not None:
+        targets = position_schedule(args.positions, args.span_lo, args.span_hi)
+        gaps = [b - a for a, b in zip(targets, targets[1:])]
+        print(f"schedule: {args.positions} positions, standoff {targets[0]:.0f}..{targets[-1]:.0f} mm, "
+              f"gaps {min(gaps):.1f}-{max(gaps):.1f} mm (irregular)")
+        print(f"          lidar should read {targets[0] + args.offset:.0f}..{targets[-1] + args.offset:.0f} mm\n")
+
     captures = []
     async with websockets.connect(SDR_URL, max_size=None) as ws:
         await ws.send(json.dumps({
@@ -259,8 +298,15 @@ async def run(args):
         try:
             for p in range(args.positions):
                 for rem in range(int(args.move_seconds), 0, -1):
-                    print(f"\r  position {p+1}/{args.positions}: MOVE THE RIG "
-                          f"({rem}s, lidar {tracker.latest:.0f} mm)   ", end='', flush=True)
+                    if targets is not None:
+                        tgt = targets[p] + args.offset
+                        err = tgt - (tracker.latest or 0)
+                        print(f"\r  position {p+1}/{args.positions}: MOVE TO {tgt:.0f} mm "
+                              f"(now {tracker.latest or 0:.0f}, {err:+.0f})  {rem}s     ",
+                              end='', flush=True)
+                    else:
+                        print(f"\r  position {p+1}/{args.positions}: MOVE THE RIG "
+                              f"({rem}s, lidar {tracker.latest:.0f} mm)   ", end='', flush=True)
                     await asyncio.sleep(1)
                 print(f"\r  position {p+1}/{args.positions}: HOLD STILL, capturing "
                       f"{args.sweeps} sweeps...                    ", end='', flush=True)
@@ -374,6 +420,10 @@ def main():
     ap.add_argument('--move-seconds', type=float, default=8, help='reposition window')
     ap.add_argument('--offset', type=float, default=DEFAULT_OFFSET_MM,
                     help=f'lidar->antenna offset in mm (default {DEFAULT_OFFSET_MM})')
+    ap.add_argument('--span-lo', type=float, default=None,
+                    help='lowest standoff target in mm; enables per-position targeting')
+    ap.add_argument('--span-hi', type=float, default=None,
+                    help='highest standoff target in mm')
     ap.add_argument('--session', default='pass1', help='session label (for cross-session drift)')
     ap.add_argument('--out', default=None,
                     help='output path (default: <repo>/data/bgmodel_<session>_<ts>.json)')

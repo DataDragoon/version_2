@@ -1043,6 +1043,185 @@ false target would be ≫10). So a correctly-queried model leaves no false targe
 Ranked by cost: clamping outside the span **20.6 dB**, single-sweep SNR **5.2 dB**,
 standoff noise **0.4 dB**. Chasing lidar precision would buy at most a few tenths of a dB.
 
+### Phase 2 — the live traverse (2026-08-28): span-clamp CONFIRMED, but the model went stale
+
+`span_confirm.py --seconds 120` -> `data/span_confirm_20260828-161212.json`, 377 sweeps,
+267 in span / 110 outside, scored against `bgmodel_pass1.json` by `span_analyze.py`.
+
+| bin | n | measured | Phase 1 offline LOO | resid pk/rms |
+|---|---|---|---|---|
+| in span | 267 | **8.14 dB** | 25.98 | 2.39 |
+| 0-1 mm out | 7 | 9.40 | 20.6 | 1.77 |
+| 1-2 mm out | 16 | 8.91 | 14.6 | 1.87 |
+| 2-5 mm out | 7 | 7.22 | 6.8 | 2.50 |
+| 5-10 mm out | 22 | 5.21 | 1.1 | 2.53 |
+| 10-20 mm out | 2 | -0.55 | -3.5 | 2.50 |
+| >20 mm out | 56 | **-3.32** | | 2.46 |
+
+**Span-clamp mechanism confirmed live.** Suppression falls monotonically with distance
+outside the span and goes *negative* past 10 mm — the subtraction adds more energy than it
+removes, exactly as Phase 1 predicted offline (-3.32 measured vs -3.5 predicted at >20 mm).
+Phase 1's central claim survives contact with live data.
+
+**But no discrete false target was reproduced.** Residual peak/rms is 1.77-2.53 in *every*
+bin, in span and far outside it alike — flat, noise-like, never the >>10 that marks a
+phantom. So the out-of-span regime degrades suppression and injects energy broadband; this
+traverse did not show it manufacturing a discrete peak. The original symptom is still not
+reproduced live. Do not treat the false-target mechanism as fully closed.
+
+**The 8.14 dB in-span is a STALE MODEL, not a new mechanism.** Ruled out in order:
+
+- *Not geometry/offset.* Sweeping an inference-standoff offset over +/-20 mm peaks at
+  **+3.3 mm for 8.76 dB** — 0.62 dB over doing nothing. Same shape as Phase 1.2's oracle
+  test: the free standoff parameter absorbs model error, it does not recover a true standoff.
+- *Not configuration.* Training and traverse `sfcwParams` are identical field-for-field
+  (2000-5000 MHz, 60 MHz step, tx1/rx1 50/25, tx2/rx2 50/25, settle 10, buffers 4) and both
+  ran at `lidarAntennaOffsetMm = 160`.
+- *Not hand motion during the traverse.* A plausible confound, since the traverse moves
+  while the training captures were static, and a sweep that moves mid-sweep smears its own
+  frequency-vs-phase relationship. Stratifying the 267 in-span sweeps by `lidar_std` (a
+  motion proxy) kills it: stillest quartile (0.35 mm, effectively static) gives **8.06 dB**,
+  fastest quartile (2.12 mm) gives **8.01 dB** — indistinguishable. Whatever costs the
+  17.8 dB is present even when the rig is holding still, so it is not a motion artifact.
+- *Not the measurement.* Traverse-vs-traverse at <0.5 mm separation gives **17.96 dB,
+  coherence 0.9914** (n=1031 pairs) — today's sweeps predict each other well, and 17.96 dB
+  matches Phase 1.3's regime-D single-sweep figure of 18.99 dB. The radar is fine.
+- *It is the training set.* Traverse-vs-training complex coherence is **0.9338**, and
+  `-10*log10(1-rho^2)` for rho=0.9338 is **8.93 dB** — essentially the 8.14 dB observed. The
+  measured spectrum has decorrelated from the trained background by ~6.6% of its energy.
+  Per-step `|h|` ratio now/training runs **0.60 to 2.17 (mean 1.267)** — strongly
+  frequency-dependent, so not a gain change.
+
+**Most likely cause: the bench was physically disturbed between the two sessions.**
+`bgmodel_pass1.json` was captured 00:38; the traverse ran at 16:12, after a day of bladeRF
+USB troubleshooting (repeated replugging, power cycles, a move to a USB 2.0 port and back,
+FPGA reloads). CLAUDE.md's own echo decomposition says the *dominant* background component
+is the alpha ~ 0 static cable/coupling reflection — precisely the term that moving cables and
+connectors changes. A frequency-dependent 0.6-2.2x amplitude change is what a re-seated
+connector or shifted cable dress looks like.
+
+**Operational consequence: a background model has a shelf life bounded by the bench staying
+untouched.** Any RF cable, connector, or antenna disturbance invalidates it, and the failure
+is silent — the model still interpolates confidently and still reports "BG applied: YES".
+Retrain after any hardware work, and treat a sudden in-span suppression drop as a staleness
+signal rather than a modelling problem. Cheap staleness check, no recapture needed: score
+traverse-vs-traverse coherence against traverse-vs-model coherence; if the first is ~0.99
+and the second is well below it, the model is stale, not wrong.
+
+### Phase 3 — fresh model closes the staleness gap (2026-08-28)
+
+Two 30-position sets captured 5 min apart (`bgmodel_pass2_*`, `bgmodel_pass3_*`, 15 sweeps
+each, span 5-160 mm), then the traverse re-run against pass3.
+
+**Shelf life measured for the first time.** Cross-session scoring (build from A, score on B's
+measured spectra, interior only):
+
+| model -> data | elapsed | suppression |
+|---|---|---|
+| pass2 -> pass3 | ~5 min | **21.21 dB** |
+| pass3 -> pass2 | ~5 min | **21.35 dB** |
+| pass1 -> pass2/3 | ~16 h | **7.90 / 8.76 dB** |
+
+The ~8 dB at 16 h independently reproduces the traverse's 8.14 dB against pass1 by a
+different route, confirming that shortfall was staleness. **Caveat: two time points are not
+a curve** — this cannot yet distinguish gradual drift from a step change caused by the day's
+bladeRF USB/FPGA work in between, and those imply very different retraining cadences. Leaving
+a model overnight with the bench untouched and re-scoring would separate them.
+
+**Live traverse against the fresh model: in span 8.14 -> 17.70 dB.** Falloff outside the span
+confirmed again (-3.45 dB at >20 mm out vs -3.5 predicted). 17.70 dB combines single-sweep SNR (21.7 dB) with
+cross-session model error (~21 dB) for a predicted 18.4 dB, which matches.
+
+**Corrected 2026-08-28 — in-span is MODEL limited, not SNR limited.** Measured directly by
+coherently averaging K consecutive sweeps of an 87-sweep static capture: K=1 gives 19.28 dB,
+K=16 gives 21.95 dB — **+2.83 dB against an ideal +12.0**, plateauing at ~22 dB. Averaging
+removes only the sweep-noise term; what remains is the model floor. So sweep noise is worth
+~3 dB of the total and no more, and **raising `num_buffers` cannot buy more than that same
+~3 dB** while costing sweep rate. The plateau (~22 dB) sits right at pass3's own LOO
+(23.57 dB), so the binding constraint is **interpolation error at the achieved knot density**,
+not background drift over minutes and not the estimator choice.
+
+**Do not merge capture sessions.** Merging pass2+pass3 (51 knots, 3.3 mm median gap) scores
+22.40 dB mean — *worse* than pass3 alone (23.57). The density gain is cancelled by the 21 dB
+inter-session disagreement being injected into the interpolation. Even 5 minutes of elapsed
+time is enough that combining sessions does not pay.
+
+**Hand-placement scatter costs 6-7 dB and is now the largest capture-side lever.** The
+scheduler asked for 3.8-6.8 mm gaps; pass2 achieved 0.6-13.7 mm. Held-out positions in the
+tightest third of brackets scored 24.37 dB vs 17.14 dB in the widest third (pass2), 26.31 vs
+20.46 (pass3). `capture_bgmodel.py --span-lo/--span-hi` now prints a per-position target, but
+its move window still counts down blindly and captures wherever the operator happens to be —
+gating capture on `|error| < 2 mm` would recover most of that.
+
+**The false target has still never been reproduced** — but see the target A/B below: the
+peak/rms metric used to reach that statement is now known to be incapable of detecting a
+target at all, so this conclusion carries no weight and needs redoing with the magnitude-vs-
+reference detector. **A separate remaining hypothesis
+is the display, not the physics:** in the 0-30 cm window the residual's dynamic range is
+**23.1 dB vs the raw profile's 20.6 dB**, so a dynamic colour scale stretches flat post-
+subtraction noise across the full colormap exactly as it did real structure beforehand. Test
+it by pinning `sfcwScaleRange` to manual at the pre-subtraction limits and seeing whether the
+"targets" survive.
+
+### Target A/B (2026-08-28): peak/rms is not a target detector, and what is
+
+Static bed, standoff ~24 mm, target placed then removed with nothing else changed. 126 sweeps
+with, 87 without, ~7 min apart, both scored against `bgmodel_pass3`.
+
+**The target is unambiguous**: magnitude change **+4.4 dB peaked at 21.2 cm**, against a
+**0.23 dB** noise floor measured in the 0-10 cm wall/coupling region, which the target leaves
+completely undisturbed. Complex signature is 19.3 dB above the coherent-mean noise floor.
+
+**Both detection statistics in use scored it BELOW target-free background:**
+
+| | target present | target-free |
+|---|---|---|
+| residual peak/rms | **1.52** | 1.75-1.91 |
+| peak excess over median | **3.80 dB** | 6.36-8.37 dB |
+
+A target that is extended by range resolution (~50 mm at 3 GHz) plus sidelobes lifts the
+residual *floor* rather than spiking one bin. peak/rms is self-normalised, so a raised floor
+raises the RMS and the ratio falls. **Any self-referential peakiness measure is blind to a
+real target, and blind in the wrong direction.** Do not use peak/rms, or excess-over-median,
+to decide whether something is there.
+
+**What works: magnitude range profile vs a target-free reference at matched standoff.**
+Calibrated threshold from this data: a magnitude change **> ~0.7 dB** (3x the 0.23 dB control
+region) indicates a target.
+
+**The LiDAR has a slow ZERO-DRIFT of ~1 mm over minutes, and within-capture noise statistics
+are blind to it.** The lidar reported the standoff moving 1.03 mm between the two target A/B
+captures. It had not: range-gating the complex difference to the wall/coupling region (0-10 cm)
+gives **-40.1 dB**, where an actual 1.03 mm move would give **-14.0 dB** -- 26 dB below, i.e. the
+true geometry held to **~0.05 mm** while the lidar's reading wandered by a millimetre. Use the
+wall-gate phase, not the lidar, to decide whether the rig moved; the radar is ~20x the better
+position sensor at this scale.
+
+Independently confirmed on the training sets: a constant-bias search across the pass2/pass3
+cross-session pair wants **-1.35 mm** one way and **+1.45 mm** the other. Equal-and-opposite is
+the signature of a real zero-drift between sessions, not a fitting artifact.
+
+**Cost is real but modest: ~2 dB** (pass2->pass3 21.21 -> 23.15 dB when the bias is corrected).
+Far less than the single-echo table predicts for 1.4 mm (14 dB) because the dominant background
+term is the alpha~0 static coupling, which does not depend on standoff at all -- the same reason
+Phase 1.2's measured falloff was much gentler than the analytic one. A 1-parameter bias search
+at inference is therefore a cheap ~2 dB, and being a slowly-tracked global constant it cannot
+absorb a target the way a per-sweep standoff search could.
+
+**This does NOT explain the staleness.** The same search on the 16 h pair (pass1->pass3) recovers
+only **+0.69 dB**, so the overnight decorrelation is genuine background change, not lidar drift.
+
+**Magnitude and complex tolerate very different amounts of this.** The magnitude range profile
+was unaffected -- the 0-10 cm control stayed at 0.23 dB whether or not the standoffs were
+matched -- because a sub-millimetre shift is a small fraction of a range bin. The complex
+difference is not: at the (spurious) 1.03 mm the shift term would have swamped the target. So
+**target detection can use magnitude and tolerate ~1 mm of standoff error; background
+subtraction needs coherent cancellation and is sensitive to it.**
+
+**Without compensation the target sits 16.6 dB below the wall return** (-51.4 vs -34.8 dB) --
+a small bump on the skirt of a much larger feature, which is precisely the case background
+subtraction exists to fix.
+
 ### Tooling added
 
 - `pi/sensors/lidar_noise_char.py` — noise vs averaging window at a given distance.
@@ -1068,9 +1247,9 @@ standoff noise **0.4 dB**. Chasing lidar precision would buy at most a few tenth
   rests on every residual peak being false by construction. `span_analyze.py` applies the
   model at each sweep's own standoff and bins suppression + residual peak/rms by
   mm-outside-span, against Phase 1's offline falloff (1 mm → 20.6 dB, 5 → 6.8, 20 → −3.5).
-  Residual **peak/rms** is the metric that speaks to the symptom: a large but flat residual
-  produces no phantom. ~2.6 is noise-like; ≫10 is a discrete false target. A high peak/rms
-  *in span*, with clamp fraction zero, would mean a second mechanism nobody has found yet.
+  `span_analyze.py` reports residual **peak/rms**, which is NOT a target detector — see the
+  target A/B below. It is only a coarse "is the residual spiky" indicator; do not read a low
+  value as absence of a target.
 
 ## RF Calib panel gains are NOT the SFCW sweep's gains (2026-08-25)
 
