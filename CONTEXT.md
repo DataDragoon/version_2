@@ -259,7 +259,7 @@ Pi and groundstation are testable without the rig.
 - [ ] BladeRF SFCW implementation
 - [x] Rover firmware rewrite (ISR stepping, JSON protocol, E-stop, soft limits, calibration)
 - [x] Rover jog control + position tracking from the controller's own step counter
-- [ ] Rover automated grid raster (B-scan / C-scan at constant standoff)
+- [x] Rover automated grid raster (drives the C-Scan panel's grid; Scan Mode = Rover)
 - [ ] Network protocol (formal)
 - [ ] Integration testing
 - [ ] SAR image reconstruction

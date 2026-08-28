@@ -10,6 +10,7 @@ import { computeCaptureStats } from './lib/bgCaptureStats';
 import { computeRangeProfile } from './lib/rangeProfile';
 import { applyBscanBg, bgForStandoff, freqGrid } from './lib/bscanBg';
 import { cellForIndex } from './lib/cscanGrid';
+import { useRoverScan } from './hooks/useRoverScan';
 import { DEFAULT_PARAMS as IMAGING_DEFAULT_PARAMS } from './lib/imagingEffects';
 
 const SPEED_OF_LIGHT = 299792458;
@@ -284,7 +285,12 @@ export default function App() {
   const [bscanBgCapturing, setBscanBgCapturing] = useState(false);
   const [bgApplied, setBgApplied] = useState(true);
   // The next sweep to arrive is tagged as a position / as the BG reference.
-  const bscanCaptureRef = useRef(false);
+  //
+  // The capture tag is an object, not a flag, because the rover raster needs to
+  // say more than "capture": which cell this is (its order is not the manual
+  // snake's), where the rover actually stood, and how many in-flight sweeps to
+  // discard first. `null` when nothing is tagged.
+  const bscanCaptureRef = useRef(null);
   const bscanBgCaptureRef = useRef(false);
 
   // Distance from the lidar's reference plane to the antenna aperture, so
@@ -342,6 +348,20 @@ export default function App() {
     gateStart: 2,
     gateEnd: 15,
     metric: 'peak',
+    // How the raster is driven. 'manual' is the hand-held original: the
+    // operator places the head and presses Capture, snaking up from the
+    // bottom-left. 'rover' hands the same grid to the gantry, which rasters it
+    // from the TOP-left downwards (see lib/cscanGrid.js) with no button
+    // presses. Only the capture ORDER differs -- cells, export and every
+    // downstream panel are identical either way.
+    scanMode: 'manual',
+    // Where the head is standing right now relative to the grid origin (its
+    // top-left corner), in mm. The rover drives left by the first and up by
+    // the second to reach the origin before the raster starts.
+    roverOriginRightMm: 0,
+    roverOriginBelowMm: 0,
+    // Mechanical settling allowed after a move before a sweep is taken.
+    roverSettleMs: 200,
   });
   // The SDR message handler is mounted once, so it reads the grid through a ref.
   const bscanParamsRef = useRef(bscanParams);
@@ -731,26 +751,43 @@ export default function App() {
       // The cell is resolved from the capture index along the snake path and
       // stored on the record, so editing the grid later never relabels it.
       if (bscanCaptureRef.current) {
-        const grid = bscanParamsRef.current;
-        setBscanData(prev => {
-          const cell = cellForIndex(prev.length, grid.hCount);
-          return [...prev, {
-            magnitudes: [...msg.magnitudes],
-            distances: [...msg.distances],
-            h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
-            h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
-            num_steps: msg.num_steps,
-            step_size: msg.step_size,
-            range_offset: msg.range_offset,
-            ...provenance,
-            grid_ix: cell.ix,
-            grid_iy: cell.iy,
-            x_cm: cell.ix * grid.hStep,
-            y_cm: cell.iy * grid.vStep,
-          }];
-        });
-        bscanCaptureRef.current = false;
-        setBscanCapturing(false);
+        const tag = bscanCaptureRef.current;
+        // A sweep already in flight when the tag was set began before the rover
+        // finished settling, so it is smeared by the move itself. Results are
+        // emitted serially, so discarding exactly one guarantees the sweep we
+        // do keep STARTED after the settle window closed.
+        if (tag.skip > 0) {
+          tag.skip -= 1;
+        } else {
+          const grid = bscanParamsRef.current;
+          setBscanData(prev => {
+            const cell = tag.cell || cellForIndex(prev.length, grid.hCount);
+            return [...prev, {
+              magnitudes: [...msg.magnitudes],
+              distances: [...msg.distances],
+              h_cal_real: msg.h_cal_real ? [...msg.h_cal_real] : null,
+              h_cal_imag: msg.h_cal_imag ? [...msg.h_cal_imag] : null,
+              num_steps: msg.num_steps,
+              step_size: msg.step_size,
+              range_offset: msg.range_offset,
+              ...provenance,
+              grid_ix: cell.ix,
+              grid_iy: cell.iy,
+              x_cm: cell.ix * grid.hStep,
+              y_cm: cell.iy * grid.vStep,
+              // Where the gantry actually stood, beside where it was asked to.
+              // Slip and missed steps are the only error sources nothing can
+              // observe, so the commanded target is kept next to the reported
+              // position rather than assuming they agree.
+              rover_x_mm: tag.rover ? tag.rover.x : null,
+              rover_y_mm: tag.rover ? tag.rover.y : null,
+              rover_target_x_mm: tag.target ? tag.target.x_mm : null,
+              rover_target_y_mm: tag.target ? tag.target.y_mm : null,
+            }];
+          });
+          bscanCaptureRef.current = null;
+          setBscanCapturing(false);
+        }
       }
 
       // B-scan BG reference: likewise tagged groundstation-side
@@ -812,7 +849,7 @@ export default function App() {
     } else if (msg.type === 'sfcw_error') {
       setSfcwRunning(false);
       setSfcwProgress(null);
-      bscanCaptureRef.current = false;
+      bscanCaptureRef.current = null;
       bscanBgCaptureRef.current = false;
       setBscanCapturing(false);
       setBscanBgCapturing(false);
@@ -877,24 +914,84 @@ export default function App() {
     if (sdrConnectionStatus === 'connected') sendSfcwParams();
   }, [sdrConnectionStatus, sendSfcwParams]);
 
+  // ── Rover-driven C-scan raster ─────────────────────────────────────────
+  //
+  // The gantry replaces the operator's finger on Capture and nothing else: the
+  // sweep, the standoff provenance and the background subtraction are all the
+  // manual path's, unchanged. What the automation adds is where the head is
+  // when each sweep is taken.
+  const startSfcwSweep = useCallback(() => {
+    if (sfcwRunning) return;
+    sendSfcwParams();
+    sendSdr({ cmd: 'sfcw_start' });
+  }, [sfcwRunning, sendSfcwParams, sendSdr]);
+
+  const stopSfcwSweep = useCallback(() => {
+    sendSdr({ cmd: 'sfcw_stop' });
+  }, [sendSdr]);
+
+  // Tags the sweep after next as this cell -- `skip: 1` drops the one already
+  // in flight, which began while the rover was still settling.
+  const requestRoverCapture = useCallback((cell, rover, target) => {
+    bscanCaptureRef.current = { cell, rover, target, skip: 1 };
+    setBscanCapturing(true);
+  }, []);
+
+  const roverScan = useRoverScan({
+    params: bscanParams,
+    roverStatus,
+    roverConnected: roverConnectionStatus === 'connected',
+    sendRover,
+    sfcwRunning,
+    onStartSweep: startSfcwSweep,
+    onStopSweep: stopSfcwSweep,
+    capturedCount: bscanData.length,
+    onRequestCapture: requestRoverCapture,
+  });
+
+  // A raster that ends -- completed, stopped or failed -- must not leave a tag
+  // armed, or the next sweep would be captured into a cell nobody asked for.
+  const roverScanActive = roverScan.active;
+  useEffect(() => {
+    if (roverScanActive) return;
+    if (bscanCaptureRef.current && bscanCaptureRef.current.cell) {
+      bscanCaptureRef.current = null;
+      setBscanCapturing(false);
+    }
+  }, [roverScanActive]);
+
   const handleBscanAction = useCallback((action) => {
     if (action === 'start_session') {
+      // In rover mode the session IS the automated raster: it starts the sweep
+      // itself, drives to the origin and captures every cell without further
+      // input. Manual mode is untouched.
+      if (bscanParams.scanMode === 'rover') {
+        roverScan.start();
+        return;
+      }
       if (sfcwRunning) return;
       sendSfcwParams();
       sendSdr({ cmd: 'sfcw_start' });
     } else if (action === 'stop_session') {
+      // Stopping a rover raster is an emergency stop, deliberately: it is the
+      // only control on screen while the gantry is moving on its own.
+      if (bscanParams.scanMode === 'rover') {
+        roverScan.stop();
+        return;
+      }
       sendSdr({ cmd: 'sfcw_stop' });
     } else if (action === 'add_scan') {
       // The Pi has no notion of a B-scan; the next sweep it sends is the capture.
+      // No cell: the manual raster resolves it from the capture index.
       setBscanCapturing(true);
-      bscanCaptureRef.current = true;
+      bscanCaptureRef.current = { cell: null, rover: null, target: null, skip: 0 };
     } else if (action === 'new') {
       setBscanData([]);
     } else if (action === 'undo') {
       setBscanData(prev => prev.slice(0, -1));
     } else if (action === 'export') {
       const exportData = {
-        version: 5,
+        version: 6,
         timestamp: new Date().toISOString(),
         params: bscanParams,
         sfcwParams: sfcwParams,
@@ -959,7 +1056,7 @@ export default function App() {
       };
       input.click();
     }
-  }, [sendSdr, sendSfcwParams, sfcwRunning, bscanData, bscanParams, sfcwParams, bscanBgRef, bscanBgModel]);
+  }, [sendSdr, sendSfcwParams, sfcwRunning, bscanData, bscanParams, sfcwParams, bscanBgRef, bscanBgModel, roverScan, lidarOffsetMm]);
 
   const handleBgModelAction = useCallback((action, payload) => {
     if (action === 'start_session') {
@@ -1188,6 +1285,7 @@ export default function App() {
         bscanParams={bscanParams}
         onBscanParamsChange={setBscanParams}
         onBscanAction={handleBscanAction}
+        roverScan={roverScan}
         bscanScaleMode={bscanScaleMode}
         onBscanScaleModeChange={setBscanScaleMode}
         bscanDisplayMode={bscanDisplayMode}
@@ -1281,6 +1379,7 @@ export default function App() {
         bscanAlignShifts={alignShifts}
         bscanParams={bscanParams}
         bscanCapturing={bscanCapturing}
+        roverScan={roverScan}
         bscanScaleMode={bscanScaleMode}
         bscanDisplayMode={bscanDisplayMode}
         bscanScaleRange={bscanScaleRange}

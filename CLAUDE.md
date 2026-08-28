@@ -293,10 +293,11 @@ table's 256-profile hardware ceiling — see Quick-tune master table below) with
 + waterfall display.
 Both RF panels share port 9003 — starting an SFCW sweep auto-stops any active TX/RX in RF Calib.
 C-scan panel rasters a 2D grid of positions over the target and shares the SFCW panel's
-background model machinery (see below).
+background model machinery (see below). It rasters either by hand or automatically via the
+rover gantry — see "Rover-driven C-scan raster".
 Rover Scan panel drives the 2-axis stepper gantry (continuous jog, nudge, calibration,
 live position from the controller's own step counter) — see below. The automated grid
-raster on top of it is not built yet.
+raster on top of it lives in the C-Scan panel's Rover scan mode, not here.
 Imaging Bench panel replays an exported waterfall snapshot through 11 selectable imaging
 effects for offline A/B of processing chains — see below.
 
@@ -365,7 +366,7 @@ keep their own; `lib/svd.js` stays) and the Wall section. Wall standoff / thickn
 permittivity were never doing refraction work in practice — εr defaulted to 1, so the
 distance correction was the identity and the only live effect was capping display depth
 at the wall thickness. That is now a single `maxDepth` field (cm, default 30) under
-Display, used by both `BscanDisplay` and `sar.worker.js`. Export is v5 (see the C-scan
+Display, used by both `BscanDisplay` and `sar.worker.js`. Export is v6 (see the C-scan
 section); import still reads v3 and maps the old `wallThickness` onto `maxDepth`.
 Pi-side architecture: bladerf_driver.py (HAL) → sfcw_engine.py (sweep logic) → sdr_server.py (WebSocket).
 
@@ -582,10 +583,91 @@ which the Pi uses to discard status frames older than a position change.
 WiFi credentials live in `rover/secrets.h`, **gitignored**, with `secrets.example.h`
 committed. They were previously inline in `rover.ino`.
 
-**Not yet done:** the automated grid raster. The panel is jog, nudge, calibration and
-tracking. The raster should drive `rover_move_abs` position by position, reuse
-`lib/cscanGrid.js`'s snake order, and record actual rover position into each sweep's
-`provenance` beside the lidar standoff.
+The automated grid raster is **done, but it lives in the C-Scan panel, not this one**
+(2026-08-29) -- see "Rover-driven C-scan raster" below. The Rover panel stays jog, nudge,
+calibration and tracking; it is the manual control surface, and driving a scan from it
+would have meant a second copy of the grid definition.
+
+## Rover-driven C-scan raster (2026-08-29)
+
+The C-Scan panel has a **Scan Mode** toggle: `manual` (the original hand-held flow,
+unchanged) or `rover`, which hands the same grid to the gantry. The rover option is
+disabled unless the controller is actually linked (`roverConnected && board_connected`),
+not merely when the Pi's rover server is up.
+
+**Only the capture ORDER differs between the two modes.** The sweep, the standoff
+provenance, and the background subtraction (captured reference or model, `applyBscanBg`)
+are the manual path's code, untouched -- a grid captured either way is the same record and
+feeds SAR / 2D Map / export identically.
+
+### Two origins, one cell frame
+
+Manual snakes **up from the bottom-left** (`cellForIndex`, unchanged). Rover snakes **down
+from the top-left** (`roverCellForIndex`), because that is the natural way to drive a
+gantry. Both write the same `grid_ix` / `grid_iy`, where `iy = 0` is still the bottom row,
+so the plan view, the export and every downstream panel are order-agnostic.
+`orderedCellForIndex(i, hCount, vCount, scanMode)` picks between them and is what
+`CscanDisplay` uses for the dashed path, the START marker and the pulsing next cell.
+
+The capture tag `bscanCaptureRef` is now an **object, not a boolean**: the rover raster has
+to say which cell a sweep belongs to, because its capture index is not the manual snake's,
+and `cellForIndex(prev.length, ...)` would mislabel every cell. `null` means nothing is
+tagged.
+
+### Locating the grid: the operator declares where they are, not where it is
+
+There is no way to point at the wall, so the panel asks for the head's **current position
+relative to the grid origin** (the top-left corner) in mm -- "right of origin" and "below
+origin". At start the origin is `rover_position - right`, `rover_position + below`, and the
+rover drives there in **one `rover_move_abs` on both axes**, so it travels left and up
+together. Everything after that is absolute against that anchor, so quantisation cannot
+accumulate (see `ideal_mm` above).
+
+**A grid that does not fit inside the soft limits is refused, not clamped.** There are no
+endstops, and `move_to_mm` clamps silently while still reporting `completed` -- so a grid
+hanging over the end of a rail would raster a rectangle that is not the one on screen, with
+duplicate cells at the limit. `gridRoverExtent()` is checked against `config.x/y_min/max_mm`
+before a single move is issued, and the panel shows the travel range live so a mis-entered
+offset is visible before it matters.
+
+### The state machine (`hooks/useRoverScan.js`)
+
+`homing -> moving -> settling -> capturing -> moving -> ...`, a ref plus a 40 ms interval
+rather than a chain of effects -- every transition depends on the rover status stream, on
+wall-clock timers and on a sweep landing, and as effect dependencies that re-entered itself
+on unrelated re-renders.
+
+**Arrival cannot be detected from "idle" alone.** The board acks a move -- advancing the
+sequence its status stream reports -- *before* dispatching it from its queue, so there is a
+window reporting "idle, old position" for a move that has not started (the same window that
+makes `ideal_mm` unresyncable, above). Arrival therefore needs **all** of: `>= 500 ms` since
+issue, `!moving`, `pending_moves == 0`, `queue_depth == 0`, **and** position within 1 mm of
+the (Pi-identically-clamped) target. Idle-but-not-there for 3 s is a hard failure -- abort
+and E-stop -- rather than a capture at the wrong place. Verified against `rover_sim.py` on a
+3x2 grid: every cell reached, worst position error at capture **0.065 mm** (half an X step,
+the documented quantisation bound), and the zero-length homing-to-cell-0 move -- the case
+the 500 ms gate exists for -- was correctly held rather than passed through instantly.
+
+**The settle delay discards the in-flight sweep.** Sweeps free-run at 3-6 Hz, so the sweep
+arriving when the settle expires *started* while the rover was still moving and is smeared
+across frequency. `skip: 1` on the capture tag drops exactly one; results are emitted
+serially, so the one kept is guaranteed to have started after the settle window closed.
+Costs ~250 ms a cell. Settle is a panel field, default **200 ms**.
+
+**Stop Session is an E-stop in rover mode**, deliberately -- it is the only control on
+screen while the gantry moves on its own. It latches, so the panel grows a Clear E-Stop
+button and says the position is no longer trustworthy (cutting the step train at speed is
+exactly where a stepper loses steps).
+
+A raster **resumes**: it starts at `bscanData.length`, so stopping and restarting continues
+where it left off rather than re-capturing. The origin is re-derived from the current
+position each time, so the offset fields must be re-measured before a resume.
+
+Each rover-captured cell records `rover_x_mm` / `rover_y_mm` (where the gantry actually
+reported standing) beside `rover_target_x_mm` / `rover_target_y_mm` (where it was told to
+go). Keeping both is the point: slip and missed steps are the only error sources nothing can
+observe, so the two must not be assumed equal. Export is **v6**; import still reads v3-v5.
+Import deliberately does NOT restore `scanMode` -- it is a live control, not data.
 
 ## Imaging Bench Panel — Offline Effect Comparison (2026-08-23)
 
@@ -934,9 +1016,16 @@ limits so colours do not jump, then the two dB sliders drive both images live. T
 are disabled and dimmed while dynamic is on, and the colour bar turns amber and reads
 MANUAL when it is off.
 
-**Export is v5** (`cscan_<ts>.json`): grid params plus per-position `grid_ix` / `grid_iy` /
-`x_cm` / `y_cm`. Import accepts v3–v5; a v4 (or earlier) linear scan maps onto a one-row
-grid (`hCount = numPositions`, `hStep = stepSize`, `vCount = 1`).
+**Export is v6** (`cscan_<ts>.json`): grid params (now including `scanMode` and the rover
+origin offsets as provenance) plus per-position `grid_ix` / `grid_iy` / `x_cm` / `y_cm`, and
+for rover-driven cells the reported and commanded rover position. Import accepts v3–v6; a v4
+(or earlier) linear scan maps onto a one-row grid (`hCount = numPositions`,
+`hStep = stepSize`, `vCount = 1`). `scanMode` is deliberately not restored on import.
+
+**Capture order is mode-dependent** (2026-08-29): by hand it snakes up from the bottom-left
+as described above; under the rover it snakes down from the top-left. Cell indices are the
+same either way — only the order the cells are visited differs. See "Rover-driven C-scan
+raster".
 
 **Known limitation:** SAR and the 2D Map still treat the capture sequence as a single line.
 With `vCount = 1` that is exactly the old behaviour; with more rows their input is a

@@ -81,6 +81,7 @@ export default function Sidebar({
   bscanParams,
   onBscanParamsChange,
   onBscanAction,
+  roverScan,
   bscanScaleMode,
   onBscanScaleModeChange,
   bscanDisplayMode,
@@ -342,6 +343,10 @@ export default function Sidebar({
                   bgApplied={bgApplied}
                   onBgAppliedChange={onBgAppliedChange}
                   onScanAction={onBscanAction}
+                  roverConnected={roverConnected}
+                  roverStatus={roverStatus}
+                  sendRover={sendRover}
+                  roverScan={roverScan}
                   params={bscanParams}
                   onParamsChange={onBscanParamsChange}
                   scaleMode={bscanScaleMode}

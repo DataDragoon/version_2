@@ -111,3 +111,60 @@ export function buildCscanGrid(scanData, params) {
 
   return { cells, hCount: h, vCount: v, min, max, filled: cells.filter(Boolean).length };
 }
+
+// ── Rover raster ───────────────────────────────────────────────────────────
+//
+// Driven by the gantry rather than by hand, the natural origin is the TOP-LEFT
+// corner: the rover sweeps the top row left-to-right, drops one row, sweeps
+// back right-to-left, and so on downwards. That is the mirror image of the
+// hand-held order above, which starts bottom-left and climbs.
+//
+//   row 0 (iy = vCount-1)  ORIGIN ──►───►───►──┐   captured first
+//   row 1 (iy = vCount-2)  ┌──◄───◄───◄────────┘
+//   row 2 (iy = vCount-3)  └──►───►───►──┐
+//
+// Cell coordinates stay in the display's frame (iy = 0 is the bottom row) so
+// the plan view, the export and everything downstream are identical whichever
+// way the raster was driven. Only the capture ORDER differs.
+export function roverCellForIndex(index, hCount, vCount) {
+  const h = Math.max(1, hCount);
+  const v = Math.max(1, vCount);
+  const row = Math.floor(index / h);      // 0 = top row = the origin's row
+  const along = index % h;
+  return { ix: row % 2 === 0 ? along : h - 1 - along, iy: v - 1 - row };
+}
+
+// Capture order for whichever mode is driving the raster.
+export function orderedCellForIndex(index, hCount, vCount, scanMode) {
+  return scanMode === 'rover'
+    ? roverCellForIndex(index, hCount, vCount)
+    : cellForIndex(index, hCount);
+}
+
+// Rover-frame target of a grid cell, in mm.
+//
+// `origin` is where the rover has to stand for the grid's top-left corner, in
+// the rover's own frame (x grows right, y grows up). The grid extends right and
+// DOWNWARD from there, so a cell's y is below the origin by however many rows
+// it sits above the bottom of the grid. Steps are cm in the params and mm on
+// the rover, hence the tens.
+export function cellRoverTarget(ix, iy, params, origin) {
+  const v = Math.max(1, params.vCount);
+  return {
+    x_mm: origin.x + ix * params.hStep * 10,
+    y_mm: origin.y - (v - 1 - iy) * params.vStep * 10,
+  };
+}
+
+// The rectangle the rover has to reach, in its own frame. Used to check the
+// grid fits inside the soft limits before a single move is issued -- there are
+// no endstops, so finding out half way through is not an option.
+export function gridRoverExtent(params, origin) {
+  const stats = gridStats(params);
+  return {
+    xMin: origin.x,
+    xMax: origin.x + stats.width * 10,
+    yMin: origin.y - stats.height * 10,
+    yMax: origin.y,
+  };
+}

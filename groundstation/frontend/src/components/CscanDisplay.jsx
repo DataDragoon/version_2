@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState } from 'react';
-import { cellForIndex, buildCscanGrid } from '@/lib/cscanGrid';
+import { orderedCellForIndex, buildCscanGrid } from '@/lib/cscanGrid';
 
 const BG = '#000000';
 const EMPTY_FILL = '#0d0d0d';
@@ -63,7 +63,7 @@ function snakeOrderOf(cell, hCount) {
   return cell.iy * hCount + (cell.iy % 2 === 0 ? cell.ix : hCount - 1 - cell.ix) + 1;
 }
 
-function drawCscan(canvas, scanData, params, crosshair, selected, nextIndex, isLinear, scaleRange, pulse) {
+function drawCscan(canvas, scanData, params, crosshair, selected, nextIndex, isLinear, scaleRange, pulse, scanMode) {
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   const rect = canvas.getBoundingClientRect();
@@ -136,8 +136,8 @@ function drawCscan(canvas, scanData, params, crosshair, selected, nextIndex, isL
     ctx.beginPath();
     let started = false;
     for (let i = 0; i < total; i++) {
-      const { ix, iy } = cellForIndex(i, grid.hCount);
-      if (iy >= grid.vCount) break;
+      const { ix, iy } = orderedCellForIndex(i, grid.hCount, grid.vCount, scanMode);
+      if (iy >= grid.vCount || iy < 0) break;
       if (!grid.cells[iy * grid.hCount + ix]) continue;
       const r = cellRect(ix, iy, L);
       const cx = r.x + r.w / 2;
@@ -148,9 +148,10 @@ function drawCscan(canvas, scanData, params, crosshair, selected, nextIndex, isL
     ctx.setLineDash([]);
   }
 
-  // Start marker on the bottom-left cell
+  // Start marker on whichever corner the active raster begins from: bottom-left
+  // by hand, top-left under the rover (which snakes downwards instead).
   {
-    const r = cellRect(0, 0, L);
+    const r = cellRect(0, scanMode === 'rover' ? grid.vCount - 1 : 0, L);
     ctx.strokeStyle = '#4aff8a88';
     ctx.lineWidth = 1;
     ctx.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
@@ -164,8 +165,8 @@ function drawCscan(canvas, scanData, params, crosshair, selected, nextIndex, isL
 
   // Next cell to capture
   if (nextIndex != null && nextIndex < total) {
-    const { ix, iy } = cellForIndex(nextIndex, grid.hCount);
-    if (iy < grid.vCount) {
+    const { ix, iy } = orderedCellForIndex(nextIndex, grid.hCount, grid.vCount, scanMode);
+    if (iy < grid.vCount && iy >= 0) {
       const r = cellRect(ix, iy, L);
       ctx.strokeStyle = '#22d3ee';
       ctx.lineWidth = 2;
@@ -289,7 +290,7 @@ function drawCscan(canvas, scanData, params, crosshair, selected, nextIndex, isL
 
 export default function CscanDisplay({
   scanData, params, capturing, sfcwProgress, scaleMode, scaleRange,
-  nextIndex, selectedCell, onSelectCell,
+  nextIndex, selectedCell, onSelectCell, scanMode,
 }) {
   const canvasRef = useRef(null);
   const animRef = useRef(null);
@@ -302,12 +303,12 @@ export default function CscanDisplay({
       if (start === null) start = t;
       // Breathing highlight on the next target cell, only while a capture is pending.
       const pulse = capturing ? 0.5 + 0.5 * Math.sin((t - start) / 180) : 0;
-      drawCscan(canvasRef.current, scanData, params, crosshair, selectedCell, nextIndex, isLinear, scaleRange, pulse);
+      drawCscan(canvasRef.current, scanData, params, crosshair, selectedCell, nextIndex, isLinear, scaleRange, pulse, scanMode);
       animRef.current = requestAnimationFrame(render);
     };
     animRef.current = requestAnimationFrame(render);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [scanData, params, crosshair, selectedCell, nextIndex, isLinear, scaleRange, capturing]);
+  }, [scanData, params, crosshair, selectedCell, nextIndex, isLinear, scaleRange, capturing, scanMode]);
 
   const pick = (e) => {
     const rect = e.currentTarget.getBoundingClientRect();

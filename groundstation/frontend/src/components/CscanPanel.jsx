@@ -1,17 +1,29 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import { Section, InfoTile } from './Sidebar';
-import { cellForIndex, gridStats, buildCscanGrid } from '@/lib/cscanGrid';
+import { orderedCellForIndex, gridStats, buildCscanGrid, gridRoverExtent } from '@/lib/cscanGrid';
 
 const LIDAR_AVG_WINDOW = 20;
+
+// What the automation is doing right now, in the operator's terms.
+const PHASE_TEXT = {
+  homing: 'Driving to the grid origin',
+  moving: 'Moving to the next cell',
+  settling: 'Settling',
+  capturing: 'Sweeping',
+};
 
 export default function CscanPanel({
   isConnected, sdrConnected, sfcwRunning, scanData, scanCapturing, bgApplied, onBgAppliedChange,
   onScanAction, params, onParamsChange, scaleMode, onScaleModeChange, displayMode, onDisplayModeChange,
   scaleRange, onScaleRangeChange, lidarMm, lidarOffsetMm, bgRef, bgModel, bgCapturing,
   onCaptureBg, onLoadBgModel, onClearBg,
+  roverConnected, roverStatus, sendRover, roverScan,
 }) {
-  const { hStep, hCount, vStep, vCount, maxDepth, gateStart, gateEnd, metric } = params;
+  const {
+    hStep, hCount, vStep, vCount, maxDepth, gateStart, gateEnd, metric,
+    scanMode, roverOriginRightMm, roverOriginBelowMm, roverSettleMs,
+  } = params;
 
   const update = (key, value) => {
     onParamsChange({ ...params, [key]: value });
@@ -65,12 +77,42 @@ export default function CscanPanel({
   const stats = gridStats(params);
   const gridFull = captured >= stats.total;
 
-  // Where the next capture lands on the snake path.
-  const next = gridFull ? null : cellForIndex(captured, hCount);
+  // ── Rover mode ────────────────────────────────────────────────────────
+  const roverMode = scanMode === 'rover';
+  const roverLinked = roverConnected && !!roverStatus?.board_connected;
+  const roverEstopped = !!roverStatus?.estop;
+  const scanning = !!roverScan?.active;
+  // In rover mode the session is the raster, so the button tracks the
+  // automation rather than the bare sweep.
+  const sessionActive = roverMode ? (scanning || sfcwRunning) : sfcwRunning;
+
+  // The rover position the grid's top-left corner sits at, given where the
+  // operator says the head is standing relative to it. Shown before the scan
+  // starts so a wrong entry is visible against the soft limits, not discovered
+  // by driving into the end of a rail that has no endstop.
+  const originPreview = (roverMode && roverStatus)
+    ? {
+        x: roverStatus.x_mm - (Number(roverOriginRightMm) || 0),
+        y: roverStatus.y_mm + (Number(roverOriginBelowMm) || 0),
+      }
+    : null;
+  const extent = originPreview ? gridRoverExtent(params, originPreview) : null;
+  const cfg = roverStatus?.config;
+  const fitsLimits = !(extent && cfg && cfg.limits_enabled) || (
+    extent.xMin >= cfg.x_min_mm && extent.xMax <= cfg.x_max_mm
+    && extent.yMin >= cfg.y_min_mm && extent.yMax <= cfg.y_max_mm
+  );
+
+  // Where the next capture lands. The two modes walk the same grid in opposite
+  // orders — bottom-left upwards by hand, top-left downwards under the rover.
+  const nextIndex = scanning ? roverScan.index : captured;
+  const next = nextIndex >= stats.total ? null : orderedCellForIndex(nextIndex, hCount, vCount, scanMode);
   const nextLabel = next
     ? `col ${next.ix + 1}/${hCount}, row ${next.iy + 1}/${vCount}  ·  (${(next.ix * hStep).toFixed(1)}, ${(next.iy * vStep).toFixed(1)}) cm`
     : 'Grid complete';
-  const rowDir = next ? (next.iy % 2 === 0 ? 'left → right' : 'right → left') : null;
+  const rowDir = next
+    ? ((roverMode ? (vCount - 1 - next.iy) : next.iy) % 2 === 0 ? 'left → right' : 'right → left')
+    : null;
 
   // Handing over from dynamic to manual should not jump the colours, so the
   // sliders start wherever the dynamic limits currently sit.
@@ -80,44 +122,41 @@ export default function CscanPanel({
     return { min: Math.round(grid.min), max: Math.max(Math.round(grid.max), Math.round(grid.min) + 1) };
   };
 
+  const startDisabled = !canActivate || (roverMode && (!roverLinked || roverEstopped || !fitsLimits));
+
   return (
     <>
-      {/* Session control — starts/stops continuous sweep */}
-      <Section label="Session">
-        <button
-          onClick={() => onScanAction(sfcwRunning ? 'stop_session' : 'start_session')}
-          disabled={!canActivate}
-          className={cn(
-            'group relative flex items-center gap-3 w-full p-4 rounded-2xl border',
-            'transition-all duration-500 cursor-pointer',
-            'disabled:cursor-not-allowed disabled:opacity-40',
-            sfcwRunning
-              ? 'bg-orange-500/8 border-orange-500/30 hover:border-orange-500/50'
-              : canActivate
-                ? 'bg-[#6B9BD2]/8 border-[#6B9BD2]/30 hover:border-[#6B9BD2]/50'
-                : 'bg-[#0a0a0a]/50 border-white/5',
-          )}
-        >
-          <div className={cn(
-            'flex items-center justify-center w-10 h-10 rounded-xl shrink-0 transition-all duration-500',
-            sfcwRunning ? 'bg-orange-500/15' : canActivate ? 'bg-[#6B9BD2]/15' : 'bg-white/5',
-          )}>
-            {sfcwRunning ? (
-              <div className="w-3 h-3 rounded-sm bg-orange-400" />
-            ) : (
-              <div className="w-3 h-3 rounded-full border-2 border-current text-[#6B9BD2]" />
-            )}
-          </div>
-          <div className="flex flex-col gap-0.5 text-left min-w-0">
-            <span className="text-sm font-semibold text-white">
-              {sfcwRunning ? 'Stop Session' : 'Start Session'}
-            </span>
-            <span className="text-xs text-[#555555] leading-relaxed">
-              {sfcwRunning ? 'Sweeping continuously...' :
-               !sdrConnected ? 'SDR not connected' : 'Start continuous sweep'}
-            </span>
-          </div>
-        </button>
+      {/* Who drives the raster. Only the capture ORDER differs between the two —
+          the sweep, the standoff provenance and the background subtraction are
+          identical, so a grid captured either way is the same record. */}
+      <Section label="Scan Mode">
+        <div className="flex gap-2">
+          {[
+            { id: 'manual', label: 'Manual', hint: 'Place the head by hand' },
+            { id: 'rover', label: 'Rover', hint: 'Gantry rasters the grid' },
+          ].map((m) => {
+            const disabled = (m.id === 'rover' && !roverLinked) || scanning;
+            return (
+              <button
+                key={m.id}
+                onClick={() => !disabled && update('scanMode', m.id)}
+                disabled={disabled}
+                className={cn(
+                  'flex-1 flex flex-col gap-0.5 px-3 py-2.5 rounded-lg border text-left transition-all',
+                  disabled ? 'bg-white/2 border-white/5 text-white/20 cursor-not-allowed'
+                    : scanMode === m.id
+                      ? 'bg-[#4aff8a]/10 border-[#4aff8a]/30 text-[#4aff8a] cursor-pointer'
+                      : 'bg-white/5 border-white/10 text-white/50 hover:text-white/80 cursor-pointer',
+                )}
+              >
+                <span className="text-xs font-semibold">{m.label}</span>
+                <span className="text-[9px] leading-tight opacity-70">
+                  {m.id === 'rover' && !roverLinked ? 'Controller not connected' : m.hint}
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </Section>
 
       {/* Scan grid — describes the rectangle to raster before any capture starts */}
@@ -172,12 +211,205 @@ export default function CscanPanel({
         </div>
 
         <div className="px-2 py-1.5 rounded-lg bg-[#0a0a0a]/60 border border-white/5 text-[9px] text-white/40 leading-relaxed">
-          Raster starts bottom-left and snakes: row 1 left → right, row 2 right → left, and so on.
+          {roverMode
+            ? 'Origin is the top-left cell. The rover sweeps the top row left → right, drops one row, sweeps back, and snakes down.'
+            : 'Raster starts bottom-left and snakes: row 1 left → right, row 2 right → left, and so on.'}
         </div>
+
+        {/* Where the head is standing relative to the grid origin. The rover
+            drives left and up by exactly this to reach the origin, in one move
+            on both axes, before the raster starts. */}
+        {roverMode && (
+          <>
+            <div className="px-1 pt-2 text-[9px] font-medium uppercase tracking-wider text-[#555555]">
+              Current position from origin
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <EditableField
+                label="Right of origin"
+                value={roverOriginRightMm}
+                unit="mm"
+                onChange={(v) => update('roverOriginRightMm', v)}
+                min={-100000}
+                max={100000}
+              />
+              <EditableField
+                label="Below origin"
+                value={roverOriginBelowMm}
+                unit="mm"
+                onChange={(v) => update('roverOriginBelowMm', v)}
+                min={-100000}
+                max={100000}
+              />
+            </div>
+            <EditableField
+              label="Settle before sweep"
+              value={roverSettleMs}
+              unit="ms"
+              onChange={(v) => update('roverSettleMs', Math.round(v))}
+              min={0}
+              max={10000}
+            />
+
+            {originPreview && (
+              <div className="grid grid-cols-2 gap-2">
+                <InfoTile label="Origin at" value={`${originPreview.x.toFixed(0)}, ${originPreview.y.toFixed(0)} mm`} />
+                <InfoTile
+                  label="Rover span"
+                  value={extent ? `${(extent.xMax - extent.xMin).toFixed(0)} × ${(extent.yMax - extent.yMin).toFixed(0)} mm` : '—'}
+                />
+              </div>
+            )}
+            {extent && (
+              <div className={cn(
+                'px-2 py-1.5 rounded-lg border text-[9px] leading-relaxed',
+                fitsLimits
+                  ? 'bg-[#0a0a0a]/60 border-white/5 text-white/40'
+                  : 'bg-red-500/5 border-red-500/30 text-red-400',
+              )}>
+                Rover travels X {extent.xMin.toFixed(0)} → {extent.xMax.toFixed(0)} mm,
+                {' '}Y {extent.yMax.toFixed(0)} → {extent.yMin.toFixed(0)} mm.
+                {!fitsLimits && ' That is outside the soft limits — there are no endstops, so the scan is refused rather than clamped.'}
+              </div>
+            )}
+            <div className="px-2 text-[9px] text-white/40 leading-relaxed">
+              Measure where the head is now relative to the grid's top-left corner and
+              enter it here. Nothing else knows where the grid is — this is what the
+              rover drives back to before the first cell. Negative values are fine if
+              the head is left of, or above, the origin.
+            </div>
+          </>
+        )}
       </Section>
 
-      {/* Capture controls — only available when session is running */}
+      {/* Session control — a continuous sweep by hand, the whole raster by rover */}
+      <Section label="Session">
+        <button
+          onClick={() => onScanAction(sessionActive ? 'stop_session' : 'start_session')}
+          disabled={sessionActive ? false : startDisabled}
+          className={cn(
+            'group relative flex items-center gap-3 w-full p-4 rounded-2xl border',
+            'transition-all duration-500 cursor-pointer',
+            'disabled:cursor-not-allowed disabled:opacity-40',
+            sessionActive
+              ? roverMode
+                ? 'bg-red-500/8 border-red-500/30 hover:border-red-500/50'
+                : 'bg-orange-500/8 border-orange-500/30 hover:border-orange-500/50'
+              : !startDisabled
+                ? 'bg-[#6B9BD2]/8 border-[#6B9BD2]/30 hover:border-[#6B9BD2]/50'
+                : 'bg-[#0a0a0a]/50 border-white/5',
+          )}
+        >
+          <div className={cn(
+            'flex items-center justify-center w-10 h-10 rounded-xl shrink-0 transition-all duration-500',
+            sessionActive ? (roverMode ? 'bg-red-500/15' : 'bg-orange-500/15')
+              : !startDisabled ? 'bg-[#6B9BD2]/15' : 'bg-white/5',
+          )}>
+            {sessionActive ? (
+              <div className={cn('w-3 h-3 rounded-sm', roverMode ? 'bg-red-400' : 'bg-orange-400')} />
+            ) : (
+              <div className="w-3 h-3 rounded-full border-2 border-current text-[#6B9BD2]" />
+            )}
+          </div>
+          <div className="flex flex-col gap-0.5 text-left min-w-0">
+            <span className="text-sm font-semibold text-white">
+              {sessionActive
+                ? (roverMode ? 'Stop Scan · E-Stop' : 'Stop Session')
+                : (roverMode ? 'Start Rover Scan' : 'Start Session')}
+            </span>
+            <span className="text-xs text-[#555555] leading-relaxed">
+              {sessionActive
+                ? (roverMode
+                    ? (scanning
+                        ? `${PHASE_TEXT[roverScan.phase] || 'Scanning'} — cell ${roverScan.index + 1}/${roverScan.total}`
+                        : 'Sweeping — stop latches the E-stop')
+                    : 'Sweeping continuously...')
+                : !sdrConnected ? 'SDR not connected'
+                : roverMode
+                  ? !roverLinked ? 'Rover controller not connected'
+                    : roverEstopped ? 'E-stop latched — clear it first'
+                    : !fitsLimits ? 'Grid does not fit inside the soft limits'
+                    : gridFull ? 'Grid full — start a new scan'
+                    : `Raster ${stats.total - captured} cell${stats.total - captured === 1 ? '' : 's'} automatically`
+                  : 'Start continuous sweep'}
+            </span>
+          </div>
+        </button>
+
+        {/* Progress along the raster, and whatever ended it. */}
+        {roverMode && scanning && (
+          <>
+            <div className="relative h-1.5 rounded-full bg-white/5 overflow-hidden">
+              <div
+                className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-[#4aff8a] to-[#22d3ee] transition-all duration-300"
+                style={{ width: `${Math.min(100, (roverScan.index / Math.max(1, roverScan.total)) * 100)}%` }}
+              />
+            </div>
+            {roverScan.target && (
+              <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-[#4aff8a]/5 border border-[#4aff8a]/20">
+                <span className="text-[9px] font-medium uppercase tracking-wider text-[#555555]">Target</span>
+                <span className="text-[10px] font-mono text-[#4aff8a]">
+                  {roverScan.target.x_mm.toFixed(1)}, {roverScan.target.y_mm.toFixed(1)} mm
+                </span>
+              </div>
+            )}
+          </>
+        )}
+        {roverMode && !scanning && roverScan?.error && (
+          <div className="flex items-start gap-2 p-3 rounded-xl border border-red-500/30 bg-red-500/5">
+            <span className="text-[10px] leading-relaxed text-red-400">{roverScan.error}</span>
+          </div>
+        )}
+        {roverMode && !scanning && !roverScan?.error && roverScan?.message && (
+          <div className="px-2 text-[10px] leading-relaxed text-[#4aff8a]/70">{roverScan.message}</div>
+        )}
+        {roverMode && roverEstopped && (
+          <button
+            onClick={() => sendRover?.({ cmd: 'rover_clear_estop' })}
+            className="w-full px-3 py-2 rounded-lg text-xs font-semibold border border-amber-500/40 bg-amber-500/10 text-amber-400 hover:bg-amber-500/15 transition-all"
+          >
+            Clear E-Stop
+          </button>
+        )}
+        {roverMode && roverEstopped && (
+          <div className="px-2 text-[9px] text-amber-400/60 leading-relaxed">
+            Cutting the step train at speed is where a stepper loses steps, so the
+            position is no longer trustworthy — re-declare it in the Rover panel
+            before scanning again.
+          </div>
+        )}
+      </Section>
+
+      {/* Capture controls — by hand when the operator drives, automatic otherwise */}
       <Section label="Capture">
+        {roverMode ? (
+          <div className={cn(
+            'flex items-center gap-3 w-full p-4 rounded-2xl border',
+            scanning ? 'bg-[#4aff8a]/8 border-[#4aff8a]/30' : 'bg-[#0a0a0a]/50 border-white/5',
+          )}>
+            <div className={cn(
+              'flex items-center justify-center w-10 h-10 rounded-xl shrink-0',
+              scanning ? 'bg-[#4aff8a]/15' : 'bg-white/5',
+            )}>
+              {scanning ? (
+                <div className="w-3 h-3 rounded-full border-2 border-[#4aff8a] border-t-transparent animate-spin" />
+              ) : (
+                <div className="w-3 h-3 rounded-full border-2 border-current text-[#555555]" />
+              )}
+            </div>
+            <div className="flex flex-col gap-0.5 text-left min-w-0">
+              <span className="text-sm font-semibold text-white">
+                {scanning ? (PHASE_TEXT[roverScan.phase] || 'Scanning')
+                  : gridFull ? 'Grid Complete' : 'Captured by the rover'}
+              </span>
+              <span className="text-xs text-[#555555] leading-relaxed">
+                {scanning ? nextLabel
+                  : gridFull ? `All ${stats.total} cells captured`
+                  : `${captured} of ${stats.total} cells — start the scan to fill the rest`}
+              </span>
+            </div>
+          </div>
+        ) : (
         <button
           onClick={() => onScanAction('add_scan')}
           disabled={!sfcwRunning || scanCapturing || gridFull}
@@ -213,6 +445,7 @@ export default function CscanPanel({
             </span>
           </div>
         </button>
+        )}
 
         {!gridFull && rowDir && (
           <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-[#22d3ee]/5 border border-[#22d3ee]/20">
@@ -233,16 +466,22 @@ export default function CscanPanel({
         <div className="grid grid-cols-2 gap-2">
           <button
             onClick={() => onScanAction('new')}
-            className="px-3 py-2 rounded-lg text-xs font-medium bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
+            disabled={scanning}
+            className={cn(
+              'px-3 py-2 rounded-lg text-xs font-medium transition-all',
+              scanning
+                ? 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
+                : 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white',
+            )}
           >
             New Scan
           </button>
           <button
             onClick={() => onScanAction('undo')}
-            disabled={captured === 0}
+            disabled={captured === 0 || scanning}
             className={cn(
               'px-3 py-2 rounded-lg text-xs font-medium transition-all',
-              captured > 0
+              captured > 0 && !scanning
                 ? 'bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
                 : 'bg-white/2 border border-white/5 text-white/20 cursor-not-allowed'
             )}

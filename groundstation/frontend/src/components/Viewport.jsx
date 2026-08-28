@@ -14,6 +14,14 @@ import BgModelDisplay from './BgModelDisplay';
 import ImagingDisplay from './ImagingDisplay';
 import RoverDisplay from './RoverDisplay';
 
+// What the automated raster is doing, for the badge over the plan view.
+const ROVER_PHASE_TEXT = {
+  homing: 'Driving to origin',
+  moving: 'Moving',
+  settling: 'Settling',
+  capturing: 'Sweeping',
+};
+
 export default function Viewport({
   activePanel,
   isConnected,
@@ -38,6 +46,7 @@ export default function Viewport({
   bscanAlignShifts,
   bscanParams,
   bscanCapturing,
+  roverScan,
   bscanScaleMode,
   bscanDisplayMode,
   bscanScaleRange,
@@ -388,6 +397,25 @@ export default function Viewport({
                   <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#22d3ee]/4 blur-[80px] rounded-full" />
                 </div>
               )}
+              {/* The gantry is moving on its own — say what it is doing, where,
+                  and how far along it is, without making the operator look
+                  away from the image. */}
+              {roverScan?.active && (
+                <div className="absolute top-2 left-2 z-10 flex flex-col gap-1 px-3 py-2 rounded-xl border border-[#4aff8a]/30 bg-black/80 backdrop-blur-sm pointer-events-none">
+                  <div className="flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-[#4aff8a] animate-pulse" />
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-[#4aff8a]">
+                      {ROVER_PHASE_TEXT[roverScan.phase] || 'Rover scan'}
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono text-white/60">
+                    cell {roverScan.index + 1} / {roverScan.total}
+                    {roverScan.target
+                      ? ` · ${roverScan.target.x_mm.toFixed(0)}, ${roverScan.target.y_mm.toFixed(0)} mm`
+                      : ''}
+                  </span>
+                </div>
+              )}
               <CscanDisplay
                 scanData={bscanData}
                 params={bscanParams}
@@ -395,9 +423,10 @@ export default function Viewport({
                 sfcwProgress={sfcwProgress}
                 scaleMode={bscanScaleMode}
                 scaleRange={bscanScaleRange}
-                nextIndex={bscanData.length}
+                nextIndex={roverScan?.active ? roverScan.index : bscanData.length}
                 selectedCell={activeCell}
                 onSelectCell={setSelectedCell}
+                scanMode={bscanParams.scanMode}
               />
             </div>
           </div>
