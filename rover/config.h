@@ -123,6 +123,22 @@
 // asymptotically -- that is what guarantees it lands on the exact step.
 #define MIN_SPEED_STEPS_S 20.0f
 
+// A static IP sidesteps DHCP entirely. Uncomment and set these if the board ever
+// associates but fails to get a lease -- the classic symptom is that it works
+// until it is power-cycled and then only comes back after a ROUTER restart,
+// because the AP is still holding a stale lease for its MAC. Pick an address
+// outside the router's DHCP pool.
+//
+// #define USE_STATIC_IP
+#define STATIC_IP      192, 168, 1,  77
+#define STATIC_GATEWAY 192, 168, 1,   1
+#define STATIC_SUBNET  255, 255, 255, 0
+#define STATIC_DNS     192, 168, 1,   1
+
+// How long to wait for a DHCP lease before treating the attempt as failed and
+// starting over. Associating is not the same as being on the network.
+#define DHCP_TIMEOUT_MS 12000
+
 // If the WebSocket stays down this long while WiFi is up, the client is assumed
 // wedged and is torn down and restarted. Without this, a rover_server restart on
 // the Pi -- which happens routinely during development -- can leave the board

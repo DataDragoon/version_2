@@ -506,6 +506,18 @@ axis creeping while de-energised would be silently wrong with no way to recover 
   `limit` -- nothing told the Pi the target had been unreachable, and `ideal_mm` stayed at
   892. Fixed by clamping in `move_to_mm` on the Pi, before the ideal is updated, so the
   ideal can never point outside the envelope. The board still clamps as the backstop.
+- **A power cycle could leave the board permanently off the network, and only a
+  ROUTER restart fixed it.** Cause: `ensureNetwork()` tested `WiFi.status() ==
+  WL_CONNECTED` and returned early on that alone. Associating and being on the network
+  are different states -- an AP still holding a stale DHCP lease for the board's MAC
+  (which is exactly what a power cut leaves behind) will associate it happily and then
+  never answer its DHCP request, so `status()` reads `WL_CONNECTED` forever with
+  `localIP() == 0.0.0.0`. Every retry path returned early and `ensureSocket()` kept
+  restarting a client that could not possibly connect. Restarting the router cleared the
+  lease, which is what made the symptom look like a router problem. There is now a
+  `linkReady()` (associated **and** holding an address) that all the retry logic tests,
+  and a failed DHCP attempt explicitly disconnects so the next one starts clean.
+  `USE_STATIC_IP` in `config.h` sidesteps DHCP altogether if it ever recurs.
 - **The board does not always reconnect by itself.** Restarting `rover_server.py` left it
   with healthy WiFi (still pingable, still associated) and a socket that never came back,
   needing a power cycle. `ensureSocket()` now tears down and restarts the client after

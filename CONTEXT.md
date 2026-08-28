@@ -218,6 +218,13 @@ live position all depend on it.
 WiFi credentials are in `rover/secrets.h`, gitignored; `rover/secrets.example.h` is the
 committed template.
 
+The board's radio MAC is **04:CF:4B:B5:15:03** (Espressif — the R4's WiFi is an ESP32-S3),
+reserved at **192.168.1.11** on the router alongside the Pi's own reservation. The firmware
+prints its MAC at boot in both byte orders, since this library family fills the array
+backwards. A reservation makes the address deterministic but does **not** guarantee the DHCP
+exchange itself succeeds — `linkReady()` in the firmware is what makes a failed lease
+recoverable, and `USE_STATIC_IP` in `config.h` skips DHCP entirely if it is ever needed.
+
 Firmware layout: `config.h` (pins, mechanism, defaults), `motion_core.h` (ramp, limits,
 watchdog — Arduino-free and unit-tested), `protocol_core.h` (JSON — likewise), `rover.ino`
 (pins, timer, sockets, flash persistence). `rover/test/build_check.sh` runs the native

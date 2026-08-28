@@ -604,11 +604,47 @@ void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
 
 // ── network bring-up ────────────────────────────────────────────────────────
 
+// Prints the radio's MAC in both byte orders, because this family of libraries
+// fills the array backwards (the Arduino examples print index 5 down to 0) and
+// getting it wrong hands you a MAC that will never match a router reservation.
+// Whichever line matches what the router shows is the real one.
+static void printMacAddress() {
+    uint8_t mac[6] = {0, 0, 0, 0, 0, 0};
+    WiFi.macAddress(mac);
+    char fwd[18], rev[18];
+    snprintf(fwd, sizeof(fwd), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    snprintf(rev, sizeof(rev), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
+    Serial.print("[wifi] MAC (reversed, the usual order for this library): ");
+    Serial.println(rev);
+    Serial.print("[wifi] MAC (as stored):                                  ");
+    Serial.println(fwd);
+}
+
+// Associated AND actually on the network. These are different states, and
+// conflating them is what let the board wedge: an AP holding a stale lease for
+// this MAC (after a power cycle, say) will happily associate it and then never
+// answer its DHCP request, leaving WiFi.status() == WL_CONNECTED forever with
+// no address. Anything that only tests status() will never retry.
+static bool linkReady() {
+    return WiFi.status() == WL_CONNECTED &&
+           WiFi.localIP() != IPAddress(0, 0, 0, 0);
+}
+
 static bool connectWiFi(uint32_t timeoutMs) {
     Serial.print("[wifi] connecting to ");
     Serial.println(WIFI_SSID);
     WiFi.disconnect();
     delay(200);
+
+#ifdef USE_STATIC_IP
+    // Skips DHCP entirely, which is the surest cure for a stale lease.
+    WiFi.config(IPAddress(STATIC_IP), IPAddress(STATIC_DNS),
+                IPAddress(STATIC_GATEWAY), IPAddress(STATIC_SUBNET));
+    Serial.println("[wifi] using a static address");
+#endif
+
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
     const uint32_t start = millis();
@@ -616,22 +652,29 @@ static bool connectWiFi(uint32_t timeoutMs) {
         delay(250);
     }
     if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("[wifi] association failed");
+        Serial.print("[wifi] association failed, status=");
+        Serial.println(WiFi.status());
         return false;
     }
-    // WL_CONNECTED alone is not enough; DHCP may not have finished.
+
     const uint32_t ipStart = millis();
-    while (WiFi.localIP() == IPAddress(0, 0, 0, 0) && millis() - ipStart < 10000) {
+    while (WiFi.localIP() == IPAddress(0, 0, 0, 0) &&
+           millis() - ipStart < DHCP_TIMEOUT_MS) {
         delay(100);
     }
     if (WiFi.localIP() == IPAddress(0, 0, 0, 0)) {
-        Serial.println("[wifi] no DHCP lease");
+        // Associated but no address. Drop the association rather than sitting
+        // in this half-connected state, so the next attempt starts clean.
+        Serial.println("[wifi] associated but got NO DHCP LEASE -- disconnecting "
+                       "so the next attempt starts fresh");
+        WiFi.disconnect();
         return false;
     }
     Serial.print("[wifi] ip ");
     Serial.print(WiFi.localIP());
     Serial.print("  rssi ");
     Serial.println(WiFi.RSSI());
+    printMacAddress();
     return true;
 }
 
@@ -641,19 +684,38 @@ static bool connectWiFi(uint32_t timeoutMs) {
 static void ensureNetwork() {
     static uint32_t nextAttempt = 0;
     static uint32_t backoff = 2000;
+    static uint16_t failures = 0;
 
-    if (WiFi.status() == WL_CONNECTED) {
+    // linkReady(), not status(): see the note above it. Testing status() alone
+    // is what left the board unable to recover from a power cycle -- it would
+    // sit associated with no IP and this function would return here every time.
+    if (linkReady()) {
         backoff = 2000;
+        failures = 0;
         return;
     }
     if (millis() < nextAttempt) return;
 
-    Serial.println("[wifi] link down, retrying");
+    Serial.print("[wifi] link not ready (status=");
+    Serial.print(WiFi.status());
+    Serial.print(" ip=");
+    Serial.print(WiFi.localIP());
+    Serial.print(") attempt ");
+    Serial.println(failures + 1);
+
     if (connectWiFi(15000)) {
         backoff = 2000;
+        failures = 0;
         webSocket.begin(PI_HOST, PI_PORT, "/");
     } else {
-        backoff = (backoff < 30000) ? backoff * 2 : 30000;
+        ++failures;
+        // Back off, but never so far that the rover is unusable for minutes.
+        backoff = (backoff < 20000) ? backoff * 2 : 20000;
+        if (failures == 5) {
+            Serial.println("[wifi] five failed attempts -- if this only clears "
+                           "when the ROUTER is restarted, the AP is holding a "
+                           "stale lease: enable USE_STATIC_IP in config.h");
+        }
     }
     nextAttempt = millis() + backoff;
 }
@@ -670,7 +732,7 @@ static void ensureSocket() {
         lastLinkUpMs = now;
         return;
     }
-    if (WiFi.status() != WL_CONNECTED) return;      // ensureNetwork owns that case
+    if (!linkReady()) return;                       // ensureNetwork owns that case
     if (now - lastLinkUpMs < WS_RECONNECT_FORCE_MS) return;
     Serial.println("[ws] socket down too long -- restarting the client");
     webSocket.disconnect();
