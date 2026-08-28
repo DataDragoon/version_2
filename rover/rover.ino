@@ -658,6 +658,26 @@ static void ensureNetwork() {
     nextAttempt = millis() + backoff;
 }
 
+// Last resort for a socket that will not come back on its own. The library
+// reconnects by itself in the normal case; this covers the case where it does
+// not -- notably when the far end (rover_server.py) restarts, which happens
+// routinely and would otherwise strand the board with healthy WiFi and a dead
+// link until someone power-cycled it.
+static void ensureSocket() {
+    static uint32_t lastLinkUpMs = 0;
+    const uint32_t now = millis();
+    if (linkUp) {
+        lastLinkUpMs = now;
+        return;
+    }
+    if (WiFi.status() != WL_CONNECTED) return;      // ensureNetwork owns that case
+    if (now - lastLinkUpMs < WS_RECONNECT_FORCE_MS) return;
+    Serial.println("[ws] socket down too long -- restarting the client");
+    webSocket.disconnect();
+    webSocket.begin(PI_HOST, PI_PORT, "/");
+    lastLinkUpMs = now;
+}
+
 // ── timer bring-up ──────────────────────────────────────────────────────────
 
 static bool startStepTimer() {
@@ -750,6 +770,7 @@ void loop() {
     // is allowed to block for milliseconds without affecting a single step.
     ensureNetwork();
     webSocket.loop();
+    ensureSocket();
 
     dispatchQueued();
 

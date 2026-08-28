@@ -117,6 +117,13 @@
 // asymptotically -- that is what guarantees it lands on the exact step.
 #define MIN_SPEED_STEPS_S 20.0f
 
+// If the WebSocket stays down this long while WiFi is up, the client is assumed
+// wedged and is torn down and restarted. Without this, a rover_server restart on
+// the Pi -- which happens routinely during development -- can leave the board
+// sitting there with a live WiFi link and a socket that never comes back, and
+// the only remedy is a power cycle.
+#define WS_RECONNECT_FORCE_MS 10000
+
 // ── Protocol / networking ───────────────────────────────────────────────────
 #define FIRMWARE_VERSION "2.0.0"
 #define STATUS_INTERVAL_MS 50        // 20 Hz position feedback
