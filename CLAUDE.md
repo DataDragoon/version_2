@@ -471,10 +471,14 @@ jog caps its speed at `sqrt(2*a*room)` and coasts onto the limit rather than hit
 now per-axis in mm and runtime-configurable; the panel shows the resulting stop distance.
 Defaults (vertical 1 m of travel, horizontal 4 m):
 
-| | steps/mm | max speed | jog speed | accel | stop dist max / jog |
-|---|---|---|---|---|---|
-| Y vertical, leadscrew | 200.0 exact | 25 mm/s | 5 mm/s | 100 mm/s^2 | 3.1 / 0.13 mm |
-| X horizontal, 66 mm wheels | 7.7166 | 150 mm/s | 20 mm/s | 500 mm/s^2 | 22.5 / 0.4 mm |
+| | steps/mm | max speed | jog speed | accel | stop dist max / jog | soft limits |
+|---|---|---|---|---|---|---|
+| Y vertical, leadscrew | 200.0 exact | 25 mm/s | 15 mm/s | 100 mm/s^2 | 3.1 / 1.1 mm | 150-850 mm |
+| X horizontal, 66 mm wheels | 7.7166 | 150 mm/s | 60 mm/s | 500 mm/s^2 | 22.5 / 3.6 mm | 0-3900 mm |
+
+Jog speeds were 5 and 20 mm/s until 2026-08-29 and felt sluggish next to a nudge, which
+runs at the much higher *max* speed (a 100 mm nudge reaches it; a 1 mm one does not). Use a
+nudge for fine placement and the jog for getting somewhere.
 
 E-stop is software, latched, and works during motion; nothing but `clear_estop` runs while
 it is latched. Clearing it marks the position invalid, because cutting the step train at
@@ -485,6 +489,30 @@ visibilitychange, since the dead-man costs up to half a second of unwanted trave
 
 Idle-disabling the drivers is deliberately NOT done: with no endstop and no encoder, an
 axis creeping while de-energised would be silently wrong with no way to recover it.
+
+### Verified on the rig, 2026-08-29 (first bring-up of the rewrite)
+
+- **Directions.** Y was correct as shipped; **X was reversed**, so `H_DIR_INVERT` is now
+  `true` as well. Both flags were inferred from how the *old* firmware behaved and only one
+  survived contact with the rig -- re-check them after any rewiring, by nudging 1 mm and
+  watching, not by reasoning.
+- **Magnitudes were right first time**, so no wheel calibration was needed: the loaded
+  rolling diameter is close enough to the 66.0 mm measured with calipers to be within
+  measurement error over the distances tried.
+- **A move clamped by a soft limit used to leave the ideal position stranded.** Reported
+  from the rig: sitting at 792 with the limit at 850, a +100 nudge correctly stopped at 850,
+  but the following -100 went to 792 instead of 750. Cause: the *board* clamps the target
+  inside `moveTo()`, so the move then completes normally and reports `completed`, never
+  `limit` -- nothing told the Pi the target had been unreachable, and `ideal_mm` stayed at
+  892. Fixed by clamping in `move_to_mm` on the Pi, before the ideal is updated, so the
+  ideal can never point outside the envelope. The board still clamps as the backstop.
+- **The board does not always reconnect by itself.** Restarting `rover_server.py` left it
+  with healthy WiFi (still pingable, still associated) and a socket that never came back,
+  needing a power cycle. `ensureSocket()` now tears down and restarts the client after
+  `WS_RECONNECT_FORCE_MS` (10 s) of downtime while WiFi is up.
+- **Status arrives at ~11 Hz, not the 20 Hz the firmware aims for.** Harmless -- it is
+  display smoothness, not control -- but unexplained. Suspect WiFi latency in the R4's
+  socket stack rather than the loop, since the loop does almost nothing.
 
 ### Calibration
 

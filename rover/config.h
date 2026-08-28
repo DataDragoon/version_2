@@ -59,20 +59,26 @@
 // vertical sense is flipped here and the horizontal one is not. Previously this
 // lived on the Pi as invert_x/invert_y; it belongs here, so that step counts on
 // the wire mean the same thing to everyone.
+// Both verified on the rig 2026-08-29 by nudging each axis and watching the
+// head. Y was correct as shipped; X was reversed and is now inverted too.
 #define V_DIR_INVERT true
-#define H_DIR_INVERT false
+#define H_DIR_INVERT true
 
 // ── Motion defaults, in mm ──────────────────────────────────────────────────
 // Chosen against the real travel (vertical 1 m, horizontal 4 m) so that the
 // stop distance stays small next to a ~100 mm scan span. Stop distance is
-// v^2/(2a): vertical 3.1 mm at full speed and 0.13 mm at jog speed, horizontal
-// 22.5 mm and 0.4 mm.
+// v^2/(2a): vertical 3.1 mm at full speed and 1.1 mm at jog speed, horizontal
+// 22.5 mm and 3.6 mm.
+//
+// Jog speeds were raised from 5/20 on 2026-08-29 -- held keys felt sluggish next
+// to a nudge, which runs at the much higher max speed. Use a nudge for fine
+// placement; the jog is for getting somewhere.
 #define V_MAX_SPEED_MM_S   25.0f
-#define V_JOG_SPEED_MM_S    5.0f
+#define V_JOG_SPEED_MM_S   15.0f
 #define V_ACCEL_MM_S2     100.0f
 
 #define H_MAX_SPEED_MM_S  150.0f
-#define H_JOG_SPEED_MM_S   20.0f
+#define H_JOG_SPEED_MM_S   60.0f
 #define H_ACCEL_MM_S2     500.0f
 
 // ── Soft limits, in mm ──────────────────────────────────────────────────────
@@ -80,8 +86,8 @@
 // between a jog and the end of the rail. They are enforced here as well as on
 // the Pi deliberately: the Pi can crash or lose its link, the board cannot.
 // Defaults keep a buffer inside the true mechanical travel.
-#define V_MIN_MM   0.0f
-#define V_MAX_MM 900.0f      // 1 m of travel, 100 mm of headroom
+#define V_MIN_MM 150.0f      // set from the rig's usable travel, 2026-08-29
+#define V_MAX_MM 850.0f
 #define H_MIN_MM   0.0f
 #define H_MAX_MM 3900.0f     // 4 m of travel, 100 mm of headroom
 

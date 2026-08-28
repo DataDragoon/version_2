@@ -192,11 +192,13 @@ axis, so standoff is still set by hand and measured by the LiDAR.
 
 | axis | shield sockets | mechanism | resolution | travel | max / jog speed |
 |---|---|---|---|---|---|
-| **Y** vertical | X | leadscrew, 2 mm × 4-start = 8 mm/rev | **200.0 steps/mm** exact (5 µm) | 1 m | 25 / 5 mm/s |
-| **X** horizontal | Y + Z + A (three ganged) | 66 mm drive wheels, rolling | **7.7166 steps/mm** (130 µm) | 4 m | 150 / 20 mm/s |
+| **Y** vertical | X | leadscrew, 2 mm × 4-start = 8 mm/rev | **200.0 steps/mm** exact (5 µm) | 1 m, soft-limited 150–850 mm | 25 / 15 mm/s |
+| **X** horizontal | Y + Z + A (three ganged) | 66 mm drive wheels, rolling | **7.7166 steps/mm** (130 µm) | 4 m, soft-limited 0–3900 mm | 150 / 60 mm/s |
 
 1600 steps/rev (200-step motors at 1/8 microstepping). Note the socket labels do not match
 the axes: the shield's *X* socket drives the *vertical* axis. Scans typically span ~100 mm.
+Both axes need `*_DIR_INVERT` set in `rover/config.h` — verified on the rig 2026-08-29, and
+magnitudes were correct without any wheel calibration.
 
 **No endstops and no encoder.** Soft limits are the only travel protection, and the
 operator declaring the position is the only ground truth. The horizontal axis rolls on

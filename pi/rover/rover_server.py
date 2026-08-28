@@ -99,10 +99,10 @@ DEFAULT_CONFIG = {
     # small next to a ~100 mm scan span: horizontal 22.5 mm at full speed and
     # 0.4 mm at jog speed, vertical 3.1 mm and 0.13 mm.
     'x_max_speed': 150.0,
-    'x_jog_speed': 20.0,
+    'x_jog_speed': 60.0,
     'x_accel': 500.0,
     'y_max_speed': 25.0,
-    'y_jog_speed': 5.0,
+    'y_jog_speed': 15.0,
     'y_accel': 100.0,
 
     # There are no endstops, so these are the only thing between a jog and the
@@ -112,8 +112,8 @@ DEFAULT_CONFIG = {
     'limits_enabled': True,
     'x_min_mm': 0.0,
     'x_max_mm': 3900.0,
-    'y_min_mm': 0.0,
-    'y_max_mm': 900.0,
+    'y_min_mm': 150.0,
+    'y_max_mm': 850.0,
 
     # How long each jog heartbeat buys. The board stops on its own if refreshes
     # stop arriving, so this bounds how far a dropped link can carry the rover:
@@ -649,6 +649,31 @@ class Rover:
         """
         if x_mm is None and y_mm is None:
             raise ValueError("move needs an x or a y target")
+
+        # Clamp to the soft limits HERE, so the ideal can never point somewhere
+        # the rover is not allowed to go.
+        #
+        # The board clamps too, but a clamped move completes normally from its
+        # point of view -- it reports `completed`, not `limit` -- so nothing
+        # tells the Pi the target was unreachable. Found on the rig 2026-08-29:
+        # asking for 892 against an 850 limit left the ideal at 892 while the
+        # rover sat at 850, so a following -100 nudge went to 792 instead of 750.
+        if self.config['limits_enabled']:
+            for ax, val in (('x', x_mm), ('y', y_mm)):
+                if val is None:
+                    continue
+                lo = self.config[f'{ax}_min_mm']
+                hi = self.config[f'{ax}_max_mm']
+                if lo > hi:
+                    lo, hi = hi, lo
+                clamped = max(lo, min(hi, val))
+                if clamped != val:
+                    self._note(f"{ax} target {val:.3f} mm clamped to {clamped:.3f} mm "
+                               f"by the soft limits")
+                    if ax == 'x':
+                        x_mm = clamped
+                    else:
+                        y_mm = clamped
         if len(self._outbox) >= OUTBOX_MAX:
             raise RuntimeError(
                 f"move queue is full ({OUTBOX_MAX} waiting) -- the caller is "

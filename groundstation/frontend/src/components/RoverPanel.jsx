@@ -200,8 +200,8 @@ export default function RoverPanel({
             Declare current position
           </span>
           <div className="grid grid-cols-2 gap-2">
-            <RawInput label="X" value={posDraftX} onChange={setPosDraftX} onEnter={declarePosition} />
-            <RawInput label="Y" value={posDraftY} onChange={setPosDraftY} onEnter={declarePosition} />
+            <RawInput label="X · mm" value={posDraftX} onChange={setPosDraftX} onEnter={declarePosition} />
+            <RawInput label="Y · mm" value={posDraftY} onChange={setPosDraftY} onEnter={declarePosition} />
           </div>
           <div className="grid grid-cols-2 gap-2">
             <SmallButton onClick={declarePosition} disabled={!linked} icon={Crosshair}>Set</SmallButton>
@@ -214,6 +214,12 @@ export default function RoverPanel({
               disabled={!linked}
             >Zero Here</SmallButton>
           </div>
+          <p className="text-[10px] leading-relaxed text-[#555]">
+            All values are millimetres. With no endstops this is the rig's only ground
+            truth, so measure where the head actually is and enter that — the soft limits
+            only protect you once the frame matches reality. Declaring also resets the
+            travel odometer.
+          </p>
         </div>
       </Section>
 
@@ -268,6 +274,26 @@ export default function RoverPanel({
         </div>
       </Section>
 
+      {/* ── Limits ─────────────────────────────────────────────────────── */}
+      <Section label="Soft Limits">
+        <Check label="Clamp travel to the envelope" checked={!!cfg?.limits_enabled}
+               onChange={v => setConfig({ limits_enabled: v })} disabled={!roverConnected} />
+        {cfg?.limits_enabled && (
+          <div className="grid grid-cols-2 gap-2">
+            <NumTile label="X min" unit="mm" value={cfg.x_min_mm} onCommit={v => setConfig({ x_min_mm: v })} />
+            <NumTile label="X max" unit="mm" value={cfg.x_max_mm} onCommit={v => setConfig({ x_max_mm: v })} />
+            <NumTile label="Y min" unit="mm" value={cfg.y_min_mm} onCommit={v => setConfig({ y_min_mm: v })} />
+            <NumTile label="Y max" unit="mm" value={cfg.y_max_mm} onCommit={v => setConfig({ y_max_mm: v })} />
+          </div>
+        )}
+        <p className="text-[10px] leading-relaxed text-[#555]">
+          There are no endstops, so these are the only thing between a jog and the end
+          of the rail. They are held by the controller as well as here, so they still
+          apply if this link drops. A jog decelerates to land on the limit rather than
+          running into it.
+        </p>
+      </Section>
+
       {/* ── Calibration ────────────────────────────────────────────────── */}
       <Section label="Calibration">
         <div className="flex flex-col gap-2 p-3 rounded-xl bg-[#0a0a0a]/50 border border-white/5">
@@ -289,8 +315,8 @@ export default function RoverPanel({
             ))}
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <RawInput label="Commanded" value={calCommanded} onChange={setCalCommanded} />
-            <RawInput label="Measured" value={calMeasured} onChange={setCalMeasured}
+            <RawInput label="Commanded · mm" value={calCommanded} onChange={setCalCommanded} />
+            <RawInput label="Measured · mm" value={calMeasured} onChange={setCalMeasured}
                       onEnter={applyCalibration} />
           </div>
           <SmallButton onClick={applyCalibration} disabled={!roverConnected || !calMeasured}
@@ -303,26 +329,6 @@ export default function RoverPanel({
             Y is a leadscrew at exactly 200 steps/mm and should never need it.
           </p>
         </div>
-      </Section>
-
-      {/* ── Limits ─────────────────────────────────────────────────────── */}
-      <Section label="Soft Limits">
-        <Check label="Clamp travel to the envelope" checked={!!cfg?.limits_enabled}
-               onChange={v => setConfig({ limits_enabled: v })} disabled={!roverConnected} />
-        {cfg?.limits_enabled && (
-          <div className="grid grid-cols-2 gap-2">
-            <NumTile label="X min" unit="mm" value={cfg.x_min_mm} onCommit={v => setConfig({ x_min_mm: v })} />
-            <NumTile label="X max" unit="mm" value={cfg.x_max_mm} onCommit={v => setConfig({ x_max_mm: v })} />
-            <NumTile label="Y min" unit="mm" value={cfg.y_min_mm} onCommit={v => setConfig({ y_min_mm: v })} />
-            <NumTile label="Y max" unit="mm" value={cfg.y_max_mm} onCommit={v => setConfig({ y_max_mm: v })} />
-          </div>
-        )}
-        <p className="text-[10px] leading-relaxed text-[#555]">
-          There are no endstops, so these are the only thing between a jog and the end
-          of the rail. They are held by the controller as well as here, so they still
-          apply if this link drops. A jog decelerates to land on the limit rather than
-          running into it.
-        </p>
       </Section>
 
       {/* ── Motion + diagnostics ───────────────────────────────────────── */}
