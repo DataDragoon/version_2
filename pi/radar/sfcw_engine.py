@@ -451,8 +451,19 @@ class SFCWEngine:
         if self._use_quick_tune:
             self._ensure_master_quick_tune_table()
         self.driver._configure_channels_dual()
-        self.driver.set_tuning_mode_fpga()
-        self._fpga_tuning = True
+        # NOTE: do NOT call driver.set_tuning_mode_fpga() here. On the bladeRF 2.0
+        # micro, BLADERF_TUNING_MODE_FPGA accepts the call (rc=0) but then kills the
+        # RX_X2 data path: sync_rx() starts timing out ~8 buffers later with
+        # "Transfer timed out for RX buffer", so the sweep gets no data at all.
+        # Bisected 2026-08-28 against libbladeRF 2.6.1 / FPGA 0.16.0 (reproduced with
+        # both the flashed image and Nuand's official v0.16.0 loaded into RAM, so it
+        # is not an FPGA-image problem). libbladeRF's own bladerf2 default_tuning_mode()
+        # hardcodes mode = BLADERF_TUNING_MODE_HOST and only reaches FPGA mode via the
+        # BLADERF_DEFAULT_TUNING_MODE=fpga env var, citing "errata related to
+        # FPGA-based tuning" -- FPGA tuning is simply not a supported default here.
+        # Host tuning costs nothing measurable: quick-tune bladerf_schedule_retune()
+        # still works (rc=0) and a 51-step sweep runs in 230 ms (4.35 Hz).
+        self._fpga_tuning = False
 
     def _start_tx_rx(self):
         self._rx_cond = threading.Condition()

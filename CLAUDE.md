@@ -257,9 +257,15 @@ almost certainly what the hardware actually snapped to. Fixed by capturing `actu
 the raw-ffi dual-channel path and by reading back `Channel.sample_rate` after the
 Python-wrapped single-channel sets) and logging a `[bladerf] NOTE: <ch> sample rate snapped
 to X Msps (requested Y Msps)` line when it differs — visibility only, no behavior change, so
-it's safe without live hardware to test against. **Not yet verified against real hardware**
-(bladeRF wasn't attached when this was diagnosed) — next run should confirm the 30.72 Msps
-hypothesis via the new NOTE lines. Actually eliminating the warning (picking a request rate
+it's safe without live hardware to test against. **The 30.72 Msps hypothesis is now
+FALSIFIED (measured on hardware 2026-08-28).** Calling `bladerf_set_sample_rate(..., actual)`
+for 10 Msps on all four channels (RX0/RX1/TX0/TX1) returns `rc=0` with
+`actual = 10.000000 Msps` on every one — the RFIC hits the requested rate exactly and does
+not snap. So whatever produced the 92.16 / 122.88 warning totals, it was not SFCW's 10 Msps
+request being silently rounded to 30.72. Dual-channel RX at 10 Msps also streams cleanly
+(60/60 buffers, no timeouts), so sweep-time and RX-timeout problems should not be blamed on
+sample-rate snapping — see the FPGA tuning-mode section below for what actually caused the
+RX timeouts. Actually eliminating the warning (picking a request rate
 the RFIC can hit exactly, e.g. a rate near the well-known 30.72 Msps LTE-grid family) needs
 live-hardware validation before changing — RF gain/timing code in this repo has a history of
 regressions from unverified changes (see the `settle_count`/`num_buffers` regressions
@@ -577,6 +583,60 @@ complex-domain deviation between sweeps was 0.0055 at `num_buffers=1` vs 0.0034 
 *current* live-sweep wobble against a static scene first, not just correlation —
 correlation is insensitive to this because it doesn't wreck sweep structure, only
 buries weak signal in noise.
+
+## FPGA tuning mode kills the RX stream on the bladeRF 2.0 — do not re-enable (2026-08-28)
+
+**Symptom:** RF Calib panel works fine, but starting an SFCW sweep gives
+`[ERROR @ .../libusb.c:1089] Transfer timed out for RX buffer ...` +
+`[bladerf] RX dual error: Operation timed out`, and no sweep is produced at all.
+
+**Cause:** `SFCWEngine._configure_hardware()` called `driver.set_tuning_mode_fpga()`
+(`bladerf_set_tuning_mode(BLADERF_TUNING_MODE_FPGA)`). On the bladeRF 2.0 micro that call
+*succeeds* (`rc=0`, prints "Tuning mode set to FPGA") and then silently breaks the RX_X2
+data path: `sync_rx()` starts throwing `TimeoutError` about 8 buffers later. Because
+`_rx_loop_dual` catches the exception and exits, `_rx_seq` stops advancing, so every step of
+`_sweep_core` falls through its `rx_cond.wait(timeout=1.0)` and the sweep returns nothing.
+
+**Bisected on hardware** (device free, 10 Msps, RX_X2, same `sync_config` the driver uses):
+
+| test | result |
+|---|---|
+| stream only | OK, 60/60 buffers |
+| `set_tuning_mode(FPGA)` only | **FAILS after 8 buffers** |
+| quick-tune master table only (151 profiles, no FPGA tuning) | OK, 60/60 buffers |
+| both | **FAILS after 8 buffers** |
+
+So the quick-tune table is innocent — it was *only* the tuning mode. Note the failure happens
+before any `bladerf_schedule_retune()` call, so it is not a retune problem either.
+
+**Not an FPGA-image problem.** Reproduced identically with the flashed image (0.16.0, "configured
+from SPI flash") *and* with Nuand's official `v0.16.0/hostedxA9.rbf` downloaded and loaded into
+RAM (`bladeRF-cli -l`, reports "configured by USB host"). Reflashing does not help — don't.
+Test FPGA images with `-l` (RAM, reverts on power cycle), not `-L` (SPI flash), when
+diagnosing; it is free to undo.
+
+**Why it was never going to work:** libbladeRF's own `default_tuning_mode()`
+(`host/libraries/libbladeRF/src/board/bladerf2/common.c`) opens with an unconditional
+`mode = BLADERF_TUNING_MODE_HOST;`, and the `if (BLADERF_TUNING_MODE_FPGA == mode && ...)`
+errata check immediately after it is dead code that can never run. FPGA tuning on bladerf2 is
+reachable *only* via `BLADERF_DEFAULT_TUNING_MODE=fpga`, and the errata text it guards refers
+to "errata related to FPGA-based tuning". Nuand does not default this board to FPGA tuning.
+
+**Fix shipped:** the `set_tuning_mode_fpga()` call is removed from `_configure_hardware()`
+(the comment there explains why — keep it). `driver.set_tuning_mode_fpga()` itself is left in
+`bladerf_driver.py` but is now uncalled; `_fpga_tuning` was a write-only flag nothing ever
+read, and is now just set False.
+
+**It costs nothing.** Quick-tune still works in host tuning mode: `bladerf_schedule_retune()`
+returns `rc=0` for every step, and a 51-step sweep measured **230 ms (4.35 Hz)**, inside the
+3–6 Hz band this panel has always run at. Verified end-to-end through `SFCWEngine` itself:
+3/3 sweeps, 51 steps each, no errors, sweep-to-sweep correlation **0.9984**.
+
+**Caveat left open:** those verification sweeps ran with the antennas pointed at open room, and
+reported `phase_std ≈ 1.44 rad` -> `coherent=False` (the Pi's cut is 0.3). Sweep-to-sweep
+correlation of 0.9984 says this is repeatable structure, not the retune-timing corruption that
+check exists to catch (corrupted sweeps do not repeat). Still worth re-confirming against a
+known target that the range profile looks right.
 
 ## Quick-tune master table (2026-08-23)
 
@@ -993,6 +1053,24 @@ standoff noise **0.4 dB**. Chasing lidar precision would buy at most a few tenth
   drains the backlog with several sweeps sharing one instant — every standoff after the
   first came back `None` in the first version. The reader task now pairs each sweep with
   the lidar samples that arrived since the previous one, at arrival time.
+- `pi/radar/bgmodel_interp.py` — numpy port of `bgModelInterp.js` + `rangeProfile.js`
+  (build / infer / range profile / LOO). Reproduces the browser's own numbers exactly on
+  `data/bgmodel_pass1.json`: interior LOO 25.98 dB mean / 19.35 worst, clamped 5.43 dB.
+  It deliberately preserves `inferInterpModel`'s asymmetry — interpolating at the
+  *clamped* standoff while rewinding phase at the *unclamped* one — because that is the
+  failure being measured; a "tidier" port would not reproduce it. Written because
+  CLAUDE.md's reference to `scratchpad/regime_gap.py` is dead (that file was in a session
+  scratchpad and no longer exists), so the port now lives in the repo instead.
+- `pi/radar/span_confirm.py` + `pi/radar/span_analyze.py` — **live** confirmation of the
+  span-clamp mechanism, which Phase 1 established only offline (its own caveat: "I never
+  observed a false target live in the app"). `span_confirm.py` records a continuous
+  standoff traverse through and past both span edges — **aim at a blank wall**, the method
+  rests on every residual peak being false by construction. `span_analyze.py` applies the
+  model at each sweep's own standoff and bins suppression + residual peak/rms by
+  mm-outside-span, against Phase 1's offline falloff (1 mm → 20.6 dB, 5 → 6.8, 20 → −3.5).
+  Residual **peak/rms** is the metric that speaks to the symptom: a large but flat residual
+  produces no phantom. ~2.6 is noise-like; ≫10 is a discrete false target. A high peak/rms
+  *in span*, with clamp fraction zero, would mean a second mechanism nobody has found yet.
 
 ## RF Calib panel gains are NOT the SFCW sweep's gains (2026-08-25)
 
