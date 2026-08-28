@@ -28,6 +28,7 @@ signal.signal(signal.SIGTERM, cleanup)
 services = [
     [sys.executable, os.path.join(base, 'sensors', 'stream.py')],
     [sys.executable, os.path.join(base, 'radar', 'sdr_server.py')],
+    [sys.executable, os.path.join(base, 'rover', 'rover_server.py')],
 ]
 
 print(f"Starting {len(services)} service(s)...")

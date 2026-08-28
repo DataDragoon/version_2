@@ -14,6 +14,9 @@ import { DEFAULT_PARAMS as IMAGING_DEFAULT_PARAMS } from './lib/imagingEffects';
 
 const SPEED_OF_LIGHT = 299792458;
 
+const ROVER_TRAIL_MAX = 2000;
+const ROVER_LOG_MAX = 120;
+
 function runPhaseUnwindTest(samples, sfcwParams) {
   const startHz = sfcwParams.startFreq * 1e6;
   const stopHz = sfcwParams.stopFreq * 1e6;
@@ -125,6 +128,12 @@ export default function App() {
   // Provenance of the standoff used for the most recent sweep (Phase 0.1/0.2):
   // { lidar_standoff_mm, lidar_n, lidar_std, lidar_offset_mm, roll_deg, pitch_deg }
   const [sfcwLidarProvenance, setSfcwLidarProvenance] = useState(null);
+
+  // Rover state. Mirrors the Pi's rover_status verbatim; the trail is the only
+  // thing kept here, because the Pi has no reason to remember where it has been.
+  const [roverStatus, setRoverStatus] = useState(null);
+  const [roverTrail, setRoverTrail] = useState([]);
+  const [roverLog, setRoverLog] = useState([]);
 
   // SDR / RF Calib state — antenna (TX1/RX1) and reference (TX2/RX2) both stream
   // simultaneously now, so RX preview/FFT are tracked per channel.
@@ -816,6 +825,36 @@ export default function App() {
   const sdrUrl = piIp ? `ws://${piIp}:9003` : null;
   const { status: sdrConnectionStatus, send: sendSdr, connect: connectSdr, disconnect: disconnectSdr } = useWebSocket(sdrUrl, handleSdrMessage);
 
+  // Rover WebSocket (port 9002). The Pi is the only place rover position lives
+  // -- it dead-reckons from what it commanded and we mirror it, so a browser
+  // reload or a second tab cannot desynchronise the position from the rig.
+  const handleRoverMessage = useCallback((msg) => {
+    if (msg.type === 'rover_status') {
+      setRoverStatus(msg);
+      setRoverTrail(prev => {
+        const last = prev[prev.length - 1];
+        if (last && last.x === msg.x_mm && last.y === msg.y_mm) return prev;
+        const next = prev.length >= ROVER_TRAIL_MAX
+          ? prev.slice(prev.length - ROVER_TRAIL_MAX + 1)
+          : prev.slice();
+        next.push({ x: msg.x_mm, y: msg.y_mm });
+        return next;
+      });
+    } else if (msg.type === 'rover_log') {
+      setRoverLog(prev => [...prev.slice(-(ROVER_LOG_MAX - 1)), msg]);
+    } else if (msg.type === 'rover_log_history') {
+      setRoverLog((msg.lines || []).slice(-ROVER_LOG_MAX));
+    } else if (msg.type === 'rover_error') {
+      setRoverLog(prev => [...prev.slice(-(ROVER_LOG_MAX - 1)),
+                           { t: Date.now() / 1000, line: `error: ${msg.message}` }]);
+    }
+  }, []);
+
+  const roverUrl = piIp ? `ws://${piIp}:9002` : null;
+  const { status: roverConnectionStatus, send: sendRover, connect: connectRover, disconnect: disconnectRover } = useWebSocket(roverUrl, handleRoverMessage);
+
+  const clearRoverTrail = useCallback(() => setRoverTrail([]), []);
+
   // The Pi keeps its own SFCW defaults, so anything the panel shows is a guess
   // until we push. Sync on connect and again before every sweep, so the panel is
   // always the source of truth and the two sides cannot drift apart silently.
@@ -1060,20 +1099,22 @@ export default function App() {
     localStorage.setItem('pi_ip', piIp);
     connectImu();
     connectSdr();
+    connectRover();
 
     if (rateIntervalRef.current) clearInterval(rateIntervalRef.current);
     rateIntervalRef.current = setInterval(() => {
       setImuRate(imuCountRef.current);
       imuCountRef.current = 0;
     }, 1000);
-  }, [piIp, connectImu, connectSdr]);
+  }, [piIp, connectImu, connectSdr, connectRover]);
 
   const handleDisconnect = useCallback(() => {
     disconnectImu();
     disconnectSdr();
+    disconnectRover();
     if (rateIntervalRef.current) { clearInterval(rateIntervalRef.current); rateIntervalRef.current = null; }
     setImuRate(0);
-  }, [disconnectImu, disconnectSdr]);
+  }, [disconnectImu, disconnectSdr, disconnectRover]);
 
   const isConnected = imuStatus === 'connected';
 
@@ -1100,6 +1141,10 @@ export default function App() {
         imuData={imuData}
         lidarMm={lidarMm}
         sdrConnected={sdrConnectionStatus === 'connected'}
+        roverConnected={roverConnectionStatus === 'connected'}
+        roverStatus={roverStatus}
+        sendRover={sendRover}
+        onClearRoverTrail={clearRoverTrail}
         txActive={txActive}
         rxActive={rxActive}
         showFFT={showFFT}
@@ -1213,6 +1258,9 @@ export default function App() {
         activePanel={activePanel}
         isConnected={isConnected}
         imuData={imuData}
+        roverStatus={roverStatus}
+        roverTrail={roverTrail}
+        roverLog={roverLog}
         txActive={txActive}
         rxActive={rxActive}
         rxSamplesAnt={rxSamplesAnt}

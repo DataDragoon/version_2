@@ -294,6 +294,8 @@ table's 256-profile hardware ceiling — see Quick-tune master table below) with
 Both RF panels share port 9003 — starting an SFCW sweep auto-stops any active TX/RX in RF Calib.
 C-scan panel rasters a 2D grid of positions over the target and shares the SFCW panel's
 background model machinery (see below).
+Rover Scan panel jogs the 2-axis stepper gantry and tracks its position — see below. The
+automated grid raster on top of it is not built yet.
 Imaging Bench panel replays an exported waterfall snapshot through 11 selectable imaging
 effects for offline A/B of processing chains — see below.
 
@@ -375,6 +377,102 @@ derived everything (step count, sweep time, max range) from different ones. `App
 The panel is the source of truth; keep new SFCW params in that payload or they will not
 reach the Pi.
 Next steps: SAR reconstruction integration.
+
+## Rover Scan Panel — jog control and position tracking (2026-08-28)
+
+Panel id `rover` (`RoverPanel.jsx` + `RoverDisplay.jsx`), between `cscan` and `sar` in the
+`PANELS` array. Pi side is `pi/rover/rover_server.py`, launched by `pi/start.py` alongside
+`stream.py` and `sdr_server.py`. First slice of automated scanning: declare the origin, jog
+the head with four click-and-hold keys (or the arrow keys), and track where it is. The grid
+raster itself is not built yet.
+
+**Two sockets, one process.** The Arduino UNO is a *client* -- it dials into the Pi on 8765
+and waits -- so `rover_server.py` runs `websockets.serve` twice: 8765 for the UNO, 9002 for
+the groundstation. Do not "simplify" this into one server; the port and the direction are
+fixed by firmware we cannot reflash.
+
+**Wire format is one frame per move: `"<x>,<z>"`, relative mm, negative reverses.** Byte-for-
+byte what `~/stepper_testrig/stepper_testrig2.py` sends, including the `str(float(...))`
+number format (`_fmt_mm` reproduces `"1.0"`, not `"1.000"`) -- that is the only form this
+board has actually been driven with. `x` = horizontal; the board calls the vertical axis `z`
+and the groundstation calls it `y`.
+
+### Why the tracking cannot drift on our side, and where it still can
+
+The board has no position query, no stop command, no velocity command, and no documented
+reply. Every design choice below falls out of one of those four absences.
+
+- **Integer micrometres everywhere.** All position state is `*_um` ints and every move is
+  quantised to a whole micrometre before it is sent, so the tracked position is exactly the
+  sum of the integers transmitted. mm appear only at the display boundary. Summing floats
+  across a long raster would not be exact; this is.
+- **Click-and-hold is a train of discrete moves, not a velocity.** The board has no velocity
+  command, so the alternative would be integrating held-button wall-clock time into a
+  distance -- a guess. Each jog tick advances position by exactly one quantum or not at all,
+  so position is always an exact multiple of `jog_step_mm`. Verified: 48 jog moves round a
+  closed square return to the start exactly, and 12 alternating taps net exactly 0.0 mm.
+- **Exactly one move in flight** (`_move_lock`), and the next is not sent until the previous
+  resolved *and* `estimated_move_time` has elapsed (`enforce_move_time`, default on). An
+  early reply may mean "received", not "finished"; a move the board drops because its buffer
+  was full is drift that nothing can observe. **Do not remove this pacing to make jogging
+  faster** -- raise `jog_step_mm` or `speed_mm_s` instead.
+- **Soft limits trim a move to the remaining travel rather than rejecting it**, and the
+  trimmed value is what gets both sent and accumulated, so the two can never disagree.
+  Jogging coasts exactly to the edge (verified: 2 mm quanta into a 4.5 mm limit gives
+  2 + 2 + 0.5 and then stops the jog).
+- **Release latency is up to one quantum, by construction.** A move already handed to the
+  board cannot be recalled. `rover_stop` and jog release both end the *train*; the current
+  step still finishes. This is why the quantum defaults small (1 mm).
+
+**Commanded vs confirmed.** `commanded_*_um` advances the instant a move goes out;
+`confirmed_*_um` only when the board answers afterwards. `_looks_like_ack()` currently
+returns True for anything -- the reply format is unknown -- and is the single place to
+narrow that once the firmware's vocabulary is known. Frames arriving when no move is
+outstanding are counted as `unsolicited` and surfaced in the panel, because a board that
+chatters on its own makes "it spoke" weak evidence that a move finished. Unacknowledged
+travel accumulates into `unacked_travel_um`, shown as **Unconfirmed** -- a drift *budget*,
+not an error estimate. Re-declaring the position clears it, because that is the only ground
+truth the system has.
+
+**Silent boards get their ack wait dropped after `ACK_GIVEUP = 3` moves.** Otherwise a board
+that never replies pays `ack_grace_s` (1 s) on *every* jog quantum. Measured with a
+deliberately silent stub: the first three moves cost 1.25 s each, then the cadence settles to
+0.25 s, identical to an acking board. Any frame from the board re-enables ack waiting, so a
+link that starts silent and later speaks recovers without a restart.
+
+**Jog task lifecycle.** Each jog gets its own dict and `_jog_loop(jog)` runs only while
+`self._jog is jog`. An earlier design reused one task and tested `.done()`, which dropped a
+press that landed in the gap between the old loop's last statement and its completion --
+release-then-immediately-re-press is exactly what an operator does. Keep the identity check.
+
+**Dead-man.** The panel sends `rover_jog_hold` every 150 ms while a key is held; the Pi
+stops the jog after `JOG_HOLD_TIMEOUT` (600 ms) without one, and also when the last
+groundstation client disconnects. The panel additionally stops on `window` blur,
+`pointerup`/`pointercancel` and `visibilitychange`, and uses pointer capture on each key, so
+a cursor sliding off a held button still delivers the release.
+
+**Sign conventions live in config, not firmware, and both are now measured.** Confirmed on
+the rig 2026-08-28: the board drives **LEFT on negative x** and **UP on negative z**. The
+groundstation uses +X right and +Y up (matching the C-scan grid, whose vertical index grows
+upward), so X agrees with the board and Y is opposed -- hence `invert_y` defaults to **True**
+and `invert_x` to False. `invert_*` flip the sign on the wire only; user coordinates are
+unaffected. Verified frame by frame: UP sends `0.0,-1.0`, DOWN `0.0,1.0`, LEFT `-1.0,0.0`,
+RIGHT `1.0,0.0`. Treat these as hardware facts, not preferences -- the flags exist because
+the sketch cannot be read, not because the choice is free. **Note the defaults are only
+consulted when there is no `pi/rover/rover_state.json`**: that file persists whatever the
+flags were last set to, so a stale one from before this was measured would silently keep the
+old value. Delete it if the axes ever come back wrong after a code update.
+
+**State persists to `pi/rover/rover_state.json`** (gitignored): config and last-known
+position. A server restart does not move the rig, so discarding the position would force a
+needless re-home -- but the process cannot know the rig was untouched either, so a restored
+position comes back with `position_stale: true` and the panel says so until the operator
+re-declares it. Machine coordinates (total commanded travel) are deliberately *not* reset by
+re-homing, so the record of how far the rig has been driven survives.
+
+**Not yet done:** the grid raster. The panel is jog + tracking only. When the raster lands it
+should drive `move_rel` position-by-position and reuse `lib/cscanGrid.js`'s snake order so
+the C-scan panel's existing geometry applies unchanged.
 
 ## Imaging Bench Panel — Offline Effect Comparison (2026-08-23)
 

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import { Activity, Radio, Radar, ScanLine, Grid3x3, Map, Zap, Brain, FlaskConical } from 'lucide-react';
+import { Activity, Radio, Radar, ScanLine, Grid3x3, Map, Zap, Brain, FlaskConical, Move } from 'lucide-react';
 import ImuDisplay from './ImuDisplay';
 import WaveformDisplay from './WaveformDisplay';
 import ReceiverDisplay from './ReceiverDisplay';
@@ -12,6 +12,7 @@ import SarDisplay from './SarDisplay';
 import MapDisplay from './MapDisplay';
 import BgModelDisplay from './BgModelDisplay';
 import ImagingDisplay from './ImagingDisplay';
+import RoverDisplay from './RoverDisplay';
 
 export default function Viewport({
   activePanel,
@@ -58,6 +59,9 @@ export default function Viewport({
   imagingSnapshot,
   imagingEffect,
   imagingParams,
+  roverStatus,
+  roverTrail,
+  roverLog,
 }) {
   const [bscanLiveRange, setBscanLiveRange] = useState({ min: 0, max: 0.3 });
   // Which C-scan cell the B-scan pane is showing the row for; null follows the
@@ -213,6 +217,56 @@ export default function Viewport({
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">No captures yet</span>
               </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (activePanel === 'rover') {
+    const linked = !!roverStatus?.arduino_connected;
+    return (
+      <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
+        <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
+          <PaneHeader icon={Move} label="Rover Position" active={linked} color="green" />
+          <div className="flex-1 min-h-0 relative overflow-hidden">
+            {roverStatus?.moving && (
+              <div className="absolute inset-0 pointer-events-none">
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-[60%] bg-[#4aff8a]/4 blur-[80px] rounded-full" />
+              </div>
+            )}
+            <RoverDisplay status={roverStatus} trail={roverTrail} />
+            {!roverStatus && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <span className="text-xs text-[#333333] uppercase tracking-widest font-medium">Rover server not connected</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Raw link traffic. The Arduino is a black box, so seeing exactly what
+            went out and what came back is the only way to tell a dropped move
+            from a silent one. */}
+        <div className="relative flex flex-col border-t border-white/5" style={{ flex: '0 0 200px' }}>
+          <PaneHeader icon={Radio} label="Rover Link Log" active={linked} color="green" />
+          <div className="flex-1 min-h-0 overflow-y-auto px-5 py-2 font-mono text-[11px] leading-relaxed">
+            {roverLog && roverLog.length > 0 ? (
+              roverLog.map((entry, i) => (
+                <div key={i} className="flex gap-3">
+                  <span className="text-[#333] shrink-0">
+                    {new Date(entry.t * 1000).toLocaleTimeString('en-GB', { hour12: false })}
+                  </span>
+                  <span className={
+                    entry.line.startsWith('pi -> uno') ? 'text-[#4aff8a]/70'
+                      : entry.line.startsWith('arduino:') ? 'text-[#22d3ee]/70'
+                        : entry.line.startsWith('error') ? 'text-red-400/80'
+                          : 'text-[#777]'
+                  }>{entry.line}</span>
+                </div>
+              ))
+            ) : (
+              <span className="text-[#333]">No traffic yet.</span>
             )}
           </div>
         </div>

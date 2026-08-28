@@ -17,6 +17,7 @@ not what is beyond it.
 | IMU | BNO085 (was MPU-6500 until 2026-08-24) | I2C | Orientation, acceleration, gyro |
 | SDR | bladeRF | USB | SFCW radar TX/RX |
 | Antennas | 2x Vivaldi | SMA to bladeRF | Wideband TX and RX |
+| Rover | Stepper gantry + Arduino UNO | WebSocket over LAN | 2-axis positioning of the radar head |
 | Network | Ethernet/WiFi | LAN | Pi <-> PC link |
 
 ## Architecture
@@ -70,6 +71,7 @@ version0/
 ├── pi/                    # Code that runs on the Raspberry Pi
 │   ├── sensors/           # LiDAR, IMU drivers/readers
 │   ├── radar/             # bladeRF SFCW control
+│   ├── rover/             # Stepper gantry control + position tracking
 │   ├── comms/             # Network transport to groundstation
 │   └── scripts/           # Startup, calibration, utilities
 ├── groundstation/         # Code that runs on the PC
@@ -182,11 +184,57 @@ Data sent over WebSocket (port 9001) is in body frame:
 Startup calibration: 2s stationary capture → gyro/accel bias saved to `pi/sensors/imu_cal.json`.
 Use `--skip-cal` flag on `stream.py` to reuse previous calibration.
 
+## Rover — Stepper Gantry
+
+Two axes only: **X = left/right**, **Y = up/down**. There is no standoff (Z-toward-wall)
+axis, so standoff is still whatever the operator sets by hand and is measured by the LiDAR.
+
+The Arduino UNO is a **WebSocket client**: it dials into the Pi on port 8765 and waits.
+The Pi is the server. One text frame per move:
+
+```
+"<x>,<z>"     both RELATIVE millimetres, negative reverses
+```
+
+`x` is the horizontal axis; the Arduino calls the vertical one `z` (the groundstation calls
+it `y`, and `pi/rover/rover_server.py` maps between them). Matches
+`~/stepper_testrig/stepper_testrig2.py`, which is the only reference for this firmware.
+
+**Sign convention on the wire, confirmed on the rig 2026-08-28:**
+
+| frame | motion |
+|---|---|
+| `x < 0` | LEFT |
+| `x > 0` | RIGHT |
+| `z < 0` | **UP** |
+| `z > 0` | **DOWN** |
+
+The groundstation uses **+X right, +Y up** (matching the C-scan grid, whose vertical index
+grows upward). X therefore agrees with the board and Y is opposed, so `invert_y` defaults to
+**True** and `invert_x` to False in `rover_server.py`'s `DEFAULT_CONFIG`. Verified frame by
+frame: pressing UP sends `0.0,-1.0`, DOWN sends `0.0,1.0`, LEFT `-1.0,0.0`, RIGHT `1.0,0.0`.
+These are measured facts about the rig, not preferences — the flags exist because the sketch
+cannot be read, not because the choice is free.
+
+**The board is a black box and cannot be reflashed right now.** Everything the rover code
+does follows from what that interface does *not* have:
+
+| missing | consequence |
+|---|---|
+| no position query | position is dead reckoned from what we commanded, and the operator declaring it is the only ground truth |
+| no stop command | a move already sent always runs to completion; jog release takes effect after the current step |
+| no velocity command | click-and-hold is a train of small discrete moves, not a velocity |
+| no documented reply | any frame arriving while a move is outstanding is treated as an acknowledgement |
+
+Wiring per the reference sketch: X drives the Y+Z+A motors, Z drives the X motor.
+
 ## Network Ports
 
 | Service | Port | Protocol | Direction |
 |---------|------|----------|-----------|
 | Sensor stream (IMU + LiDAR) | 9001 | WebSocket | Pi → Browser |
+| Rover control + position | 9002 | WebSocket | Pi ↔ Browser |
+| Rover ← Arduino UNO link | 8765 | WebSocket | UNO → Pi (the UNO dials in) |
 | SDR control + IQ stream | 9003 | WebSocket | Pi ↔ Browser |
 | Groundstation UI | 5000 | HTTP | PC local |
 
@@ -206,6 +254,8 @@ Use `--skip-cal` flag on `stream.py` to reuse previous calibration.
 - [x] IMU calibration discovery tool (groundstation panel)
 - [x] BladeRF driver + AquaSense calibration panel (signal generator + oscilloscope)
 - [ ] BladeRF SFCW implementation
+- [x] Rover jog control + dead-reckoned position tracking (Rover Scan panel, port 9002)
+- [ ] Rover automated grid raster (B-scan / C-scan at constant standoff)
 - [ ] Network protocol (formal)
 - [ ] Integration testing
 - [ ] SAR image reconstruction

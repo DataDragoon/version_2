@@ -1,4 +1,4 @@
-import { Activity, Radio, Radar, ScanLine, Grid3x3, Map, ChevronLeft, Wifi, WifiOff, Brain, FlaskConical } from 'lucide-react';
+import { Activity, Radio, Radar, ScanLine, Grid3x3, Map, ChevronLeft, Wifi, WifiOff, Brain, FlaskConical, Move } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ImuPanel from './ImuPanel';
 import RfCalibPanel from './RfCalibPanel';
@@ -8,6 +8,7 @@ import ImagingPanel from './ImagingPanel';
 import CscanPanel from './CscanPanel';
 import SarPanel from './SarPanel';
 import MapPanel from './MapPanel';
+import RoverPanel from './RoverPanel';
 
 const PANELS = [
   { id: 'imu',       label: 'IMU',       icon: Activity },
@@ -16,6 +17,7 @@ const PANELS = [
   { id: 'imaging',   label: 'Imaging Bench', icon: FlaskConical },
   { id: 'bgmodel',   label: 'BG Model',  icon: Brain },
   { id: 'cscan',     label: 'C-Scan',    icon: ScanLine },
+  { id: 'rover',     label: 'Rover Scan', icon: Move },
   { id: 'sar',       label: 'SAR',       icon: Grid3x3 },
   { id: 'map',       label: '2D Map',    icon: Map },
 ];
@@ -32,6 +34,10 @@ export default function Sidebar({
   imuData,
   lidarMm,
   sdrConnected,
+  roverConnected,
+  roverStatus,
+  sendRover,
+  onClearRoverTrail,
   txActive,
   rxActive,
   showFFT,
@@ -352,6 +358,14 @@ export default function Sidebar({
                   onCaptureBg={onCaptureBscanBg}
                   onLoadBgModel={onLoadBscanBgModel}
                   onClearBg={onClearBscanBg}
+                />
+              )}
+              {activePanel === 'rover' && (
+                <RoverPanel
+                  roverConnected={roverConnected}
+                  roverStatus={roverStatus}
+                  sendRover={sendRover}
+                  onClearTrail={onClearRoverTrail}
                 />
               )}
               {activePanel === 'sar' && (
