@@ -7,7 +7,7 @@
 // and protocol_core.h is therefore kept free of Arduino headers so that the
 // parts that can actually be wrong -- ramp arithmetic, limit handling, JSON
 // scanning -- are exercised here before the sketch ever reaches the rig. The
-// remaining unverified surface is the thin glue in main.ino: pins, timer, WiFi.
+// remaining unverified surface is the thin glue in rover.ino: pins, timer, WiFi.
 #include "../motion_core.h"
 #include "../protocol_core.h"
 
@@ -53,7 +53,7 @@ struct Sim {
 
     uint32_t nowMs() const { return (uint32_t)(tick_count / (ISR / 1000.0f)); }
 
-    // One ISR tick, mirroring what main.ino's handler does.
+    // One ISR tick, mirroring what rover.ino's handler does.
     void step() {
         if (ax.tick(nowMs())) ++steps_emitted;
         ++tick_count;

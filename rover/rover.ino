@@ -24,7 +24,7 @@
 //   secrets.h         WiFi credentials                   (gitignored)
 //   motion_core.h     ramp, limits, watchdog, stepping   (Arduino-free, TESTED)
 //   protocol_core.h   JSON scan and emit                 (Arduino-free, TESTED)
-//   main.ino          pins, timer, sockets, persistence  (this file, the glue)
+//   rover.ino          pins, timer, sockets, persistence  (this file, the glue)
 //
 // The two _core headers carry all the logic that can actually be wrong, and are
 // compiled and tested natively with g++ by rover/test/test_core.cpp -- there is
@@ -52,6 +52,7 @@
 #include <FspTimer.h>
 
 #include "config.h"
+#include "types.h"
 #include "secrets.h"
 #include "motion_core.h"
 #include "protocol_core.h"
@@ -91,17 +92,8 @@ static int32_t persistedPos[NUM_AXES] = { 0, 0 };
 static bool positionValid = false;
 
 // Queued moves, so the Pi can pipeline a raster instead of paying a network
-// round trip per point.
-// `value` is a delta when `rel` is set, and is resolved against the position at
-// DISPATCH time, not at receipt. Resolving on receipt would measure every queued
-// relative move from the same stale origin, and would measure a move issued
-// while an axis was still running from a position that is actively changing.
-struct QueuedMove {
-    uint32_t seq;
-    bool rel;
-    bool has[NUM_AXES];
-    int32_t value[NUM_AXES];
-};
+// round trip per point. QueuedMove is defined in types.h -- see the note there
+// about why no type may be defined in this file.
 static QueuedMove moveQueue[CMD_QUEUE_DEPTH];
 static uint8_t qHead = 0, qTail = 0, qCount = 0;
 
@@ -188,12 +180,6 @@ static inline uint32_t nowMs() { return isrMs; }
 // and a mismatch raises a re-home warning rather than one side silently
 // winning. Written only after motion has been settled a while, so a jog does
 // not write flash once per step.
-
-struct PersistBlob {
-    uint32_t magic;
-    int32_t pos[NUM_AXES];
-    uint32_t check;
-};
 
 static uint32_t blobCheck(const PersistBlob& b) {
     return b.magic ^ (uint32_t)b.pos[0] ^ ((uint32_t)b.pos[1] * 2654435761UL);

@@ -5,7 +5,7 @@
 // is no Arduino toolchain on the Pi, so keeping the parts that can actually be
 // wrong -- the ramp arithmetic and the limit logic -- testable natively is the
 // only way any of it gets verified before it reaches the rig. Anything needing
-// a pin, a timer or a socket belongs in main.ino, not here.
+// a pin, a timer or a socket belongs in rover.ino, not here.
 //
 // Why not AccelStepper: it is built around "move to a target". What this rover
 // needs is a jog with no target that can be retargeted or stopped mid-motion and

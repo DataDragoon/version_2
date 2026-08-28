@@ -494,14 +494,36 @@ commanded and a measured distance and scales. Corrections beyond 0.5x-2x are ref
 a mis-entry rather than applied. Y is a leadscrew at exactly 200 steps/mm and should never
 need it.
 
+### The .ino preprocessor: define no types in `rover.ino`
+
+The Arduino IDE auto-generates a prototype for every function in a `.ino` and inserts them
+near the TOP of the file, above anything defined further down. A function taking a type
+defined in the same `.ino` therefore fails to compile:
+
+    error: 'PersistBlob' does not name a type
+     static uint32_t blobCheck(const PersistBlob& b)
+
+`PersistBlob` and `QueuedMove` live in `rover/types.h` for this reason. **Anything
+`#include`d is visible before the generated prototypes; anything defined in the sketch is
+not.** The same applies to default arguments on sketch-level functions, which the generated
+prototype duplicates.
+
+`build_check.sh` cannot catch this by compiling -- compiling the `.ino` as plain C++ skips
+the `.ino` preprocessing entirely, which is exactly why this got through the type check and
+only failed in the IDE. It greps for the pattern instead and fails the build.
+
+Also note the sketch is `rover/rover.ino`, not `main.ino`: the IDE requires the `.ino`
+filename to match its folder, or it offers to relocate the file and leave the headers
+behind.
+
 ### Testing, given there is no Arduino toolchain on the Pi
 
 The firmware cannot be compiled or run on the machine it is developed from, so:
 
 - **`rover/motion_core.h` and `rover/protocol_core.h` contain no Arduino headers** and are
   compiled natively by `rover/test/test_core.cpp` (125 checks: ramp lands on the exact
-  step, limits, watchdog, E-stop, JSON scan/emit). Keep new logic there, not in `main.ino`.
-- **`rover/test/build_check.sh`** runs those tests and then type-checks `main.ino` as plain
+  step, limits, watchdog, E-stop, JSON scan/emit). Keep new logic there, not in `rover.ino`.
+- **`rover/test/build_check.sh`** runs those tests and then type-checks `rover.ino` as plain
   C++ against stubs in `rover/test/stubs/`. A pass means "will probably compile" -- it
   cannot verify the real libraries' signatures or anything about hardware.
 - **`pi/rover/rover_sim.py`** speaks the board protocol over the real socket, so the server
@@ -518,7 +540,7 @@ re-executed, so retransmission is safe; `jog_hold` is exempt and must not advanc
 which the Pi uses to discard status frames older than a position change.
 
 WiFi credentials live in `rover/secrets.h`, **gitignored**, with `secrets.example.h`
-committed. They were previously inline in `main.ino`.
+committed. They were previously inline in `rover.ino`.
 
 **Not yet done:** the automated grid raster. The panel is jog, nudge, calibration and
 tracking. The raster should drive `rover_move_abs` position by position, reuse

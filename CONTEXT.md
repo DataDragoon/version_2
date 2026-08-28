@@ -217,7 +217,7 @@ WiFi credentials are in `rover/secrets.h`, gitignored; `rover/secrets.example.h`
 committed template.
 
 Firmware layout: `config.h` (pins, mechanism, defaults), `motion_core.h` (ramp, limits,
-watchdog — Arduino-free and unit-tested), `protocol_core.h` (JSON — likewise), `main.ino`
+watchdog — Arduino-free and unit-tested), `protocol_core.h` (JSON — likewise), `rover.ino`
 (pins, timer, sockets, flash persistence). `rover/test/build_check.sh` runs the native
 tests and type-checks the sketch; `pi/rover/rover_sim.py` stands in for the board so the
 Pi and groundstation are testable without the rig.

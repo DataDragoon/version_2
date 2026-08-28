@@ -255,7 +255,7 @@ class Sim:
         is_hold = (c == 'jog_hold')
         if seq and seq == self.last_seq and not is_hold:
             return [{'t': 'ack', 'seq': seq}]
-        # Holds must not advance last_seq -- see the same note in main.ino.
+        # Holds must not advance last_seq -- see the same note in rover.ino.
         if not is_hold:
             self.last_seq = seq
 
@@ -330,7 +330,7 @@ class Sim:
                     ax.min_limit, ax.max_limit = ax.max_limit, ax.min_limit
                 if msg.get('limits') is not None:
                     ax.limits_enabled = bool(msg['limits'])
-            # status, never hello -- see the note in main.ino's cfg handler.
+            # status, never hello -- see the note in rover.ino's cfg handler.
             out += [{'t': 'ack', 'seq': seq}, self.status()]
         elif c == 'enable':
             self.enabled = bool(msg.get('on', True))

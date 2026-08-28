@@ -1,4 +1,4 @@
-// Minimal Arduino API stubs. Exist ONLY so rover/main.ino can be type-checked
+// Minimal Arduino API stubs. Exist ONLY so rover/rover.ino can be type-checked
 // with g++ on a machine that has no Arduino toolchain -- see test/build_check.sh.
 // They are never compiled into the firmware.
 #pragma once
