@@ -294,8 +294,9 @@ table's 256-profile hardware ceiling — see Quick-tune master table below) with
 Both RF panels share port 9003 — starting an SFCW sweep auto-stops any active TX/RX in RF Calib.
 C-scan panel rasters a 2D grid of positions over the target and shares the SFCW panel's
 background model machinery (see below).
-Rover Scan panel jogs the 2-axis stepper gantry and tracks its position — see below. The
-automated grid raster on top of it is not built yet.
+Rover Scan panel drives the 2-axis stepper gantry (continuous jog, nudge, calibration,
+live position from the controller's own step counter) — see below. The automated grid
+raster on top of it is not built yet.
 Imaging Bench panel replays an exported waterfall snapshot through 11 selectable imaging
 effects for offline A/B of processing chains — see below.
 
@@ -378,101 +379,151 @@ The panel is the source of truth; keep new SFCW params in that payload or they w
 reach the Pi.
 Next steps: SAR reconstruction integration.
 
-## Rover Scan Panel — jog control and position tracking (2026-08-28)
+## Rover Scan Panel + firmware (rewritten 2026-08-29)
 
-Panel id `rover` (`RoverPanel.jsx` + `RoverDisplay.jsx`), between `cscan` and `sar` in the
-`PANELS` array. Pi side is `pi/rover/rover_server.py`, launched by `pi/start.py` alongside
-`stream.py` and `sdr_server.py`. First slice of automated scanning: declare the origin, jog
-the head with four click-and-hold keys (or the arrow keys), and track where it is. The grid
-raster itself is not built yet.
+Panel id `rover` (`RoverPanel.jsx` + `RoverDisplay.jsx`), between `cscan` and `sar`.
+Pi side `pi/rover/rover_server.py` (port 9002), launched by `pi/start.py`. Firmware in
+`rover/`. Two axes only -- **X = left/right, Y = up/down** -- there is no standoff axis.
 
-**Two sockets, one process.** The Arduino UNO is a *client* -- it dials into the Pi on 8765
-and waits -- so `rover_server.py` runs `websockets.serve` twice: 8765 for the UNO, 9002 for
-the groundstation. Do not "simplify" this into one server; the port and the direction are
-fixed by firmware we cannot reflash.
+    groundstation --ws:9002--> rover_server --ws:8765--> Arduino UNO R4 WiFi
 
-**Wire format is one frame per move: `"<x>,<z>"`, relative mm, negative reverses.** Byte-for-
-byte what `~/stepper_testrig/stepper_testrig2.py` sends, including the `str(float(...))`
-number format (`_fmt_mm` reproduces `"1.0"`, not `"1.000"`) -- that is the only form this
-board has actually been driven with. `x` = horizontal; the board calls the vertical axis `z`
-and the groundstation calls it `y`.
+### The architectural change, and why most of the Pi side got deleted
 
-### Why the tracking cannot drift on our side, and where it still can
+The first firmware ran its steppers from `loop()` and, so WiFi would not disturb them,
+refused to call `webSocket.loop()` while moving. **The board was deaf for the duration of
+every move**: it could not be stopped, could not be queried, and silently discarded
+anything that arrived mid-move.
 
-The board has no position query, no stop command, no velocity command, and no documented
-reply. Every design choice below falls out of one of those four absences.
+Everything the Pi used to do was a workaround for that, and is now gone:
+`enforce_move_time`, `ack_grace_s`, `move_overhead_s`, `ACK_GIVEUP`, the jog move-train,
+the commanded-vs-confirmed split, `invert_x`/`invert_y`. **Do not reintroduce any of it.**
 
-- **Integer micrometres everywhere.** All position state is `*_um` ints and every move is
-  quantised to a whole micrometre before it is sent, so the tracked position is exactly the
-  sum of the integers transmitted. mm appear only at the display boundary. Summing floats
-  across a long raster would not be exact; this is.
-- **Click-and-hold is a train of discrete moves, not a velocity.** The board has no velocity
-  command, so the alternative would be integrating held-button wall-clock time into a
-  distance -- a guess. Each jog tick advances position by exactly one quantum or not at all,
-  so position is always an exact multiple of `jog_step_mm`. Verified: 48 jog moves round a
-  closed square return to the start exactly, and 12 alternating taps net exactly 0.0 mm.
-- **Exactly one move in flight** (`_move_lock`), and the next is not sent until the previous
-  resolved *and* `estimated_move_time` has elapsed (`enforce_move_time`, default on). An
-  early reply may mean "received", not "finished"; a move the board drops because its buffer
-  was full is drift that nothing can observe. **Do not remove this pacing to make jogging
-  faster** -- raise `jog_step_mm` or `speed_mm_s` instead.
-- **Soft limits trim a move to the remaining travel rather than rejecting it**, and the
-  trimmed value is what gets both sent and accumulated, so the two can never disagree.
-  Jogging coasts exactly to the edge (verified: 2 mm quanta into a 4.5 mm limit gives
-  2 + 2 + 0.5 and then stops the jog).
-- **Release latency is up to one quantum, by construction.** A move already handed to the
-  board cannot be recalled. `rover_stop` and jog release both end the *train*; the current
-  step still finishes. This is why the quantum defaults small (1 mm).
+The firmware now generates steps in a 20 kHz `FspTimer` ISR and the main loop only talks.
+Consequences: a held jog key is a real continuous jog, E-stop works during motion, and
+position is reported at 20 Hz. `rover/motion_core.h` replaces AccelStepper -- that library
+is built around "move to a target", and a jog with no target that must decelerate onto a
+soft limit means writing the ramp anyway.
 
-**Commanded vs confirmed.** `commanded_*_um` advances the instant a move goes out;
-`confirmed_*_um` only when the board answers afterwards. `_looks_like_ack()` currently
-returns True for anything -- the reply format is unknown -- and is the single place to
-narrow that once the firmware's vocabulary is known. Frames arriving when no move is
-outstanding are counted as `unsolicited` and surfaced in the panel, because a board that
-chatters on its own makes "it spoke" weak evidence that a move finished. Unacknowledged
-travel accumulates into `unacked_travel_um`, shown as **Unconfirmed** -- a drift *budget*,
-not an error estimate. Re-declaring the position clears it, because that is the only ground
-truth the system has.
+### Position: measured, not dead reckoned
 
-**Silent boards get their ack wait dropped after `ACK_GIVEUP = 3` moves.** Otherwise a board
-that never replies pays `ack_grace_s` (1 s) on *every* jog quantum. Measured with a
-deliberately silent stub: the first three moves cost 1.25 s each, then the cadence settles to
-0.25 s, identical to an acking board. Any frame from the board re-enables ack waiting, so a
-link that starts silent and later speaks recovers without a restart.
+The board reports its own step counter; the Pi converts to mm. One frame end to end --
+steps, positive = up/right, origin where the operator last declared it -- so there are no
+offsets to keep in sync. Direction sense lives in the firmware (`config.h`
+`V_DIR_INVERT`/`H_DIR_INVERT`), not on the Pi.
 
-**Jog task lifecycle.** Each jog gets its own dict and `_jog_loop(jog)` runs only while
-`self._jog is jog`. An earlier design reused one task and tested `.done()`, which dropped a
-press that landed in the gap between the old loop's last statement and its completion --
-release-then-immediately-re-press is exactly what an operator does. Keep the identity check.
+Remaining error sources, all honest:
+- **Quantisation**, bounded at <= half a step (65 um on X, 2.5 um on Y) *however many
+  moves have been made*. Verified against the simulator: 400 x 1 mm tracks to +0.35 steps,
+  the same as 40 x 1 mm. The old firmware's error grew linearly -- 400 x 1 mm would have
+  been +14.7 mm.
+- **Calibration**, now the dominant X term. See below.
+- **Slip / missed steps**, unobservable. Reported as `travel_mm`, the odometer since the
+  last declared position, which is the exposure.
 
-**Dead-man.** The panel sends `rover_jog_hold` every 150 ms while a key is held; the Pi
-stops the jog after `JOG_HOLD_TIMEOUT` (600 ms) without one, and also when the last
-groundstation client disconnects. The panel additionally stops on `window` blur,
-`pointerup`/`pointercancel` and `visibilitychange`, and uses pointer capture on each key, so
-a cursor sliding off a held button still delivers the release.
+**`ideal_mm` is what makes quantisation bounded, and it is subtle.** It is the commanded
+trajectory in mm, kept unrounded; every step target is `round(ideal * steps_per_mm)`.
+Computing a relative move as `current_mm + delta` instead does NOT work and reproduces the
+original bug exactly: the current position is a whole number of steps, so the rounding
+falls the same way every time and compounds. Measured that way: 40 x 1 mm came out +1.469
+mm (+3.67%). `ideal_mm` is resynced to reality only on explicit events -- a `done` whose
+reason is not `completed`, an E-stop, a jog ending, `set_position`.
 
-**Sign conventions live in config, not firmware, and both are now measured.** Confirmed on
-the rig 2026-08-28: the board drives **LEFT on negative x** and **UP on negative z**. The
-groundstation uses +X right and +Y up (matching the C-scan grid, whose vertical index grows
-upward), so X agrees with the board and Y is opposed -- hence `invert_y` defaults to **True**
-and `invert_x` to False. `invert_*` flip the sign on the wire only; user coordinates are
-unaffected. Verified frame by frame: UP sends `0.0,-1.0`, DOWN `0.0,1.0`, LEFT `-1.0,0.0`,
-RIGHT `1.0,0.0`. Treat these as hardware facts, not preferences -- the flags exist because
-the sketch cannot be read, not because the choice is free. **Note the defaults are only
-consulted when there is no `pi/rover/rover_state.json`**: that file persists whatever the
-flags were last set to, so a stale one from before this was measured would silently keep the
-old value. Delete it if the axes ever come back wrong after a code update.
+**Do not resync it by comparing ideal against actual position.** An earlier attempt did,
+on the reasoning that only a cut-short move could put them more than a step apart. It
+cannot work: the board acknowledges a move -- advancing the sequence its status stream
+reports -- *before* dispatching it from its queue, so every move passes through a window
+reporting "new sequence, idle, old position", indistinguishable from a move cut short. The
+ideal was destroyed on every move and the 3.67% drift came back untouched.
 
-**State persists to `pi/rover/rover_state.json`** (gitignored): config and last-known
-position. A server restart does not move the rig, so discarding the position would force a
-needless re-home -- but the process cannot know the rig was untouched either, so a restored
-position comes back with `position_stale: true` and the panel says so until the operator
-re-declares it. Machine coordinates (total commanded travel) are deliberately *not* reset by
-re-homing, so the record of how far the rig has been driven survives.
+### The 3.67% rounding bug, and why it was invisible in testing
 
-**Not yet done:** the grid raster. The panel is jog + tracking only. When the raster lands it
-should drive `move_rel` position-by-position and reuse `lib/cscanGrid.js`'s snake order so
-the C-scan panel's existing geometry applies unchanged.
+Old firmware: `lround(mm * 7.7166)` per relative move, remainder discarded. At 1 mm that is
+8 steps = 1.0367 mm. The error scales inversely with move size -- 500 mm rounds to within
+0.008% -- and the rig had been jogged at a 500 mm step, so **it was correctly reported as
+"barely any drift" while being 3.67% wrong at the step size a raster actually uses.** Y is
+exactly 200 steps/mm and never had this.
+
+### Bugs found by the simulator, worth not reintroducing
+
+- **`cfg` must never be answered with `hello`.** The Pi pushes its configuration in
+  response to a hello, so replying to `cfg` with one is an unbounded cfg -> hello -> cfg
+  loop. It saturated the link at **60,727 config pushes in one short test**, and because
+  each hello resyncs `ideal_mm` it silently reinstated the quantisation drift. Fixed in
+  firmware (cfg and clear_estop reply with `status`, which now carries `pos_valid`) and
+  guarded structurally on the Pi by `_link_configured`, so no firmware can induce it.
+- **The board's move queue is 4 deep and REJECTS what does not fit.** A rejected move is
+  the worst failure available here: `ideal_mm` has already advanced past a move that never
+  happened. Measured before flow control existed: 400 rapid 1 mm moves tracked 34 mm short.
+  `rover_server` now holds moves in its own `_outbox` and releases them only while the
+  board has room, refusing loudly past `OUTBOX_MAX`.
+- **`dict.setdefault` evaluates its default eagerly**, so `cmd.setdefault('seq',
+  self.next_seq())` burned a sequence number on every jog heartbeat.
+
+### Safety -- there are no endstops on this rig
+
+Soft limits are the only thing between a jog and the end of the rail, so they are enforced
+**on the board as well as the Pi**: the Pi can crash or lose its link, the board cannot. A
+jog caps its speed at `sqrt(2*a*room)` and coasts onto the limit rather than hitting it.
+
+**Stopping distance is `v^2/2a` and it bit the original tuning.** Both axes shared one
+`SPEED = 2000` steps/s, which is 10 mm/s vertically but **259 mm/s horizontally** -- a
+129.6 mm stopping distance on a rig whose scans span ~100 mm. Speeds and accelerations are
+now per-axis in mm and runtime-configurable; the panel shows the resulting stop distance.
+Defaults (vertical 1 m of travel, horizontal 4 m):
+
+| | steps/mm | max speed | jog speed | accel | stop dist max / jog |
+|---|---|---|---|---|---|
+| Y vertical, leadscrew | 200.0 exact | 25 mm/s | 5 mm/s | 100 mm/s^2 | 3.1 / 0.13 mm |
+| X horizontal, 66 mm wheels | 7.7166 | 150 mm/s | 20 mm/s | 500 mm/s^2 | 22.5 / 0.4 mm |
+
+E-stop is software, latched, and works during motion; nothing but `clear_estop` runs while
+it is latched. Clearing it marks the position invalid, because cutting the step train at
+speed is exactly where a stepper loses steps. A **jog dead-man** lives on the board: the
+panel refreshes every 150 ms, the board decelerates after 500 ms of silence, so a dropped
+link cannot leave the rover driving. The panel also stops on blur / pointerup /
+visibilitychange, since the dead-man costs up to half a second of unwanted travel.
+
+Idle-disabling the drivers is deliberately NOT done: with no endstop and no encoder, an
+axis creeping while de-energised would be silently wrong with no way to recover it.
+
+### Calibration
+
+X rolls on wheels, so its steps/mm is empirical -- a caliper gives the free diameter
+(66.0 mm, confirmed) but a loaded wheel rolls on slightly less. `rover_calibrate` takes a
+commanded and a measured distance and scales. Corrections beyond 0.5x-2x are refused as
+a mis-entry rather than applied. Y is a leadscrew at exactly 200 steps/mm and should never
+need it.
+
+### Testing, given there is no Arduino toolchain on the Pi
+
+The firmware cannot be compiled or run on the machine it is developed from, so:
+
+- **`rover/motion_core.h` and `rover/protocol_core.h` contain no Arduino headers** and are
+  compiled natively by `rover/test/test_core.cpp` (125 checks: ramp lands on the exact
+  step, limits, watchdog, E-stop, JSON scan/emit). Keep new logic there, not in `main.ino`.
+- **`rover/test/build_check.sh`** runs those tests and then type-checks `main.ino` as plain
+  C++ against stubs in `rover/test/stubs/`. A pass means "will probably compile" -- it
+  cannot verify the real libraries' signatures or anything about hardware.
+- **`pi/rover/rover_sim.py`** speaks the board protocol over the real socket, so the server
+  and panel are testable end to end with no rig. Every bug in the list above was found by
+  it. It is a kinematic model of a *perfect* machine: no step timing, no missed steps, no
+  slip, so it validates protocol and control flow and never mechanical accuracy.
+
+### Protocol (line JSON, flat objects, sequence-numbered)
+
+Pi -> board: `move` (absolute or relative, per axis), `jog`, `jog_hold`, `stop`, `estop`,
+`clear_estop`, `set_pos`, `cfg`, `enable`, `ping`. Board -> Pi: `hello` (connect only),
+`status` (20 Hz), `ack`, `done`, `err`. A repeated `seq` is re-acknowledged rather than
+re-executed, so retransmission is safe; `jog_hold` is exempt and must not advance `lastSeq`,
+which the Pi uses to discard status frames older than a position change.
+
+WiFi credentials live in `rover/secrets.h`, **gitignored**, with `secrets.example.h`
+committed. They were previously inline in `main.ino`.
+
+**Not yet done:** the automated grid raster. The panel is jog, nudge, calibration and
+tracking. The raster should drive `rover_move_abs` position by position, reuse
+`lib/cscanGrid.js`'s snake order, and record actual rover position into each sweep's
+`provenance` beside the lidar standoff.
 
 ## Imaging Bench Panel — Offline Effect Comparison (2026-08-23)
 

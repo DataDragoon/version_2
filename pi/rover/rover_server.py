@@ -1,91 +1,61 @@
-"""Rover (stepper gantry) control server -- ws://0.0.0.0:9002.
+"""Rover control server -- ws://0.0.0.0:9002.
 
-Topology
+    groundstation --ws:9002--> rover_server --ws:8765--> Arduino UNO R4
+
+The Arduino is a WebSocket *client*: it dials into the Pi. This process is the
+server for both links and is the only place rover calibration lives.
+
+WHAT CHANGED, AND WHY MOST OF THIS FILE GOT SMALLER (2026-08-29)
+---------------------------------------------------------------
+The previous firmware ran its steppers from loop() and, so that WiFi would not
+disturb them, refused to service the socket while moving. The board was deaf for
+the whole duration of every move: it could not be stopped, could not be queried,
+and silently discarded anything that arrived mid-move.
+
+Everything this file used to do was a workaround for that. Click-and-hold was a
+train of small discrete moves, because a continuous jog could not have been
+stopped. Moves were paced by an *estimated* travel time so the board's buffer
+could not overflow. An ack-grace timeout guessed at completion, and a heuristic
+gave up on acks entirely for boards that never replied. Position was dead
+reckoned from what we hoped had happened.
+
+The firmware now steps from a timer ISR and stays responsive throughout, so all
+of that is gone: `enforce_move_time`, `ack_grace_s`, `move_overhead_s`,
+`ACK_GIVEUP`, the jog train, and the commanded-vs-confirmed split.
+
+POSITION
 --------
-The Arduino UNO is a WebSocket *client*: it dials into the Pi and waits to be
-told where to go. The groundstation is a client too, on a different port. This
-process is the server for both, and the single place rover position is tracked.
+Position is no longer dead reckoned here at all. The board reports its own step
+counter and this file converts it to mm. One coordinate frame end to end -- steps,
+positive = up and right, origin wherever the operator last declared it -- so
+there are no offsets to keep in sync. Axis direction sense moved into the
+firmware (config.h V_DIR_INVERT / H_DIR_INVERT), which is why `invert_x` and
+`invert_y` no longer exist here.
 
-    groundstation --ws:9002--> rover_server --ws:8765--> Arduino UNO
+The remaining error sources are honest ones:
 
-Wire protocol to the Arduino is fixed -- the board is a black box we cannot
-reflash right now, so this matches ~/stepper_testrig/stepper_testrig2.py exactly:
-one text frame per move, ``"<x>,<z>"``, both RELATIVE millimetres, negative for
-reverse. X is the horizontal axis, Z the vertical one. There is no stop command,
-no position query, and no documented reply.
+* **Quantisation.** Bounded, not accumulating: moves are commanded as ABSOLUTE
+  step targets wherever possible, so the error is always <= half a step of the
+  final position (65 um horizontally, 2.5 um vertically) no matter how many
+  moves have been made. The old firmware rounded every RELATIVE move
+  independently and discarded the remainder, which at a 1 mm jog quantum was a
+  systematic +3.67% on the horizontal axis -- invisible at the coarse jog steps
+  it was tested with, and 3.7 mm of error over a 100 mm raster.
+* **Calibration.** The horizontal axis rolls on 66 mm wheels; its steps/mm is a
+  measured quantity, and the effective rolling diameter under load is slightly
+  under the caliper diameter. `rover_calibrate` corrects it from a commanded
+  vs. measured distance. This is now the dominant horizontal error term.
+* **Slip and missed steps.** Unobservable without an encoder. What we can do is
+  report the odometer since the last declared position, which is the exposure.
 
-The board's sign convention, confirmed on the rig 2026-08-28:
-
-    x < 0  ->  LEFT        x > 0  ->  RIGHT
-    z < 0  ->  UP          z > 0  ->  DOWN
-
-The groundstation uses +X right and +Y up (matching the C-scan grid, where the
-vertical index grows upward), so X agrees with the board and Y is opposed. That
-is the whole reason ``invert_y`` defaults to True -- see DEFAULT_CONFIG.
-
-Everything below follows from those three absences.
-
-How position is tracked, and why it cannot drift on our side
-------------------------------------------------------------
-There is no encoder and no position query, so the rover's position is *dead
-reckoned* from what we commanded. Four separate drift mechanisms exist; three of
-them are ours to eliminate and one is not:
-
-1. **Accumulation drift** (ours). Summing floats forever loses low bits. All
-   position state here is integer micrometres (``*_um``) and every move is
-   quantised to a whole micrometre before it is sent, so the tracked position is
-   exactly the sum of the integers we transmitted -- bit-exact, forever. mm are
-   produced only at the display boundary.
-
-2. **Command-loss drift** (ours). The Arduino has a small serial/socket buffer
-   and no flow control we can see. Firing moves at it faster than it executes
-   them is the classic way to have one silently dropped -- we would count it,
-   the rig would not move, and every position afterwards is wrong with nothing
-   to indicate it. So exactly ONE move is ever in flight (``_move_lock``), and
-   the next is not sent until the previous one is resolved *and*
-   ``estimated_move_time`` has elapsed (``enforce_move_time``). This is why
-   click-and-hold is a train of small discrete moves rather than a velocity
-   command: a velocity command is not in the Arduino's vocabulary, and
-   integrating held-button wall-clock time into a distance would be a guess.
-   Each jog tick advances position by exactly one quantum, or not at all.
-
-3. **Rounding-at-the-edges drift** (ours). Soft limits clamp a move to the
-   remaining travel rather than refusing it, and the clamped value -- not the
-   requested one -- is what gets both sent and accumulated.
-
-4. **Mechanical drift** (NOT ours): missed steps, belt slip, backlash, or the
-   Arduino dropping a command anyway. Nothing in software can observe this. What
-   we can do is *bound* it and say so, which is what the confirmed/commanded
-   split below is for. It is cleared only by re-homing (``set_position``), which
-   is the operator asserting ground truth.
-
-Commanded vs confirmed
-----------------------
-``commanded_*_um`` advances the instant a move goes out. ``confirmed_*_um``
-advances only when the Arduino says something back afterwards. We do not know
-this board's reply format -- or whether it replies at all -- so any frame
-arriving while a move is outstanding counts as an acknowledgement, and frames
-arriving at any other time are counted as ``unsolicited`` and shown to the
-operator. If unsolicited traffic is nonzero the ack signal is not trustworthy
-and the panel says so.
-
-A move that is never acknowledged still moves the commanded position (the belt
-almost certainly did move) but adds its travel to ``unacked_travel_um`` -- a
-drift *budget*: the total distance whose execution we never had confirmed. When
-the ack format is eventually known, tightening this to hard confirmation is a
-one-function change (``_looks_like_ack``) and nothing else moves.
-
-Release latency
----------------
-A move already handed to the Arduino cannot be recalled, so releasing a jog key
-stops the train after the current quantum finishes. That is a physical property
-of the interface, not an implementation shortcut -- it is why the jog quantum
-defaults small.
+Axis names: the groundstation says x (horizontal) and y (vertical); the board
+says h and v. `BOARD_AXIS` is the only place that mapping lives.
 """
 
 import argparse
 import asyncio
 import json
+import math
 import os
 import signal
 import time
@@ -96,104 +66,179 @@ import websockets
 PORT = 9002
 ARDUINO_PORT = 8765
 
-UM = 1000.0  # micrometres per millimetre
+# Depth of this server's own move queue. Beyond this a caller is so far ahead of
+# the machine that silently buffering more would hide a problem.
+OUTBOX_MAX = 64
+# Leave one slot free in the board's four-deep queue, so a jog or a stop issued
+# in the same instant is never the command that gets rejected.
+BOARD_QUEUE_ROOM = 3
 
-# Dead-man: the groundstation repeats `rover_jog_hold` while a key is held. If
-# holds stop arriving (tab closed, packet lost, mouseup swallowed) the jog stops
-# on its own rather than running away.
-JOG_HOLD_TIMEOUT = 0.6
+# groundstation axis -> firmware axis
+BOARD_AXIS = {'x': 'h', 'y': 'v'}
 
-LOG_LINES = 60
-
-# If the board stays silent through this many moves in a row we stop waiting out
-# `ack_grace_s` on every one of them -- see Rover._ack_expected.
-ACK_GIVEUP = 3
-
+LOG_LINES = 80
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rover_state.json')
 
+# Mirrors StopReason in rover/motion_core.h. Kept in sync by hand; the firmware
+# sends the integer.
+STOP_REASON = {
+    0: 'none', 1: 'completed', 2: 'requested',
+    3: 'limit', 4: 'watchdog', 5: 'estop',
+}
+AXIS_MODE = {0: 'idle', 1: 'move', 2: 'jog', 3: 'stopping'}
+
 DEFAULT_CONFIG = {
-    'jog_step_mm': 1.0,       # distance per jog tick
-    'speed_mm_s': 10.0,       # ESTIMATE only -- used to time out a move, never sent
-    'move_overhead_s': 0.15,  # fixed per-move cost (parse, accel/decel) in the estimate
-    'ack_grace_s': 1.0,       # how long past the estimate we wait for a reply
-    'enforce_move_time': True,
-    # Sign conventions live here rather than in firmware we cannot reflash.
-    # Both are measured facts about this rig, not preferences (2026-08-28):
-    # the board drives LEFT on negative x, which already agrees with the
-    # groundstation's +X-is-right, and UP on negative z, which opposes its
-    # +Y-is-up -- hence Y is inverted and X is not.
-    'invert_x': False,
-    'invert_y': True,
-    'limits_enabled': False,
+    # Vertical: leadscrew, 2 mm pitch x 4 start = 8 mm/rev at 1600 steps/rev.
+    # Exact by construction, so this one should never need calibrating.
+    'y_steps_per_mm': 200.0,
+    # Horizontal: 66 mm wheels (caliper-measured). Expected to be calibrated --
+    # a loaded rubber wheel rolls on slightly less than its free diameter.
+    'x_steps_per_mm': 1600.0 / (math.pi * 66.0),   # 7.7166
+
+    # mm/s and mm/s^2. Chosen against the real travel so stopping distance stays
+    # small next to a ~100 mm scan span: horizontal 22.5 mm at full speed and
+    # 0.4 mm at jog speed, vertical 3.1 mm and 0.13 mm.
+    'x_max_speed': 150.0,
+    'x_jog_speed': 20.0,
+    'x_accel': 500.0,
+    'y_max_speed': 25.0,
+    'y_jog_speed': 5.0,
+    'y_accel': 100.0,
+
+    # There are no endstops, so these are the only thing between a jog and the
+    # end of the rail. Buffered inside the true travel (vertical 1 m,
+    # horizontal 4 m). Pushed to the board as well, so they survive this
+    # process crashing or the link dropping.
+    'limits_enabled': True,
     'x_min_mm': 0.0,
-    'x_max_mm': 300.0,
+    'x_max_mm': 3900.0,
     'y_min_mm': 0.0,
-    'y_max_mm': 300.0,
-    'max_move_mm': 500.0,     # refuses an obviously-fat-fingered single move
+    'y_max_mm': 900.0,
+
+    # How long each jog heartbeat buys. The board stops on its own if refreshes
+    # stop arriving, so this bounds how far a dropped link can carry the rover:
+    # at the 20 mm/s jog speed, 500 ms is 10 mm plus 0.4 mm of stopping.
+    'jog_hold_ms': 500,
 }
 
-
-def _fmt_mm(um):
-    """Format micrometres as the Arduino expects to read them.
-
-    stepper_testrig2.py sent ``str(float(...))`` -- so "1.0", "-0.5". Anything
-    that parses is presumably fine, but the board is a black box and this is the
-    form it has actually been driven with, so reproduce it exactly.
-    """
-    return repr(round(um / UM, 3))
+# Inclusive (min, max) per numeric setting. Typed into a panel field, an
+# out-of-range number does not look wrong on screen -- an earlier session was
+# found running a 500 mm jog quantum -- so every value is clamped here and again
+# when loaded from disk.
+CONFIG_BOUNDS = {
+    'x_steps_per_mm': (0.01, 10000.0),
+    'y_steps_per_mm': (0.01, 10000.0),
+    'x_max_speed': (0.1, 1000.0),
+    'x_jog_speed': (0.1, 1000.0),
+    'x_accel': (1.0, 20000.0),
+    'y_max_speed': (0.1, 1000.0),
+    'y_jog_speed': (0.1, 1000.0),
+    'y_accel': (1.0, 20000.0),
+    'x_min_mm': (-10000.0, 10000.0),
+    'x_max_mm': (-10000.0, 10000.0),
+    'y_min_mm': (-10000.0, 10000.0),
+    'y_max_mm': (-10000.0, 10000.0),
+    'jog_hold_ms': (100.0, 5000.0),
+}
 
 
 class Rover:
     def __init__(self, persist=True):
         self.persist = persist
         self.clients = set()
-        self.arduino = None
-        self.arduino_since = None
-
-        # --- dead-reckoned position, integer micrometres (see module docstring)
-        self.commanded_x_um = 0
-        self.commanded_y_um = 0
-        self.confirmed_x_um = 0
-        self.confirmed_y_um = 0
-        self.origin_x_um = 0
-        self.origin_y_um = 0
-
-        # --- drift accounting, reset by set_position (re-homing)
-        self.unacked_travel_um = 0
-        self.moves_sent = 0
-        self.moves_acked = 0
-        self.moves_timed_out = 0
-        self.unsolicited = 0
-        self.position_stale = False   # restored from disk, not verified against the rig
+        self.board = None
+        self.board_since = None
 
         self.config = dict(DEFAULT_CONFIG)
 
-        self.log = deque(maxlen=LOG_LINES)
+        # Live mirror of the firmware's status stream. `steps` is authoritative
+        # -- nothing here integrates commands to guess at position.
+        self.steps = {'x': 0, 'y': 0}
+        self.speed_steps = {'x': 0.0, 'y': 0.0}
+        self.mode = {'x': 'idle', 'y': 'idle'}
+        self.stop_reason = {'x': 'none', 'y': 'none'}
+        self.moving = False
+        self.estop = False
+        self.enabled = False
+        self.queue_depth = 0
+        self.board_fw = None
+        self.board_pos_valid = False
+        self.last_status_at = None
 
-        self._move_lock = asyncio.Lock()
-        self._ack_event = asyncio.Event()
-        self._pending_move = False
-        self._moving = False
-        # Whether this board is believed to reply at all. Starts optimistic and
-        # is switched off after ACK_GIVEUP silent moves, because otherwise a
-        # board that never answers costs `ack_grace_s` of dead time on EVERY
-        # jog quantum -- 1 mm/s jogging on a rig that can do ten times that.
-        # Any frame from the board turns it back on, so a link that starts
-        # silent and later speaks is picked up without a restart.
-        self._ack_expected = True
-        self._silent_streak = 0
-        self._jog = None              # {'axis','dir','deadline'} while held
-        self._jog_task = None
-        self._loop = None
+        # Odometer since the last declared position: total commanded travel, in
+        # mm, which is the exposure to wheel slip and missed steps. This is the
+        # honest replacement for the old "unconfirmed" budget -- the link is now
+        # reliable, the mechanics are what remain unobservable.
+        self.travel_mm = 0.0
+        self._last_steps = None
+
+        # Where the rover would be if steps were infinitely fine, in mm. Every
+        # relative move accumulates here and the STEP TARGET is rounded from
+        # this, never from the current position.
+        #
+        # This is the whole reason a 1 mm horizontal jog no longer drifts.
+        # Rounding `current_mm + delta` reproduces the old error exactly: the
+        # current position is itself a whole number of steps, so the rounding
+        # lands on the same side every time and 40 x 1 mm came out as 41.47 mm
+        # (+3.67%, measured). Rounding against an ideal that keeps its fraction
+        # bounds the error at half a step of wherever we ended up, forever.
+        self.ideal_mm = {'x': 0.0, 'y': 0.0}
+
+        # Status frames sent before the board processed our last position-setting
+        # command still carry the OLD position. Applying one would rewind the
+        # readout and charge the odometer for a jump that never happened.
+        # Every status echoes the last command the board acted on, so ignoring
+        # anything older than the command we are waiting on closes that window.
+        self._status_gate_seq = 0
+
+        # Previous reported mode per axis, so a jog ending is detected as a state
+        # transition rather than inferred from position.
+        #
+        # An earlier version resynced the ideal whenever an idle axis sat more
+        # than a step away from it, reasoning only a cut-short move could cause
+        # that. It could not work: the board acknowledges a move -- which
+        # advances the sequence its status stream reports -- BEFORE dispatching
+        # it from its queue, so every move passed through a window reporting
+        # "new sequence, idle, old position", indistinguishable from a move that
+        # was cut short. The ideal was destroyed on every move and the 3.67%
+        # drift came back untouched. Resync on explicit events only.
+        self._prev_mode = {'x': 'idle', 'y': 'idle'}
+
+        # Guards against configuring the same link twice. A `hello` makes this
+        # server push its configuration, so a controller that answers `cfg` with
+        # a `hello` would put the two in an unbounded cfg -> hello -> cfg loop.
+        # The firmware no longer does that, but the guard is what makes it
+        # impossible rather than merely fixed -- when this was live it produced
+        # 60,727 config pushes in one short test run, and because each hello
+        # resyncs the ideal position it silently reintroduced the very
+        # quantisation drift the ideal exists to prevent.
+        self._link_configured = False
+
+        # Outbound move queue with flow control. The board's own queue is only
+        # four deep and it REJECTS a move that does not fit -- and a rejected
+        # move is the worst possible failure here, because the ideal position
+        # has already advanced past a move the rover never made. Measured before
+        # this existed: 400 rapid 1 mm moves tracked 34 mm short.
+        #
+        # So moves are held here and released only while the board has room.
+        # Callers that wait for `done` (the raster does) never touch this path;
+        # it is what keeps a caller that does not from corrupting position.
+        self._outbox = deque()
+        self._board_queue = 0
+
+        # Cross-check against the board's own flash copy. A disagreement on
+        # connect means one of the two moved while the other was not looking.
+        self.saved_steps = {'x': 0, 'y': 0}
+        self.position_stale = False
+        self.position_conflict = None
+
+        self._seq = 0
         self._last_error = None
+        self.log = deque(maxlen=LOG_LINES)
 
         self._load_state()
 
     # ── persistence ─────────────────────────────────────────────────────────
-    # Config and last-known position survive a server restart. A restart does
-    # not move the rig, so throwing the position away would force a needless
-    # re-home; but the process cannot know the rig was untouched either, so a
-    # restored position comes back flagged stale until the operator confirms it.
 
     def _load_state(self):
         if not self.persist:
@@ -203,24 +248,31 @@ class Rover:
                 saved = json.load(f)
         except (OSError, ValueError):
             return
-        cfg = saved.get('config') or {}
-        for k, v in cfg.items():
-            if k in self.config and isinstance(v, type(self.config[k])):
-                self.config[k] = v
-            elif k in self.config and isinstance(self.config[k], float):
-                try:
-                    self.config[k] = float(v)
-                except (TypeError, ValueError):
-                    pass
-        pos = saved.get('position') or {}
-        for attr in ('commanded_x_um', 'commanded_y_um', 'confirmed_x_um',
-                     'confirmed_y_um', 'origin_x_um', 'origin_y_um',
-                     'unacked_travel_um'):
-            if isinstance(pos.get(attr), int):
-                setattr(self, attr, pos[attr])
+        for k, v in (saved.get('config') or {}).items():
+            if k not in self.config:
+                continue
+            if isinstance(self.config[k], bool):
+                self.config[k] = bool(v)
+                continue
+            try:
+                self.config[k] = float(v)
+            except (TypeError, ValueError):
+                continue
+        # Same clamp as a live edit: a file written before these bounds existed,
+        # or edited by hand, must not reinstate a bad value on every restart.
+        for k, (lo, hi) in CONFIG_BOUNDS.items():
+            if not (lo <= self.config[k] <= hi):
+                self._note(f"saved {k}={self.config[k]} outside [{lo}, {hi}] "
+                           f"-- reset to {DEFAULT_CONFIG[k]}")
+                self.config[k] = DEFAULT_CONFIG[k]
+        pos = saved.get('steps') or {}
+        for ax in ('x', 'y'):
+            if isinstance(pos.get(ax), int):
+                self.saved_steps[ax] = pos[ax]
+                self.steps[ax] = pos[ax]
         self.position_stale = True
-        self._note(f"state restored from disk (position flagged stale) -- "
-                   f"x={self.x_um / UM:.3f} y={self.y_um / UM:.3f} mm")
+        self._note(f"state restored: x={self.mm('x'):.3f} y={self.mm('y'):.3f} mm "
+                   f"(stale until the board confirms or the operator re-declares)")
 
     def _save_state(self):
         if not self.persist:
@@ -228,69 +280,70 @@ class Rover:
         try:
             tmp = STATE_FILE + '.tmp'
             with open(tmp, 'w') as f:
-                json.dump({
-                    'config': self.config,
-                    'position': {
-                        'commanded_x_um': self.commanded_x_um,
-                        'commanded_y_um': self.commanded_y_um,
-                        'confirmed_x_um': self.confirmed_x_um,
-                        'confirmed_y_um': self.confirmed_y_um,
-                        'origin_x_um': self.origin_x_um,
-                        'origin_y_um': self.origin_y_um,
-                        'unacked_travel_um': self.unacked_travel_um,
-                    },
-                    'saved_at': time.time(),
-                }, f)
+                json.dump({'config': self.config, 'steps': dict(self.steps),
+                           'saved_at': time.time()}, f)
             os.replace(tmp, STATE_FILE)
         except OSError as e:
             self._note(f"WARNING: could not save state ({e})")
 
-    # ── derived position ────────────────────────────────────────────────────
+    # ── unit conversion ─────────────────────────────────────────────────────
 
-    @property
-    def x_um(self):
-        return self.commanded_x_um - self.origin_x_um
+    def spmm(self, axis):
+        return self.config[f'{axis}_steps_per_mm']
 
-    @property
-    def y_um(self):
-        return self.commanded_y_um - self.origin_y_um
+    def mm(self, axis):
+        return self.steps[axis] / self.spmm(axis)
+
+    def to_steps(self, axis, mm):
+        return int(round(mm * self.spmm(axis)))
+
+    def limit_steps(self, axis):
+        lo = self.to_steps(axis, self.config[f'{axis}_min_mm'])
+        hi = self.to_steps(axis, self.config[f'{axis}_max_mm'])
+        return (lo, hi) if lo <= hi else (hi, lo)
 
     # ── logging ─────────────────────────────────────────────────────────────
 
     def _note(self, line):
-        stamped = {'t': time.time(), 'line': line}
-        self.log.append(stamped)
+        entry = {'t': time.time(), 'line': line}
+        self.log.append(entry)
         print(f"[rover] {line}", flush=True)
+        return entry
 
     # ── status ──────────────────────────────────────────────────────────────
 
     def status(self):
         return {
-            'arduino_connected': self.arduino is not None,
-            'arduino_since': self.arduino_since,
-            'moving': self._moving,
-            'jog': None if self._jog is None else {'axis': self._jog['axis'], 'dir': self._jog['dir']},
-            'x_mm': round(self.x_um / UM, 4),
-            'y_mm': round(self.y_um / UM, 4),
-            'machine_x_mm': round(self.commanded_x_um / UM, 4),
-            'machine_y_mm': round(self.commanded_y_um / UM, 4),
-            'confirmed_x_mm': round((self.confirmed_x_um - self.origin_x_um) / UM, 4),
-            'confirmed_y_mm': round((self.confirmed_y_um - self.origin_y_um) / UM, 4),
-            'drift_budget_mm': round(self.unacked_travel_um / UM, 4),
-            'moves_sent': self.moves_sent,
-            'moves_acked': self.moves_acked,
-            'moves_timed_out': self.moves_timed_out,
-            'unsolicited': self.unsolicited,
-            'ack_expected': self._ack_expected,
+            'board_connected': self.board is not None,
+            'board_since': self.board_since,
+            'board_fw': self.board_fw,
+            'x_mm': round(self.mm('x'), 4),
+            'y_mm': round(self.mm('y'), 4),
+            'x_steps': self.steps['x'],
+            'y_steps': self.steps['y'],
+            'x_speed_mm_s': round(self.speed_steps['x'] / self.spmm('x'), 3),
+            'y_speed_mm_s': round(self.speed_steps['y'] / self.spmm('y'), 3),
+            'x_mode': self.mode['x'],
+            'y_mode': self.mode['y'],
+            'x_stop_reason': self.stop_reason['x'],
+            'y_stop_reason': self.stop_reason['y'],
+            'moving': self.moving,
+            'estop': self.estop,
+            'enabled': self.enabled,
+            'queue_depth': self.queue_depth,
+            'pending_moves': len(self._outbox),
+            'travel_mm': round(self.travel_mm, 2),
             'position_stale': self.position_stale,
+            'position_conflict': self.position_conflict,
+            'board_pos_valid': self.board_pos_valid,
+            'last_status_at': self.last_status_at,
             'last_error': self._last_error,
             'config': dict(self.config),
         }
 
-    async def broadcast(self):
+    async def _fanout(self, msg):
         if not self.clients:
             return
-        msg = json.dumps({'type': 'rover_status', **self.status()})
         dead = set()
         for c in self.clients:
             try:
@@ -299,285 +352,411 @@ class Rover:
                 dead.add(c)
         self.clients -= dead
 
-    async def broadcast_error(self, message):
-        if not self.clients:
-            return
-        msg = json.dumps({'type': 'rover_error', 'message': message})
-        dead = set()
-        for c in self.clients:
-            try:
-                await c.send(msg)
-            except websockets.ConnectionClosed:
-                dead.add(c)
-        self.clients -= dead
+    async def broadcast(self):
+        await self._fanout(json.dumps({'type': 'rover_status', **self.status()}))
 
     async def broadcast_log(self, entry):
-        if not self.clients:
-            return
-        msg = json.dumps({'type': 'rover_log', **entry})
-        dead = set()
-        for c in self.clients:
-            try:
-                await c.send(msg)
-            except websockets.ConnectionClosed:
-                dead.add(c)
-        self.clients -= dead
+        await self._fanout(json.dumps({'type': 'rover_log', **entry}))
 
-    # ── Arduino link ────────────────────────────────────────────────────────
+    async def broadcast_error(self, message):
+        await self._fanout(json.dumps({'type': 'rover_error', 'message': message}))
 
-    def _looks_like_ack(self, text):
-        """Whether a frame from the board counts as "that move is done".
+    # ── board link ──────────────────────────────────────────────────────────
 
-        The reply format is undocumented, so today this is "it said anything at
-        all while a move was outstanding". Narrow this once the firmware's
-        vocabulary is known -- it is the only place that judgement lives.
+    def next_seq(self):
+        self._seq += 1
+        return self._seq
+
+    async def send_board(self, **cmd):
+        if self.board is None:
+            raise RuntimeError("rover controller is not connected")
+        # NOT setdefault: its default argument is evaluated eagerly, so it would
+        # burn a sequence number on every jog heartbeat even though those carry
+        # their own seq. Sequence numbers were jumping by ~380 per move.
+        if 'seq' not in cmd:
+            cmd['seq'] = self.next_seq()
+        payload = json.dumps(cmd)
+        try:
+            await self.board.send(payload)
+        except Exception as e:
+            raise RuntimeError(f"send failed: {e}")
+        # jog_hold arrives several times a second; logging each one would bury
+        # everything else.
+        if cmd.get('c') != 'jog_hold':
+            entry = self._note(f"pi -> board: {payload}")
+            await self.broadcast_log(entry)
+        return cmd['seq']
+
+    async def push_config(self):
+        """Sends the full configuration to the board, in the board's units.
+
+        Pushed on every connect and after every config change. The board holds
+        limits and speeds itself so that they still apply when this process is
+        not there to enforce them -- with no endstops, that matters.
         """
+        x_lo, x_hi = self.limit_steps('x')
+        y_lo, y_hi = self.limit_steps('y')
+        await self.send_board(
+            c='cfg',
+            h_speed=self.config['x_max_speed'] * self.spmm('x'),
+            h_jog=self.config['x_jog_speed'] * self.spmm('x'),
+            h_accel=self.config['x_accel'] * self.spmm('x'),
+            h_lo=x_lo, h_hi=x_hi,
+            v_speed=self.config['y_max_speed'] * self.spmm('y'),
+            v_jog=self.config['y_jog_speed'] * self.spmm('y'),
+            v_accel=self.config['y_accel'] * self.spmm('y'),
+            v_lo=y_lo, v_hi=y_hi,
+            limits=bool(self.config['limits_enabled']),
+        )
+
+    def _ingest_status(self, msg):
+        if int(msg.get('seq', 0)) < self._status_gate_seq:
+            return False        # predates the command we are waiting on
+        new = {'x': int(msg.get('h_pos', self.steps['x'])),
+               'y': int(msg.get('v_pos', self.steps['y']))}
+        if self._last_steps is not None:
+            for ax in ('x', 'y'):
+                self.travel_mm += abs(new[ax] - self._last_steps[ax]) / self.spmm(ax)
+        self._last_steps = dict(new)
+        self.steps = new
+        self.speed_steps['x'] = float(msg.get('h_spd', 0.0))
+        self.speed_steps['y'] = float(msg.get('v_spd', 0.0))
+        self.mode['x'] = AXIS_MODE.get(int(msg.get('h_mode', 0)), '?')
+        self.mode['y'] = AXIS_MODE.get(int(msg.get('v_mode', 0)), '?')
+        self.stop_reason['x'] = STOP_REASON.get(int(msg.get('h_stop', 0)), '?')
+        self.stop_reason['y'] = STOP_REASON.get(int(msg.get('v_stop', 0)), '?')
+        self.moving = bool(msg.get('moving', False))
+        self.estop = bool(msg.get('estop', False))
+        self.enabled = bool(msg.get('en', False))
+        if 'pos_valid' in msg:
+            self.board_pos_valid = bool(msg['pos_valid'])
+        self.queue_depth = int(msg.get('q', 0))
+        # The board's count is authoritative; our optimistic one only bridges
+        # the gap between sending and the next status.
+        self._board_queue = self.queue_depth + (1 if self.moving else 0)
+        self.last_status_at = time.time()
+
+        # If anything cut a move short -- a soft limit, a stop, an E-stop -- the
+        # ideal has run ahead of where the rover actually is. Snap it back, or
+        # the next relative move would silently try to make up the difference.
+        # Half a step of disagreement is normal and expected; more is not.
+        # Resync the ideal when an axis comes to rest after a JOG. A jog moves
+        # the rover without going through the ideal at all, so afterwards the
+        # ideal is simply stale and the next relative move must start from
+        # wherever the operator actually left it.
+        for ax in ('x', 'y'):
+            if self._prev_mode[ax] in ('jog', 'stopping') and self.mode[ax] == 'idle':
+                self.ideal_mm[ax] = self.mm(ax)
+            self._prev_mode[ax] = self.mode[ax]
         return True
 
-    async def arduino_handler(self, ws):
-        if self.arduino is not None:
-            self._note("second Arduino connected -- replacing the previous link")
+    async def _ingest_hello(self, msg):
+        self.board_fw = msg.get('fw')
+        self.board_pos_valid = bool(msg.get('pos_valid', False))
+        board_steps = {'x': int(msg.get('h_pos', 0)), 'y': int(msg.get('v_pos', 0))}
+
+        # Cross-check the board's flash copy against ours. Neither side wins
+        # automatically: a disagreement means something moved while the other
+        # was not watching, and only the operator can say which is right.
+        self.position_conflict = None
+        if self.board_pos_valid and self.persist:
+            dx = abs(board_steps['x'] - self.saved_steps['x']) / self.spmm('x')
+            dy = abs(board_steps['y'] - self.saved_steps['y']) / self.spmm('y')
+            if dx > 0.5 or dy > 0.5:
+                self.position_conflict = {
+                    'board_x_mm': round(board_steps['x'] / self.spmm('x'), 3),
+                    'board_y_mm': round(board_steps['y'] / self.spmm('y'), 3),
+                    'saved_x_mm': round(self.saved_steps['x'] / self.spmm('x'), 3),
+                    'saved_y_mm': round(self.saved_steps['y'] / self.spmm('y'), 3),
+                }
+                self._note(f"position conflict on connect: board says "
+                           f"({self.position_conflict['board_x_mm']}, "
+                           f"{self.position_conflict['board_y_mm']}) mm, this Pi saved "
+                           f"({self.position_conflict['saved_x_mm']}, "
+                           f"{self.position_conflict['saved_y_mm']}) mm -- re-declare it")
+
+        if self.board_pos_valid:
+            self.steps = board_steps
+            self._status_gate_seq = 0
+        else:
+            # Board booted without a usable position. Restore ours to it, so
+            # both sides agree, and keep the stale flag up.
+            self._note("board has no valid position -- restoring this Pi's last "
+                       "known one; verify it against the rig")
+            self._status_gate_seq = await self.send_board(
+                c='set_pos', h=self.steps['x'], v=self.steps['y'])
+        self._last_steps = dict(self.steps)
+        self.ideal_mm = {'x': self.mm('x'), 'y': self.mm('y')}
+        if not self._link_configured:
+            self._link_configured = True
+            await self.push_config()
+        else:
+            self._note("ignoring a repeat hello on an already-configured link "
+                       "(the controller should send hello only on connect)")
+
+    async def board_handler(self, ws):
+        if self.board is not None:
+            self._note("second controller connected -- replacing the previous link")
             try:
-                await self.arduino.close()
+                await self.board.close()
             except Exception:
                 pass
-        self.arduino = ws
-        self.arduino_since = time.time()
-        self._note("Arduino connected")
+        self.board = ws
+        self.board_since = time.time()
+        self._link_configured = False
+
+        # Outbound move queue with flow control. The board's own queue is only
+        # four deep and it REJECTS a move that does not fit -- and a rejected
+        # move is the worst possible failure here, because the ideal position
+        # has already advanced past a move the rover never made. Measured before
+        # this existed: 400 rapid 1 mm moves tracked 34 mm short.
+        #
+        # So moves are held here and released only while the board has room.
+        # Callers that wait for `done` (the raster does) never touch this path;
+        # it is what keeps a caller that does not from corrupting position.
+        self._outbox = deque()
+        self._board_queue = 0
+        self._note("rover controller connected")
         await self.broadcast()
         try:
-            async for message in ws:
-                text = str(message).strip()
-                entry = {'t': time.time(), 'line': f"arduino: {text}"}
-                self.log.append(entry)
-                print(f"[rover] {entry['line']}", flush=True)
-                if not self._ack_expected:
-                    self._ack_expected = True
-                    self._note("Arduino started replying -- waiting for "
-                               "acknowledgements again")
-                if self._pending_move and self._looks_like_ack(text):
-                    self._ack_event.set()
+            async for raw in ws:
+                text = str(raw).strip()
+                try:
+                    msg = json.loads(text)
+                except ValueError:
+                    entry = self._note(f"board (unparsed): {text}")
+                    await self.broadcast_log(entry)
+                    continue
+
+                kind = msg.get('t')
+                if kind == 'status':
+                    if self._ingest_status(msg):
+                        await self.pump()
+                        await self.broadcast()
+                    continue          # 20 Hz; far too chatty for the log
+
+                if kind == 'hello':
+                    entry = self._note(f"board hello: fw={msg.get('fw')} "
+                                       f"pos_valid={msg.get('pos_valid')}")
+                    await self.broadcast_log(entry)
+                    await self._ingest_hello(msg)
+                elif kind == 'done':
+                    reason = STOP_REASON.get(int(msg.get('reason', 0)), '?')
+                    entry = self._note(
+                        f"board done: seq={msg.get('seq')} reason={reason}")
+                    await self.broadcast_log(entry)
+                    # A move that ended anywhere but its target leaves the ideal
+                    # ahead of reality. Take the board's word for it rather than
+                    # inferring it from position.
+                    if reason != 'completed':
+                        self.ideal_mm = {'x': self.mm('x'), 'y': self.mm('y')}
+                        self._note(f"move ended as '{reason}' -- ideal position "
+                                   f"resynced to the rover's actual position")
+                    self._save_state()
+                elif kind == 'err':
+                    self._last_error = f"{msg.get('code')}: {msg.get('msg')}"
+                    entry = self._note(f"board error: {self._last_error}")
+                    await self.broadcast_log(entry)
+                    await self.broadcast_error(self._last_error)
+                elif kind == 'ack':
+                    pass
                 else:
-                    # Not a reply to anything we asked -- so the board chatters
-                    # on its own and "it spoke" is not proof a move finished.
-                    # Surfaced in the panel so the ack count is read with that
-                    # in mind rather than trusted blindly.
-                    self.unsolicited += 1
-                await self.broadcast_log(entry)
+                    entry = self._note(f"board: {text}")
+                    await self.broadcast_log(entry)
+                await self.broadcast()
         except websockets.ConnectionClosed:
             pass
         finally:
-            if self.arduino is ws:
-                self.arduino = None
-                self.arduino_since = None
-                self.stop_jog()
-                self._note("Arduino disconnected")
+            if self.board is ws:
+                self.board = None
+                self.board_since = None
+                self.moving = False
+                self._last_steps = None
+                self._abandon_queued()
+                self._note("rover controller disconnected")
+                self._save_state()
                 await self.broadcast()
 
-    # ── motion ──────────────────────────────────────────────────────────────
+    # ── operations ──────────────────────────────────────────────────────────
 
-    def _clamp_to_limits(self, dx_um, dy_um):
-        """Trim a move to what the soft limits allow, in whole micrometres.
-
-        Trimming rather than rejecting is deliberate: jogging into a limit
-        should coast to the edge and stop there, not stop one quantum short and
-        leave the last fraction of travel unreachable. The trimmed value is what
-        gets sent AND what gets accumulated, so the two can never disagree.
-        """
-        if not self.config['limits_enabled']:
-            return dx_um, dy_um
-        x_lo = int(round(self.config['x_min_mm'] * UM))
-        x_hi = int(round(self.config['x_max_mm'] * UM))
-        y_lo = int(round(self.config['y_min_mm'] * UM))
-        y_hi = int(round(self.config['y_max_mm'] * UM))
-        nx = max(x_lo, min(x_hi, self.x_um + dx_um))
-        ny = max(y_lo, min(y_hi, self.y_um + dy_um))
-        return nx - self.x_um, ny - self.y_um
-
-    def _estimated_move_time(self, dx_um, dy_um):
-        speed = max(0.1, float(self.config['speed_mm_s']))
-        travel_mm = (abs(dx_um) + abs(dy_um)) / UM
-        return travel_mm / speed + float(self.config['move_overhead_s'])
-
-    async def move_rel(self, dx_mm, dy_mm, source='move'):
-        """Send one relative move and wait for it to resolve. Returns a dict."""
-        if self.arduino is None:
-            raise RuntimeError("Arduino is not connected")
-
-        cap = float(self.config['max_move_mm'])
-        if abs(dx_mm) > cap or abs(dy_mm) > cap:
-            raise ValueError(f"move exceeds max_move_mm ({cap} mm)")
-
-        dx_um = int(round(dx_mm * UM))
-        dy_um = int(round(dy_mm * UM))
-        dx_um, dy_um = self._clamp_to_limits(dx_um, dy_um)
-        if dx_um == 0 and dy_um == 0:
-            return {'moved': False, 'reason': 'at limit'}
-
-        async with self._move_lock:
-            # Re-clamp: another move may have run while we queued for the lock.
-            dx_um, dy_um = self._clamp_to_limits(dx_um, dy_um)
-            if dx_um == 0 and dy_um == 0:
-                return {'moved': False, 'reason': 'at limit'}
-            ws = self.arduino
-            if ws is None:
-                raise RuntimeError("Arduino is not connected")
-
-            wire_x = -dx_um if self.config['invert_x'] else dx_um
-            wire_y = -dy_um if self.config['invert_y'] else dy_um
-            frame = f"{_fmt_mm(wire_x)},{_fmt_mm(wire_y)}"
-
-            self._ack_event.clear()
-            self._pending_move = True
-            self._moving = True
-            t0 = time.monotonic()
-            try:
-                await ws.send(frame)
-            except Exception as e:
-                self._pending_move = False
-                self._moving = False
-                raise RuntimeError(f"send failed: {e}")
-
-            # Position advances now, not on ack: the belt is moving whether or
-            # not the board ever tells us so, and a readout that lagged every
-            # move by its ack would be wrong for the whole duration of the move.
-            self.commanded_x_um += dx_um
-            self.commanded_y_um += dy_um
-            self.moves_sent += 1
-            entry = {'t': time.time(), 'line': f"pi -> uno: {frame}  ({source})"}
-            self.log.append(entry)
-            print(f"[rover] {entry['line']}", flush=True)
-            await self.broadcast_log(entry)
-            await self.broadcast()
-
-            est = self._estimated_move_time(dx_um, dy_um)
-            acked = False
-            if self._ack_expected:
-                try:
-                    await asyncio.wait_for(self._ack_event.wait(),
-                                           est + float(self.config['ack_grace_s']))
-                    acked = True
-                except asyncio.TimeoutError:
-                    acked = False
-            self._pending_move = False
-
-            if acked:
-                self.moves_acked += 1
-                self.confirmed_x_um += dx_um
-                self.confirmed_y_um += dy_um
-                self._silent_streak = 0
-            else:
-                self.moves_timed_out += 1
-                self.unacked_travel_um += abs(dx_um) + abs(dy_um)
-                self._silent_streak += 1
-                if self.moves_timed_out == 1:
-                    self._note("no reply from the Arduino within the move estimate -- "
-                               "running open loop, position is commanded not confirmed")
-                if self._ack_expected and self._silent_streak >= ACK_GIVEUP:
-                    self._ack_expected = False
-                    self._note(f"{ACK_GIVEUP} moves with no reply -- this board does not "
-                               "acknowledge; pacing on the move-time estimate alone")
-
-            # Even a prompt ack may mean "received", not "finished". Holding the
-            # line for the full estimated travel time is what keeps us from
-            # overrunning a board whose buffering we cannot see.
-            if self.config['enforce_move_time']:
-                remaining = est - (time.monotonic() - t0)
-                if remaining > 0:
-                    await asyncio.sleep(remaining)
-
-            self._moving = False
-            self._save_state()
-            await self.broadcast()
-            return {'moved': True, 'acked': acked, 'dx_um': dx_um, 'dy_um': dy_um}
-
-    # ── jog (click and hold) ────────────────────────────────────────────────
-
-    def start_jog(self, axis, direction):
-        if axis not in ('x', 'y'):
+    async def jog(self, axis, direction):
+        if axis not in BOARD_AXIS:
             raise ValueError("axis must be 'x' or 'y'")
-        direction = 1 if direction >= 0 else -1
-        # Each jog gets its own dict, and its loop runs only while `self._jog`
-        # is still that exact object. A press arriving in the moments while the
-        # previous loop is winding down therefore always gets a live loop of its
-        # own -- reusing one task and testing `.done()` would drop the new jog
-        # into the gap between the old loop's last statement and its completion.
-        jog = {'axis': axis, 'dir': direction,
-               'deadline': time.monotonic() + JOG_HOLD_TIMEOUT}
-        self._jog = jog
-        self._jog_task = asyncio.create_task(self._jog_loop(jog))
+        # The board drops its queue when a jog arrives, so drop ours to match --
+        # otherwise queued moves would fire the moment the jog ended.
+        self._abandon_queued()
+        await self.send_board(c='jog', axis=BOARD_AXIS[axis],
+                              dir=1 if direction >= 0 else -1,
+                              hold_ms=int(self.config['jog_hold_ms']))
 
-    def hold_jog(self):
-        if self._jog is not None:
-            self._jog['deadline'] = time.monotonic() + JOG_HOLD_TIMEOUT
+    async def jog_hold(self):
+        if self.board is None:
+            return
+        await self.send_board(c='jog_hold', seq=0,
+                              hold_ms=int(self.config['jog_hold_ms']))
 
-    def stop_jog(self):
-        """Ends the jog train. The move currently in flight still completes --
-        it is already inside the Arduino and there is no command to recall it."""
-        self._jog = None
+    def _abandon_queued(self):
+        """Drops queued moves and returns the ideal to the real position.
 
-    async def _jog_loop(self, jog):
-        # `self._jog is jog` is the liveness test throughout: it goes false when
-        # the operator releases the key, when a newer jog supersedes this one, or
-        # when this loop itself decides to stop.
-        while self._jog is jog:
-            if time.monotonic() > jog['deadline']:
-                self._note("jog hold timed out -- stopping")
-                break
-            step = float(self.config['jog_step_mm']) * jog['dir']
-            dx = step if jog['axis'] == 'x' else 0.0
-            dy = step if jog['axis'] == 'y' else 0.0
-            try:
-                res = await self.move_rel(dx, dy, source='jog')
-            except Exception as e:
-                self._last_error = str(e)
-                self._note(f"jog aborted: {e}")
-                await self.broadcast_error(str(e))
-                break
-            if not res.get('moved'):
-                self._note(f"jog stopped: {res.get('reason')}")
-                break
-        # Only retire the jog this loop was actually driving -- a newer one may
-        # already have taken the slot while the last move was finishing.
-        if self._jog is jog:
-            self._jog = None
-        await self.broadcast()
+        Anything that abandons motion abandons these too, so the ideal must come
+        back -- it is currently pointing at the end of moves that will never be
+        made."""
+        dropped = len(self._outbox)
+        self._outbox.clear()
+        self._board_queue = 0
+        self.ideal_mm = {'x': self.mm('x'), 'y': self.mm('y')}
+        if dropped:
+            self._note(f"dropped {dropped} queued move(s)")
 
-    # ── homing / origin ─────────────────────────────────────────────────────
+    async def stop(self):
+        self._abandon_queued()
+        await self.send_board(c='stop')
 
-    def set_position(self, x_mm, y_mm):
-        """Declare where the rover physically is right now.
+    async def estop_now(self):
+        self._abandon_queued()
+        await self.send_board(c='estop')
+        # Cutting the step train at speed is exactly where a stepper can lose
+        # steps, so nothing about the ideal survives an E-stop either.
+        self.ideal_mm = {'x': self.mm('x'), 'y': self.mm('y')}
 
-        This is the only ground truth the system has, so it is also where the
-        drift budget is cleared: everything accumulated since the last
-        declaration has just been superseded by the operator's measurement.
-        Machine coordinates (total commanded travel since the server started)
-        are deliberately untouched, so re-homing never erases the record of how
-        far the rig has actually been driven.
+    async def clear_estop(self):
+        await self.send_board(c='clear_estop')
+
+    async def pump(self):
+        """Releases queued moves to the board while it has room for them.
+
+        `_board_queue` is incremented optimistically on send and corrected by the
+        next status frame, which arrives at 20 Hz -- far faster than a move
+        completes, so the estimate is never stale for long.
         """
-        self.origin_x_um = self.commanded_x_um - int(round(x_mm * UM))
-        self.origin_y_um = self.commanded_y_um - int(round(y_mm * UM))
-        self.confirmed_x_um = self.commanded_x_um
-        self.confirmed_y_um = self.commanded_y_um
-        self.unacked_travel_um = 0
+        while (self._outbox and self.board is not None
+               and self._board_queue < BOARD_QUEUE_ROOM):
+            m = self._outbox.popleft()
+            cmd = {'c': 'move', 'rel': False}
+            if m['x'] is not None:
+                cmd['h'] = self.to_steps('x', m['x'])
+            if m['y'] is not None:
+                cmd['v'] = self.to_steps('y', m['y'])
+            self._board_queue += 1
+            await self.send_board(**cmd)
+
+    async def move_to_mm(self, x_mm=None, y_mm=None):
+        """Absolute move, always sent as an absolute step target.
+
+        Absolute targets are what keep quantisation from accumulating: the error
+        is at most half a step of the requested position, however many moves have
+        been made to get there.
+        """
+        if x_mm is None and y_mm is None:
+            raise ValueError("move needs an x or a y target")
+        if len(self._outbox) >= OUTBOX_MAX:
+            raise RuntimeError(
+                f"move queue is full ({OUTBOX_MAX} waiting) -- the caller is "
+                "issuing moves far faster than the rover can make them")
+        # The ideal advances now because these moves WILL be made, just not yet.
+        # It is the commanded trajectory, not the current position.
+        if x_mm is not None:
+            self.ideal_mm['x'] = x_mm
+        if y_mm is not None:
+            self.ideal_mm['y'] = y_mm
+        self._outbox.append({'x': x_mm, 'y': y_mm})
+        await self.pump()
+
+    async def move_rel_mm(self, dx_mm=0.0, dy_mm=0.0):
+        """Relative move, accumulated onto the ideal position (see ideal_mm).
+
+        Note this deliberately does NOT read the current position. Doing so is
+        what made repeated 1 mm steps drift: the current position is a whole
+        number of steps, so rounding `current + 1 mm` rounds the same way every
+        single time and the error compounds instead of cancelling.
+        """
+        await self.move_to_mm(
+            x_mm=self.ideal_mm['x'] + dx_mm if dx_mm else None,
+            y_mm=self.ideal_mm['y'] + dy_mm if dy_mm else None,
+        )
+
+    async def set_position(self, x_mm, y_mm):
+        """Declare where the rover physically is. The only ground truth there is."""
+        sx = self.to_steps('x', x_mm)
+        sy = self.to_steps('y', y_mm)
+        seq = self.next_seq()
+        # All of this must land before the await below: send_board yields, and a
+        # status frame processed in that window would be measured against the
+        # pre-declaration position -- charging the odometer for a jump that
+        # never physically happened.
+        self._status_gate_seq = seq   # discard status older than this command
+        self.steps = {'x': sx, 'y': sy}
+        self._last_steps = dict(self.steps)
+        self.ideal_mm = {'x': x_mm, 'y': y_mm}
+        self.travel_mm = 0.0
         self.position_stale = False
-        self._note(f"position declared: x={x_mm} y={y_mm} mm (drift budget cleared)")
+        self.position_conflict = None
+        self.saved_steps = dict(self.steps)
+        await self.send_board(c='set_pos', h=sx, v=sy, seq=seq)
+        self._note(f"position declared: x={x_mm} y={y_mm} mm (odometer reset)")
         self._save_state()
 
+    async def calibrate(self, axis, commanded_mm, measured_mm):
+        """Correct steps/mm from a commanded vs. measured distance.
+
+        The horizontal axis rolls on wheels, so its steps/mm is an empirical
+        number: a caliper gives the free diameter, but a loaded wheel rolls on
+        slightly less. Driving a long known distance and measuring it is the
+        only way to pin it down, and a long distance is what makes the
+        measurement precise -- the panel says so.
+        """
+        if axis not in BOARD_AXIS:
+            raise ValueError("axis must be 'x' or 'y'")
+        if abs(measured_mm) < 1e-6 or abs(commanded_mm) < 1e-6:
+            raise ValueError("commanded and measured distances must be non-zero")
+        key = f'{axis}_steps_per_mm'
+        old = self.config[key]
+        # We asked for `commanded` and got `measured`, so each mm of real travel
+        # needs the steps we actually spent divided by the distance they moved.
+        new = old * (commanded_mm / measured_mm)
+        lo, hi = CONFIG_BOUNDS[key]
+        if not (lo <= new <= hi):
+            raise ValueError(f"implied {key}={new:.4f} is outside [{lo}, {hi}]")
+        ratio = new / old
+        if not (0.5 <= ratio <= 2.0):
+            raise ValueError(
+                f"implied correction is {ratio:.3f}x, which is too large to be a "
+                "calibration -- check the axis and the sign of the measurement")
+        self.config[key] = new
+        self._note(f"{key}: {old:.4f} -> {new:.4f} steps/mm "
+                   f"({(ratio - 1) * 100:+.2f}%, commanded {commanded_mm} measured {measured_mm})")
+        self._save_state()
+        await self.push_config()
+
     def set_config(self, updates):
+        changed = False
         for k, v in updates.items():
             if k not in self.config:
                 continue
-            cur = self.config[k]
-            if isinstance(cur, bool):
+            if isinstance(self.config[k], bool):
                 self.config[k] = bool(v)
-            elif isinstance(cur, float):
-                self.config[k] = float(v)
-            else:
-                self.config[k] = v
-        if self.config['jog_step_mm'] <= 0:
-            self.config['jog_step_mm'] = DEFAULT_CONFIG['jog_step_mm']
-        self._save_state()
+                changed = True
+                continue
+            try:
+                val = float(v)
+            except (TypeError, ValueError):
+                continue
+            if val != val:
+                continue
+            lo, hi = CONFIG_BOUNDS.get(k, (float('-inf'), float('inf')))
+            clamped = max(lo, min(hi, val))
+            if clamped != val:
+                self._note(f"{k}={val} outside [{lo}, {hi}] -- clamped to {clamped}")
+            self.config[k] = clamped
+            changed = True
+        for lo_key, hi_key in (('x_min_mm', 'x_max_mm'), ('y_min_mm', 'y_max_mm')):
+            if self.config[lo_key] > self.config[hi_key]:
+                self.config[lo_key], self.config[hi_key] = (
+                    self.config[hi_key], self.config[lo_key])
+                self._note(f"{lo_key} exceeded {hi_key} -- swapped")
+        if changed:
+            self._save_state()
+        return changed
 
 
 # ── groundstation socket ────────────────────────────────────────────────────
@@ -597,9 +776,14 @@ async def client_handler(rover, ws):
         pass
     finally:
         rover.clients.discard(ws)
-        if not rover.clients:
-            # Nobody is holding the key any more, by definition.
-            rover.stop_jog()
+        if not rover.clients and rover.board is not None:
+            # Nobody is holding a key any more, by definition. The board's own
+            # dead-man would catch this within jog_hold_ms; this makes it
+            # immediate.
+            try:
+                await rover.stop()
+            except Exception:
+                pass
 
 
 async def dispatch(rover, ws, cmd):
@@ -607,64 +791,53 @@ async def dispatch(rover, ws, cmd):
     try:
         if action == 'rover_get_status':
             await ws.send(json.dumps({'type': 'rover_status', **rover.status()}))
+            return
 
-        elif action == 'rover_set_position':
-            rover.set_position(float(cmd.get('x_mm', 0)), float(cmd.get('y_mm', 0)))
+        if action == 'rover_jog_hold':
+            await rover.jog_hold()
+            return
+
+        if action == 'rover_set_config':
+            if rover.set_config(cmd.get('config') or {}) and rover.board is not None:
+                await rover.push_config()
             await rover.broadcast()
+            return
 
-        elif action == 'rover_set_config':
-            rover.set_config(cmd.get('config') or {})
-            await rover.broadcast()
-
-        elif action == 'rover_jog_start':
-            rover.start_jog(cmd.get('axis'), int(cmd.get('dir', 1)))
-            await rover.broadcast()
-
-        elif action == 'rover_jog_hold':
-            rover.hold_jog()
-
-        elif action == 'rover_jog_stop':
-            rover.stop_jog()
-            await rover.broadcast()
-
-        elif action == 'rover_step':
-            # One quantum, for a click without a hold.
-            axis = cmd.get('axis')
-            direction = 1 if int(cmd.get('dir', 1)) >= 0 else -1
-            step = float(cmd.get('mm', rover.config['jog_step_mm'])) * direction
-            dx = step if axis == 'x' else 0.0
-            dy = step if axis == 'y' else 0.0
-            asyncio.create_task(_guarded(rover, rover.move_rel(dx, dy, source='step')))
-
-        elif action == 'rover_move_rel':
-            asyncio.create_task(_guarded(rover, rover.move_rel(
-                float(cmd.get('dx_mm', 0)), float(cmd.get('dy_mm', 0)), source='move')))
-
-        elif action == 'rover_stop':
-            rover.stop_jog()
-            rover._note("stop requested -- the in-flight move still finishes "
-                        "(the Arduino has no abort command)")
-            await rover.broadcast()
-
-        elif action == 'rover_clear_error':
+        if action == 'rover_clear_error':
             rover._last_error = None
             await rover.broadcast()
+            return
+
+        # Everything past here needs the controller.
+        if action == 'rover_jog_start':
+            await rover.jog(cmd.get('axis'), int(cmd.get('dir', 1)))
+        elif action == 'rover_jog_stop' or action == 'rover_stop':
+            await rover.stop()
+        elif action == 'rover_estop':
+            await rover.estop_now()
+        elif action == 'rover_clear_estop':
+            await rover.clear_estop()
+        elif action == 'rover_set_position':
+            await rover.set_position(float(cmd.get('x_mm', 0)), float(cmd.get('y_mm', 0)))
+        elif action == 'rover_move_rel':
+            await rover.move_rel_mm(float(cmd.get('dx_mm', 0)), float(cmd.get('dy_mm', 0)))
+        elif action == 'rover_move_abs':
+            await rover.move_to_mm(
+                x_mm=float(cmd['x_mm']) if 'x_mm' in cmd else None,
+                y_mm=float(cmd['y_mm']) if 'y_mm' in cmd else None)
+        elif action == 'rover_calibrate':
+            await rover.calibrate(cmd.get('axis'),
+                                  float(cmd.get('commanded_mm', 0)),
+                                  float(cmd.get('measured_mm', 0)))
+        elif action == 'rover_enable':
+            await rover.send_board(c='enable', on=bool(cmd.get('on', True)))
+        else:
+            return
+        await rover.broadcast()
 
     except Exception as e:
         rover._last_error = str(e)
         await ws.send(json.dumps({'type': 'rover_error', 'message': str(e)}))
-        await rover.broadcast()
-
-
-async def _guarded(rover, coro):
-    """Runs a move that was fired off without a client awaiting it, so a failure
-    still reaches the operator instead of dying inside a detached task."""
-    try:
-        await coro
-    except Exception as e:
-        rover._last_error = str(e)
-        rover._note(f"move failed: {e}")
-        await rover.broadcast_error(str(e))
         await rover.broadcast()
 
 
@@ -673,29 +846,28 @@ async def main():
     parser.add_argument('--port', type=int, default=PORT,
                         help=f'groundstation WebSocket port (default: {PORT})')
     parser.add_argument('--arduino-port', type=int, default=ARDUINO_PORT,
-                        help=f'port the Arduino dials in on (default: {ARDUINO_PORT})')
+                        help=f'port the controller dials in on (default: {ARDUINO_PORT})')
     parser.add_argument('--no-persist', action='store_true',
                         help='do not load or save rover_state.json')
     args = parser.parse_args()
 
     rover = Rover(persist=not args.no_persist)
-    rover._loop = asyncio.get_running_loop()
-
-    stop = asyncio.get_running_loop().create_future()
+    loop = asyncio.get_running_loop()
+    stop = loop.create_future()
 
     def request_stop():
         if not stop.done():
             stop.set_result(None)
 
-    loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGINT, request_stop)
     loop.add_signal_handler(signal.SIGTERM, request_stop)
 
     print(f"[rover] groundstation server on ws://0.0.0.0:{args.port}")
-    print(f"[rover] waiting for Arduino on ws://0.0.0.0:{args.arduino_port}")
+    print(f"[rover] waiting for controller on ws://0.0.0.0:{args.arduino_port}")
 
-    async with websockets.serve(lambda ws: client_handler(rover, ws), '0.0.0.0', args.port), \
-               websockets.serve(rover.arduino_handler, '0.0.0.0', args.arduino_port,
+    async with websockets.serve(lambda ws: client_handler(rover, ws),
+                                '0.0.0.0', args.port), \
+               websockets.serve(rover.board_handler, '0.0.0.0', args.arduino_port,
                                 ping_interval=20, ping_timeout=20):
         await stop
 

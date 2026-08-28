@@ -1,8 +1,8 @@
 import { useRef, useEffect } from 'react';
 
 const BG = '#000000';
-const ACCENT = '#4aff8a';       // commanded position -- what we believe
-const CONFIRM = '#22d3ee';      // confirmed position -- what the board acked
+const ACCENT = '#4aff8a';       // position as reported by the controller
+const ESTOP = '#f87171';
 const ORIGIN = '#D1855C';
 const GRID = '#141414';
 const AXIS = '#2a2a2a';
@@ -172,30 +172,19 @@ function draw(canvas, status, trail, heldRef, pulse) {
     ctx.stroke();
   }
 
-  // ── confirmed position, drawn only when it lags the commanded one ─────
-  // The gap between the two IS the unconfirmed travel, so showing it as a
-  // separate ghost marker makes the drift budget a distance on screen rather
-  // than a number to interpret.
-  const cx = status.confirmed_x_mm, cy = status.confirmed_y_mm;
-  const px = status.x_mm, py = status.y_mm;
-  if (Math.abs(cx - px) > 1e-6 || Math.abs(cy - py) > 1e-6) {
-    const gx = V.sx(cx), gy = V.sy(cy);
-    ctx.strokeStyle = `${CONFIRM}99`;
-    ctx.lineWidth = 1;
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath(); ctx.arc(gx, gy, 5, 0, Math.PI * 2); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(gx, gy); ctx.lineTo(V.sx(px), V.sy(py)); ctx.stroke();
-    ctx.setLineDash([]);
-  }
-
   // ── current position ──────────────────────────────────────────────────
+  // There is no separate "confirmed" marker any more: the controller reports its
+  // own step counter, so the position drawn here IS the measured one rather than
+  // something dead reckoned from commands that may or may not have landed.
+  const px = status.x_mm, py = status.y_mm;
   const mx = V.sx(px), my = V.sy(py);
+  const colour = status.estop ? ESTOP : ACCENT;
   const glow = status.moving ? 0.35 + 0.45 * pulse : 0.25;
-  ctx.fillStyle = `${ACCENT}${Math.round(glow * 255).toString(16).padStart(2, '0')}`;
+  ctx.fillStyle = `${colour}${Math.round(glow * 255).toString(16).padStart(2, '0')}`;
   ctx.beginPath(); ctx.arc(mx, my, 13, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = ACCENT;
+  ctx.fillStyle = colour;
   ctx.beginPath(); ctx.arc(mx, my, 4.5, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = `${ACCENT}55`;
+  ctx.strokeStyle = `${colour}55`;
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(PAD.left, my); ctx.lineTo(PAD.left + V.plotW, my);
@@ -203,9 +192,13 @@ function draw(canvas, status, trail, heldRef, pulse) {
   ctx.stroke();
 
   // ── jog direction arrow ───────────────────────────────────────────────
-  if (status.jog) {
-    const dx = status.jog.axis === 'x' ? status.jog.dir : 0;
-    const dy = status.jog.axis === 'y' ? status.jog.dir : 0;
+  // Direction of travel, taken from the reported speed vector -- so it shows
+  // during any motion, not only a jog, and its length tracks actual speed.
+  const vx = status.x_speed_mm_s || 0;
+  const vy = status.y_speed_mm_s || 0;
+  if (Math.abs(vx) > 0.01 || Math.abs(vy) > 0.01) {
+    const norm = Math.hypot(vx, vy);
+    const dx = vx / norm, dy = vy / norm;
     const len = 26 + 6 * pulse;
     const ax = mx + dx * len, ay = my - dy * len;
     ctx.strokeStyle = ACCENT;
@@ -223,12 +216,17 @@ function draw(canvas, status, trail, heldRef, pulse) {
   // ── readout ───────────────────────────────────────────────────────────
   ctx.font = '11px monospace';
   ctx.textAlign = 'left';
-  ctx.fillStyle = ACCENT;
+  ctx.fillStyle = colour;
   ctx.fillText(`X ${px.toFixed(3)}   Y ${py.toFixed(3)} mm`, PAD.left, PAD.top - 10);
-  if (status.drift_budget_mm > 0) {
-    ctx.fillStyle = '#facc15';
-    ctx.textAlign = 'right';
-    ctx.fillText(`UNCONFIRMED ${status.drift_budget_mm.toFixed(1)} mm`, PAD.left + V.plotW, PAD.top - 10);
+  ctx.textAlign = 'right';
+  if (status.estop) {
+    ctx.fillStyle = ESTOP;
+    ctx.fillText('E-STOP LATCHED', PAD.left + V.plotW, PAD.top - 10);
+  } else if (status.travel_mm > 0) {
+    // Travel since the position was last declared: the exposure to wheel slip
+    // and missed steps, which are the only unobservable error sources left.
+    ctx.fillStyle = '#555555';
+    ctx.fillText(`${status.travel_mm.toFixed(0)} mm since home`, PAD.left + V.plotW, PAD.top - 10);
   }
 }
 

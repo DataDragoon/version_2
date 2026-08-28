@@ -186,47 +186,41 @@ Use `--skip-cal` flag on `stream.py` to reuse previous calibration.
 
 ## Rover — Stepper Gantry
 
-Two axes only: **X = left/right**, **Y = up/down**. There is no standoff (Z-toward-wall)
-axis, so standoff is still whatever the operator sets by hand and is measured by the LiDAR.
+Arduino UNO R4 WiFi + CNC Shield V3, four A4988-class drivers, firmware in `rover/`.
+Two axes only — **X = left/right**, **Y = up/down**. There is no standoff (toward-wall)
+axis, so standoff is still set by hand and measured by the LiDAR.
 
-The Arduino UNO is a **WebSocket client**: it dials into the Pi on port 8765 and waits.
-The Pi is the server. One text frame per move:
+| axis | shield sockets | mechanism | resolution | travel | max / jog speed |
+|---|---|---|---|---|---|
+| **Y** vertical | X | leadscrew, 2 mm × 4-start = 8 mm/rev | **200.0 steps/mm** exact (5 µm) | 1 m | 25 / 5 mm/s |
+| **X** horizontal | Y + Z + A (three ganged) | 66 mm drive wheels, rolling | **7.7166 steps/mm** (130 µm) | 4 m | 150 / 20 mm/s |
 
-```
-"<x>,<z>"     both RELATIVE millimetres, negative reverses
-```
+1600 steps/rev (200-step motors at 1/8 microstepping). Note the socket labels do not match
+the axes: the shield's *X* socket drives the *vertical* axis. Scans typically span ~100 mm.
 
-`x` is the horizontal axis; the Arduino calls the vertical one `z` (the groundstation calls
-it `y`, and `pi/rover/rover_server.py` maps between them). Matches
-`~/stepper_testrig/stepper_testrig2.py`, which is the only reference for this firmware.
+**No endstops and no encoder.** Soft limits are the only travel protection, and the
+operator declaring the position is the only ground truth. The horizontal axis rolls on
+wheels, so slip is possible in principle (judged unlikely in practice); the odometer since
+the last declared position is reported as the exposure.
 
-**Sign convention on the wire, confirmed on the rig 2026-08-28:**
+The Arduino is a **WebSocket client**: it dials into the Pi on port 8765 and the Pi is the
+server. The link speaks line JSON with sequence numbers — `move` / `jog` / `jog_hold` /
+`stop` / `estop` / `clear_estop` / `set_pos` / `cfg` / `enable` outbound, and
+`hello` / `status` (20 Hz) / `ack` / `done` / `err` inbound. **Everything on the wire is in
+STEPS**; millimetres exist only on the Pi, which holds the calibration.
 
-| frame | motion |
-|---|---|
-| `x < 0` | LEFT |
-| `x > 0` | RIGHT |
-| `z < 0` | **UP** |
-| `z > 0` | **DOWN** |
+Step pulses come from a 20 kHz timer ISR so that WiFi servicing cannot disturb them, which
+is what lets the board stay responsive during motion — continuous jog, E-stop mid-move and
+live position all depend on it.
 
-The groundstation uses **+X right, +Y up** (matching the C-scan grid, whose vertical index
-grows upward). X therefore agrees with the board and Y is opposed, so `invert_y` defaults to
-**True** and `invert_x` to False in `rover_server.py`'s `DEFAULT_CONFIG`. Verified frame by
-frame: pressing UP sends `0.0,-1.0`, DOWN sends `0.0,1.0`, LEFT `-1.0,0.0`, RIGHT `1.0,0.0`.
-These are measured facts about the rig, not preferences — the flags exist because the sketch
-cannot be read, not because the choice is free.
+WiFi credentials are in `rover/secrets.h`, gitignored; `rover/secrets.example.h` is the
+committed template.
 
-**The board is a black box and cannot be reflashed right now.** Everything the rover code
-does follows from what that interface does *not* have:
-
-| missing | consequence |
-|---|---|
-| no position query | position is dead reckoned from what we commanded, and the operator declaring it is the only ground truth |
-| no stop command | a move already sent always runs to completion; jog release takes effect after the current step |
-| no velocity command | click-and-hold is a train of small discrete moves, not a velocity |
-| no documented reply | any frame arriving while a move is outstanding is treated as an acknowledgement |
-
-Wiring per the reference sketch: X drives the Y+Z+A motors, Z drives the X motor.
+Firmware layout: `config.h` (pins, mechanism, defaults), `motion_core.h` (ramp, limits,
+watchdog — Arduino-free and unit-tested), `protocol_core.h` (JSON — likewise), `main.ino`
+(pins, timer, sockets, flash persistence). `rover/test/build_check.sh` runs the native
+tests and type-checks the sketch; `pi/rover/rover_sim.py` stands in for the board so the
+Pi and groundstation are testable without the rig.
 
 ## Network Ports
 
@@ -254,7 +248,8 @@ Wiring per the reference sketch: X drives the Y+Z+A motors, Z drives the X motor
 - [x] IMU calibration discovery tool (groundstation panel)
 - [x] BladeRF driver + AquaSense calibration panel (signal generator + oscilloscope)
 - [ ] BladeRF SFCW implementation
-- [x] Rover jog control + dead-reckoned position tracking (Rover Scan panel, port 9002)
+- [x] Rover firmware rewrite (ISR stepping, JSON protocol, E-stop, soft limits, calibration)
+- [x] Rover jog control + position tracking from the controller's own step counter
 - [ ] Rover automated grid raster (B-scan / C-scan at constant standoff)
 - [ ] Network protocol (formal)
 - [ ] Integration testing
