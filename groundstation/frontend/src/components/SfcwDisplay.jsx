@@ -207,12 +207,31 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
   const avgBuffer = useRef([]);
   const [avgCount, setAvgCount] = useState(1);
   const [averaged, setAveraged] = useState(null);
+  // Measured noise floor: the sweep-to-sweep scatter of each range bin, which is what
+  // actually decides whether a feature is readable. A bin's dB wobble is
+  // ~8.7 * sigma/A, so a bin 30 dB above this line is steady to 0.3 dB while one AT it
+  // swings by tens of dB and means nothing. Measured 2026-08-29 across 200 static
+  // sweeps -- headroom above the floor vs what the bin does over the run:
+  //   >30 dB -> 0.14 dB std, dips 0.4 dB      15-20 dB -> 1.64 dB std, dips 4.9 dB
+  //   20-30  -> 0.69 dB std, dips 2.0 dB      10-15    -> 2.22 dB std, dips 8.0 dB
+  // and the dips grow faster than the spikes, because a noise phasor can very nearly
+  // cancel the signal (-> -inf dB) but can at most double it (-> +6 dB).
+  const floorBuffer = useRef([]);
+  const [noiseFloor, setNoiseFloor] = useState(null);
+  const [showFloor, setShowFloor] = useState(false);
 
   // Waterfall history buffer
   const waterfallHistory = useRef([]);
   // Display-transformed mirror of waterfallHistory, row-for-row.
   const wfDisplay = useRef([]);
   const WATERFALL_MAX_ROWS = 100;
+
+  // Noise-floor estimator window. 16 sweeps is ~7 s at the 2.2 Hz sweep rate: long
+  // enough that the sd estimate is stable (~18% at n=16, i.e. under 1.5 dB on the line
+  // itself) and short enough to follow the floor if the bench actually changes.
+  const FLOOR_WINDOW = 16;
+  const FLOOR_MIN_SWEEPS = 6;
+  const FLOOR_SMOOTH = 10;   // +/- bins for the along-range smoother
 
   // Parallel ring buffer of the raw complex sweeps behind those rows, untouched
   // by window / range-comp / averaging / dB conversion. The Imaging Bench needs
@@ -301,6 +320,8 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
   useEffect(() => {
     avgBuffer.current = [];
     setAveraged(null);
+    floorBuffer.current = [];
+    setNoiseFloor(null);
   }, [windowType, kaiserBeta, rangeComp]);
 
   // Recompute range profile client-side when window params change
@@ -367,6 +388,54 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     }
   }, [recomputed, sfcwResult, avgCount]);
 
+  // Noise floor estimate: per-bin standard deviation of LINEAR amplitude across the last
+  // FLOOR_WINDOW sweeps. Linear, not dB, because the error is additive in amplitude and
+  // flat across range -- in dB the same error reads as a fraction of a dB on a strong bin
+  // and tens of dB on a weak one, which is exactly the confusion this line exists to end.
+  //
+  // Estimated from the single-sweep rows even when averaging is on, then scaled by
+  // 1/sqrt(avgCount) at draw time. That is exact here rather than optimistic: the error
+  // is white sweep to sweep (lag-1 correlation 0.06) and the floor was measured to follow
+  // 10*log10(N) out to N=32, so averaging really does buy the full reduction.
+  useEffect(() => {
+    const mags = recomputed ? recomputed.magnitudes : (sfcwResult && sfcwResult.magnitudes);
+    if (!mags) return;
+    const n = mags.length;
+    const lin = new Float64Array(n);
+    for (let i = 0; i < n; i++) lin[i] = Math.pow(10, mags[i] / 20);
+    floorBuffer.current.push(lin);
+    if (floorBuffer.current.length > FLOOR_WINDOW) floorBuffer.current.shift();
+
+    const rows = floorBuffer.current;
+    if (rows.length < FLOOR_MIN_SWEEPS || rows[0].length !== n) {
+      if (rows.length && rows[0].length !== n) floorBuffer.current = [lin];
+      return;
+    }
+    const sd = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      for (let j = 0; j < rows.length; j++) sum += rows[j][i];
+      const mean = sum / rows.length;
+      let acc = 0;
+      for (let j = 0; j < rows.length; j++) {
+        const d = rows[j][i] - mean;
+        acc += d * d;
+      }
+      sd[i] = Math.sqrt(acc / (rows.length - 1));
+    }
+    // Smooth across range. The true floor varies only slowly with range (it is flat, or
+    // follows the R^n gain if that is on), while a per-bin sd from a handful of sweeps is
+    // itself noisy -- so smoothing costs no real detail and makes the line legible.
+    const sm = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const lo = Math.max(0, i - FLOOR_SMOOTH), hi = Math.min(n - 1, i + FLOOR_SMOOTH);
+      let sum = 0;
+      for (let k = lo; k <= hi; k++) sum += sd[k];
+      sm[i] = sum / (hi - lo + 1);
+    }
+    setNoiseFloor(sm);
+  }, [recomputed, sfcwResult]);
+
   const drawChart = useCallback((canvas, opts) => {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -393,7 +462,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     const {
       mags, dists, view, traceColor, title, crosshair,
       showCFAR, isDb, sessionY, manual, manualMin, manualMax, onScale,
-      useSession = true, zeroLine = false
+      useSession = true, zeroLine = false, floor = null, floorDivisor = 1
     } = opts;
     const n = mags.length;
     const pad = { top: 24, bottom: 36, left: 52, right: 16 };
@@ -489,6 +558,60 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
       ctx.font = '9px monospace';
       ctx.textAlign = 'left';
       ctx.fillText('0 dB', pad.left + 4, zy - 3);
+      ctx.restore();
+    }
+
+    // Measured noise floor. Drawn under everything else so the trace stays readable.
+    // The point is not the line but the region below it: a bin there is not a weak
+    // measurement, it is an absence of one, and in dB it will swing by tens of dB on a
+    // completely static scene. See the noiseFloor estimator above for the numbers.
+    if (floor && floor.length === n) {
+      const toY = (linSigma) => {
+        const v = linSigma / floorDivisor;
+        return isDb ? 20 * Math.log10(v + 1e-15) : v;
+      };
+      ctx.save();
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < n; i++) {
+        const frac = i / (n - 1);
+        if (frac < view.xMin || frac > view.xMax) continue;
+        const x = xToPixel(frac);
+        const y = yToPixel(toY(floor[i]));
+        if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+      }
+      if (started) {
+        // Shade from the line down to the bottom of the plot.
+        ctx.lineTo(xToPixel(Math.min(view.xMax, 1)), h - pad.bottom);
+        ctx.lineTo(xToPixel(view.xMin), h - pad.bottom);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(232, 163, 61, 0.10)';
+        ctx.fill();
+
+        ctx.beginPath();
+        started = false;
+        for (let i = 0; i < n; i++) {
+          const frac = i / (n - 1);
+          if (frac < view.xMin || frac > view.xMax) continue;
+          const x = xToPixel(frac);
+          const y = yToPixel(toY(floor[i]));
+          if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = 'rgba(232, 163, 61, 0.75)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const midIdx = Math.min(n - 1, Math.round(((view.xMin + view.xMax) / 2) * (n - 1)));
+        const label = isDb
+          ? `NOISE FLOOR ${toY(floor[midIdx]).toFixed(1)} dB`
+          : 'NOISE FLOOR';
+        ctx.fillStyle = 'rgba(232, 163, 61, 0.9)';
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(label, pad.left + 4, yToPixel(toY(floor[midIdx])) + 11);
+      }
       ctx.restore();
     }
 
@@ -951,6 +1074,11 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
           onScale: reportScale.current,
           useSession: yMode === 'session',
           zeroLine: traceOn,
+          // Suppressed in the zeroed trace modes (CFAR-relative and friends): those
+          // rescale the trace against their own reference, so an absolute floor drawn
+          // over them would be meaningless rather than merely unhelpful.
+          floor: showFloor && !traceOn ? noiseFloor : null,
+          floorDivisor: Math.sqrt(Math.max(1, avgCount)),
         });
         drawWaterfall(
           waterfallCanvasRef.current, dists, view, crosshairWaterfall, isDb,
@@ -965,7 +1093,8 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     animRef.current = requestAnimationFrame(render);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
   }, [drawChart, drawWaterfall, traceView, crosshairTrace, crosshairWaterfall, cfarEnabled, averaged, recomputed, scaleMode, rangeScale, manualScale, scaleRange,
-      colormap, wfMode, wfFixed, wfSpan, applyModeToTrace, yMode, cfarGuard, cfarTrain, cfarAlpha, cfarVariant]);
+      colormap, wfMode, wfFixed, wfSpan, applyModeToTrace, yMode, cfarGuard, cfarTrain, cfarAlpha, cfarVariant,
+      showFloor, noiseFloor, avgCount]);
 
   // Zoom handler
   const handleWheel = (e) => {
@@ -1133,6 +1262,21 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
             ))}
           </select>
         </div>
+
+        <div className="w-px h-3 bg-white/10" />
+
+        {/* Measured noise floor. Off by default: it is a diagnostic overlay, and it only
+            means anything once FLOOR_MIN_SWEEPS have accumulated. */}
+        <button
+          onClick={() => setShowFloor(!showFloor)}
+          title="Overlay the measured sweep-to-sweep noise floor. Bins near it are not measurements."
+          className={cn(
+            'px-2 py-0.5 rounded text-[9px] uppercase tracking-wider font-medium transition-all',
+            showFloor ? 'bg-[#e8a33d]/20 text-[#e8a33d] border border-[#e8a33d]/30' : 'bg-white/5 text-white/30 border border-white/10'
+          )}
+        >
+          Floor
+        </button>
 
         <div className="w-px h-3 bg-white/10" />
 

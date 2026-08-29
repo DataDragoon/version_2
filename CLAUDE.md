@@ -1797,6 +1797,44 @@ sweep to sweep, because corrupted sweeps do not repeat. So the useful test is
 fixed absolute cut on one sweep. The flag as shipped is a scene detector wearing a
 hardware-health label; treat it accordingly until it is reworked.
 
+### What a bin AT the floor does, and the FLOOR overlay (2026-08-29)
+
+A bin's dB wobble is `~8.686 * sigma / A` -- sigma fixed, `A` spanning 40+ dB across the
+profile -- so the *same* error reads as 0.1 dB on the peak and tens of dB in a null. Bins
+grouped by headroom above the floor, 200 static sweeps at the shipped config:
+
+| headroom | dB std | worst dip | worst spike |
+|---|---|---|---|
+| >30 dB | 0.14 | 0.4 | 0.4 |
+| 20-30 | 0.69 | 2.0 | 1.7 |
+| 15-20 | 1.64 | 4.9 | 3.3 |
+| 10-15 | 2.22 | 8.0 | 4.2 |
+
+**The dips grow faster than the spikes, and that asymmetry is the fingerprint of a bin at
+the floor**: a noise phasor can very nearly cancel the signal (-> -inf dB) but can at most
+double it (-> +6 dB). A bin reported as "sits at -50 dB, drops to -65, jumps to -45" is
+therefore not a fault and not a contradiction of the 0.72 dB worst-case quoted from a
+different scene -- it is a bin with ~0 dB of headroom, i.e. no measurement at all. **Any
+"worst-case wobble" figure is only meaningful together with the headroom range it was
+measured over**; the number above was scoped to a window whose weakest bin was 22 dB up.
+
+`SfcwDisplay` has a **FLOOR** toggle (next to CFAR) drawing the measured floor: per-bin sd
+of LINEAR amplitude over the last `FLOOR_WINDOW = 16` sweeps, smoothed +/-10 bins, scaled by
+`1/sqrt(avgCount)` (exact, since the error is white sweep-to-sweep). Linear, not dB, because
+the error is additive in amplitude and flat in range -- and it follows the R^n gain
+automatically since the stored rows are already range-compensated. Validated against
+200 sweeps: predicted wobble `8.686 * floor/level` vs measured, at 0.10 / 0.30 / 0.39 /
+0.50 / 0.70 m -> 0.09/0.10, 0.11/0.11, 0.19/0.19, 0.57/0.60, 0.29/0.30 dB. The line itself
+is stable to 0.82 dB frame to frame. Suppressed in the zeroed trace modes, where an
+absolute floor would be meaningless.
+
+**Averaging works and follows 10*log10(N).** Measured floor: N=1 -44.5 dBr, N=4 -49.6,
+N=8 -52.7, N=32 -60.9, with dB std median 0.171 -> 0.091 -> 0.058 -> 0.023. The display's
+existing Avg control averages *magnitudes* (incoherent) rather than complex `h_cal`;
+measured, the two are identical to three decimals on this scene because nothing gets
+within 22 dB of the floor, and they only diverge inside ~6-10 dB of it. Worth switching for
+deep-null work, not urgent.
+
 ### Tooling
 
 `scratchpad` probes only (not committed). If this needs redoing: drive `SFCWEngine`
