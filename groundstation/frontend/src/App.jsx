@@ -187,8 +187,8 @@ export default function App() {
     // reference), and the gain setting re-calibrates h_cal frequency-by-frequency, so a
     // background model is only valid at the reference gain it was captured at.
     // See CLAUDE.md "Sweep-to-sweep variability is set by the REFERENCE channel's level".
-    tx2Gain: 30,
-    rx2Gain: 20,
+    tx2Gain: 45,
+    rx2Gain: 5,
     rangeOffset: 0.5,
   });
 

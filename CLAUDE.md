@@ -1907,6 +1907,50 @@ complex residual, worth ~1 dB) and the rest is that the bench was being handled 
 runs. **The decomposition is a ratio of terms measured within one run and is the robust
 part; do not quote 41.8 dB as the system figure.**
 
+### Three gain experiments against one metric (2026-08-29)
+
+**The metric, and why the earlier ones were not good enough.** `S_repeat`, single-sweep
+repeatability:
+
+    S_repeat = 10*log10( sum_i <|H[k,i]|^2>_k / sum_i <|H[k,i] - H[k-1,i]|^2>_k / 2 )
+
+signal energy over the energy of the ADJACENT-SWEEP difference. It is immune to slow drift
+during a capture (deviation-from-the-mean is not -- that is what made one run read 41.8 dB
+where runs minutes earlier gave 47-48), the /2 corrects for a difference of two independent
+samples having 2x the variance, and being a ratio computed within each configuration it
+stays comparable even though changing any gain re-calibrates h_cal's shape. Every run below
+repeats the baseline config at the START and END; the three controls agreed to **0.2 dB**,
+which is the error bar on everything here.
+
+| experiment | result |
+|---|---|
+| **E1** TX DAC `amplitude` 0.9 -> 0.7 -> 0.5 -> 0.3 | 27.8 / 27.9 / 28.0 / 28.1 dB -- **no effect**, hypothesis falsified. Within-step SNR degrades 72.4 -> 66.2 dB, so it costs and buys nothing. Note `amplitude` is shared by both TX chains, so it is a common-mode change and cancels in the ratio. |
+| **E2** `rx1_gain` 25 -> 20 -> 15 -> 10 | 28.1 / 28.5 / 28.6 dB -- **no effect**. rx1=20 removed RX1 clipping entirely (0% vs 12%) and gained nothing, confirming the clipping is not currently costing anything. |
+| **E3a** `tx1_gain` 50 -> 45 -> 40 -> 35, RX1 compensating | 31.2 / 30.9 / 30.6 vs control 28.1 -- a real **+3 dB**, but see below: it does not combine. |
+| **E3b** `tx2_gain` toward TX1 at ~constant reference level | 20/30 -> **19.7**, 30/20 -> **28.1**, 40/10 -> **36.7**, 45/5 -> **38.6 dB**. Monotonic across 19 dB. |
+
+**E3b is the result.** Confirmed on the operational metric too, same bracketed run:
+
+| | S_repeat | range-profile floor | dB std median | worst |
+|---|---|---|---|---|
+| tx2/rx2 = 30/20 (control x3) | 28.1 dB | -45.8 dBr | 0.196 | 2.2 |
+| **tx2/rx2 = 45/5** | **38.6 dB** | **-53.2 dBr** | **0.065** | **0.84** |
+
+**It is not a level effect.** 45/5 sits at 342 RX2 counts and 45/10 at 585 -- both 38.6 dB --
+while the control at 391 counts, in between them, is 28.1 dB. Holding the level and moving
+only the TX2/RX2 split is what changes it.
+
+**But the mechanism is NOT confirmed, and the obvious story is wrong.** "Match the two
+chains so more of the per-retune error is common-mode" predicts that tx1=45 with tx2=45
+should be best; measured, it is **34.8 dB, worse** than tx1=50 with tx2=45 (38.7). The
+magnitude-correlation statistic `rho` was too noisy to arbitrate (two identical controls
+gave 0.570 and -0.043), and `|R|cv` is unchanged across all of these (0.33-0.38), so the
+improvement is not in reference *magnitude* stability -- it is in phase. Most likely an
+empirical property of where the AD9361 TX gain table lands at this frequency plan.
+**Re-measure after any RF hardware change instead of assuming it transfers**, and note that
+E3a's +3 dB does NOT add to E3b: 45/5 alone beats the combination by 3.9 dB. `tx1_gain`/
+`rx1_gain` therefore stay at the bench-validated 50/25.
+
 ### Tooling
 
 `scratchpad` probes only (not committed). If this needs redoing: drive `SFCWEngine`

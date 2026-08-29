@@ -98,15 +98,29 @@ class SFCWEngine:
         # plateau with a cliff on the hot side, not a sharp optimum -- aim for a few
         # hundred counts and do not chase the last decibel.
         #
-        # NOTE these were 45/10 for part of 2026-08-29. That came from a scan run BEFORE
-        # the sync_rx half-buffer fix, which moved the optimum; 45/10 measures 45.8 dB
-        # post-fix, about 1 dB worse than 30/20. Do not re-derive these from a bench scan
-        # without re-checking that the RX path is otherwise healthy first.
+        # SUPERSEDED 2026-08-29 (later the same day) -- 45/5, not 30/20. Both earlier
+        # picks came from scans scored by deviation-from-the-run-mean, which is inflated
+        # by any bench drift during the capture and has no control bracket. Re-measured
+        # with S_repeat (adjacent-sweep difference, drift-immune) and controls repeated at
+        # the start AND end of every run, agreeing to 0.2 dB:
+        #     tx2/rx2   S_repeat   range-profile floor   dB std (median)
+        #     20/30      19.7 dB
+        #     30/20      28.1 dB        -45.8 dBr             0.196
+        #     40/10      36.7 dB
+        #     45/10      38.6 dB        -52.1 dBr             0.067
+        #     45/5       38.6 dB        -53.2 dBr             0.065
+        # Monotonic in TX2 gain across a 19 dB span, and NOT a level effect: 45/5 sits at
+        # 342 RX2 counts and 45/10 at 585, both 10.5 dB better than 30/20 at 391 counts in
+        # between. The mechanism is NOT simply "match the two chains" -- tx1=45 with
+        # tx2=45 (perfectly matched) measured 34.8 dB, worse than tx1=50/tx2=45's 38.7 --
+        # so treat this as an empirical property of the AD9361 TX gain table at this
+        # frequency plan, and RE-MEASURE it after any RF hardware change rather than
+        # assuming it transfers.
         #
         # Do NOT raise these to "get more reference signal" -- more is strictly worse
         # once RX2 is compressing. adc_peak in every sfcw_result reports where it is.
-        self.tx2_gain = 30
-        self.rx2_gain = 20
+        self.tx2_gain = 45
+        self.rx2_gain = 5
         self.rx_gain_min = 5
         self.rx_gain_max = 38
         self.range_offset = 0.5

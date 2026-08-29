@@ -62,7 +62,7 @@ SFCW_PARAMS = {
     # unchanged static scene, with per-step |h_cal| ratios spanning 0.007-1.840). A model
     # captured at one reference gain is invalid at another, silently. These are now
     # pushed by App.jsx too, so both sides carry the same numbers.
-    'tx1Gain': 50, 'rx1Gain': 25, 'tx2Gain': 30, 'rx2Gain': 20,
+    'tx1Gain': 50, 'rx1Gain': 25, 'tx2Gain': 45, 'rx2Gain': 5,
     'rangeOffset': 0.5,
 }
 
