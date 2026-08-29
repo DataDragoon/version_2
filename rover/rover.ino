@@ -77,6 +77,7 @@ static int8_t appliedDir[NUM_AXES] = { 0, 0 };
 
 static bool driversEnabled = false;
 static bool estopLatched = false;
+static uint32_t idleDisableMs = IDLE_DISABLE_MS;
 
 // Sequence of the most recently accepted command, echoed in status so the Pi
 // can tell what the board has actually seen.
@@ -123,6 +124,18 @@ static inline void applyDirection(uint8_t axis) {
         digitalWrite(PIN_Z_DIR, high ? HIGH : LOW);
         digitalWrite(PIN_A_DIR, high ? HIGH : LOW);
     }
+}
+
+static void setDriversEnabled(bool on);
+
+// Re-energises the drivers if idle-disable has parked them, and waits for the
+// coil current to come up. Every path that can start motion goes through this,
+// so a move can never be issued into a sleeping driver -- which would silently
+// drop the first few steps.
+static void wakeDrivers() {
+    if (driversEnabled || estopLatched) return;
+    setDriversEnabled(true);
+    delay(DRIVER_WAKE_MS);
 }
 
 static void setDriversEnabled(bool on) {
@@ -273,6 +286,7 @@ static void sendStatus() {
     w.boolean("estop", estopLatched);
     w.boolean("en", driversEnabled);
     w.boolean("pos_valid", positionValid);
+    w.u32("idle_ms", idleDisableMs);
     w.i32("q", (int32_t)qCount);
     w.u32("ms", nowMs());
     w.end();
@@ -415,6 +429,7 @@ static void handleCommand(const char* json) {
     }
 
     if (strcmp(cmd, "move") == 0) {
+        wakeDrivers();
         bool rel = true;
         proto::getBool(json, "rel", &rel);
         QueuedMove m;
@@ -438,6 +453,7 @@ static void handleCommand(const char* json) {
     }
 
     if (strcmp(cmd, "jog") == 0) {
+        wakeDrivers();
         char axName[4];
         int32_t dir = 0;
         int32_t holdMs = JOG_WATCHDOG_MS;
@@ -528,6 +544,14 @@ static void handleCommand(const char* json) {
         AxisParams v, h;
         parseAxisConfig(json, axes[AXIS_V].p, "v", &v);
         parseAxisConfig(json, axes[AXIS_H].p, "h", &h);
+        int32_t idle;
+        if (proto::getInt32(json, "idle_ms", &idle) && idle >= 0) {
+            idleDisableMs = (uint32_t)idle;
+            // Turning the feature off must put the holding current back now, not
+            // at the next move -- the whole point of leaving it off is that the
+            // axes are held.
+            if (idleDisableMs == 0) wakeDrivers();
+        }
         bool limits;
         if (proto::getBool(json, "limits", &limits)) {
             v.limits_enabled = limits;
@@ -863,6 +887,14 @@ void loop() {
     if (ms - lastStatusMs >= STATUS_INTERVAL_MS) {
         lastStatusMs = ms;
         sendStatus();
+    }
+
+    // Park the drivers if they have been idle long enough and the feature is on.
+    // Never while E-stopped (they are already off) and never with work pending.
+    if (idleDisableMs > 0 && driversEnabled && !estopLatched && !moving &&
+        qCount == 0 && (ms - lastMotionMs) > idleDisableMs) {
+        Serial.println("[drv] idle -- de-energising");
+        setDriversEnabled(false);
     }
 
     // Flash write, debounced well past the end of motion.

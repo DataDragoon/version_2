@@ -301,6 +301,7 @@ export default function Sidebar({
                   params={sfcwParams}
                   onParamsChange={onSfcwParamsChange}
                   coherenceResult={coherenceResult}
+                  adcPeak={sfcwResult?.adc_peak}
                   rangeScale={sfcwRangeScale}
                   onRangeScaleChange={onSfcwRangeScaleChange}
                   scaleRange={sfcwScaleRange}

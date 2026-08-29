@@ -488,8 +488,18 @@ panel refreshes every 150 ms, the board decelerates after 500 ms of silence, so 
 link cannot leave the rover driving. The panel also stops on blur / pointerup /
 visibilitychange, since the dead-man costs up to half a second of unwanted travel.
 
-Idle-disabling the drivers is deliberately NOT done: with no endstop and no encoder, an
-axis creeping while de-energised would be silently wrong with no way to recover it.
+**Standstill whine is the drivers, not the firmware.** A4988-class drivers regulate coil
+current by PWM chopping and keep doing so at rest to hold position, which is audible. The
+ISR touches no pin while idle (`phase_inc == 0`, and `testSetPosition` asserts no pulses),
+so it is not the step train. In order of effect: turn the driver Vref down (also fixes the
+holding-current heat), enable idle-disable, or fit TMC2208/2209 for actual silence.
+
+**Idle-disable exists but defaults OFF (`idle_disable_s = 0`).** With no endstop and no
+encoder, an axis that creeps while de-energised is silently in the wrong place and nothing
+can detect it -- that risk is worse than the noise, so it is opt-in from the panel.
+`wakeDrivers()` re-energises and waits `DRIVER_WAKE_MS` before any move, so no steps are
+lost coming out of sleep (verified: a 25 mm move after parking landed within 0.011 mm).
+Setting the timeout back to 0 re-energises immediately rather than at the next move.
 
 ### Verified on the rig, 2026-08-29 (first bring-up of the rewrite)
 
@@ -850,9 +860,10 @@ just that bin. Default reverted to 10. If it ever needs to drop again, validate 
 per-step check (flag/log which step index was corrupted), not just an aggregate
 correlation over whole sweeps — an aggregate metric is exactly what let this ship
 unnoticed. `benchmark_sweep.py` is a leftover from that pass and is currently broken
-(references `_sweep_core_fast`/`sweep_mode`/`_qt_profiles_rx`, all since removed) —
-needs a rewrite against the current `_sweep_core`/master-table API before it's useful
-again.
+(references `_sweep_core_fast`/`sweep_mode`/`_qt_profiles_rx`, all since removed, and
+unpacks `_sweep_core` as a 2-tuple when it has returned `(h_cal, dropped_steps, adc_peak)`
+since 2026-08-29) — needs a rewrite against the current `_sweep_core`/master-table API
+before it's useful again.
 
 **Regression, 2026-08-20 to 2026-08-23 (fixed): `num_buffers` default silently dropped
 from 4 to 1, killing per-step noise averaging.** The `c33b0ce` "clean up" commit (same
@@ -1550,6 +1561,249 @@ subtraction exists to fix.
   `span_analyze.py` reports residual **peak/rms**, which is NOT a target detector — see the
   target A/B below. It is only a coarse "is the residual spiky" indicator; do not read a low
   value as absence of a target.
+
+## Sweep-to-sweep variability is set by the REFERENCE channel's level (2026-08-29)
+
+Investigating "a static rig on a static scene gives range profiles whose shape correlates
+highly but whose values move by multiple dB, worst at particular ranges". Measured on the
+bench with `sdr_server` stopped, driving `SFCWEngine` directly so `h_signal` and
+`h_reference` could be kept separately (the wire only carries their ratio).
+
+### The symptom is a level effect, not a range effect — dB is the wrong lens
+
+Across 100 static sweeps the **linear** std of the range profile is essentially flat with
+range (-41.9 to -34.9 dBr, a 7 dB spread) while the **dB** std spans 0.11 to 6.08 dB, and
+`corr(dB-std, -mean level) = 0.878`. There is one flat additive complex noise floor across
+the whole profile; wherever the profile dips toward it, the dB reading swings wildly, and
+where it is strong the dB reading is rock solid (0.12 dB at the peak). So "variability
+depends on position" is entirely "how far is this bin above the floor" — **the floor is the
+only number worth tracking, and it is one number for the whole profile.**
+
+### It is not thermal noise, not drift, and not settling
+
+| measurement | result |
+|---|---|
+| within a step (4 buffers, 0.4 ms apart) | 0.13-0.22% -> ~54 dB |
+| sweep to sweep (same step, ~300 ms apart) | 5.3% -> 25.5 dB, **29x worse** |
+| lag-1..50 correlation of the residual | 0.01-0.06 (white) |
+| first-half vs second-half mean of 100 sweeps | 35.4 dB (no drift) |
+| removing a per-sweep complex scalar | 21.41 -> 21.91 dB (nothing) |
+| removing a per-sweep delay/range shift | -> 21.98 dB (nothing) |
+| error vs step signal level | corr 0.011 (**multiplicative, not additive**) |
+| error across adjacent frequency steps | corr 0.08 (white in f -> flat in range) |
+
+Averaging more buffers cannot help (the fast noise is already 29x below), and a 6x longer
+settle does not help either. Paired A/B at one frequency isolates the trigger:
+
+| | scatter vs baseline |
+|---|---|
+| capture again with **no** retune in between | 2.4% |
+| retune to the **same** frequency, then capture | 6.4% |
+| retune 1 GHz away and back | 6.5% |
+| retune, then settle 60 buffers instead of 10 | 6.7% |
+
+So it is the retune that re-randomises it, and it is not a settling transient.
+
+### Root cause: RX2 was ~76% of ADC full scale, i.e. in compression
+
+Magnitudes are immune to the LO phase, so they separate the two paths cleanly:
+
+| | sweep-to-sweep | within-step |
+|---|---|---|
+| `|h_signal|` | 1.19% | 0.020% |
+| `|h_reference|` | **5.62%** | 0.118% |
+| `|h_cal|` | 5.44% | 0.133% |
+
+**The reference — the thing whose entire job is to be the stable standard — is 4.7x less
+stable than the antenna channel, and h_cal inherits it essentially untouched.** Because it
+divides every step, its noise is *multiplicative*, which is exactly why the scatter is
+independent of each step's own signal level (a step at 26 ADC counts and one at 571 are
+equally noisy in relative terms).
+
+It is a level problem. Sweeping TX2/RX2 gain gives a textbook compression curve
+(60-80 sweeps per point, `|S|` cv stays ~1.0-1.2% throughout, so this is purely the
+reference path):
+
+| rx2 ADC peak (of 2047) | 1567 | 896 | 530 | 425 | 307 | 169 | 105 | 51 | 27 |
+|---|---|---|---|---|---|---|---|---|---|
+| `|R|` cv | 4.7% | 2.2% | 1.3% | 0.82% | 0.81% | 0.92% | 1.06% | 1.38% | 6.17% |
+| h_cal | 28.4 dB | 37.9 | 39.7 | 43.6 | 43.6 | 45.0 | 42.6 | 39.8 | 29.7 |
+
+**Target the reference at roughly 150-400 counts peak (5-20% of full scale).** Above that
+the RX2 front end compresses; below ~50 it runs out of SNR. (These counts, and the table
+above, are a *mean* of the per-step maxima. `adc_peak` on the wire is a *max over the
+sweep*, which for RX2 runs ~1.1x higher and for RX1 ~4x higher -- do not compare the two
+statistics directly. The post-fix numbers further down are all max-over-sweep.) End to
+end, 80 sweeps each:
+
+| | h_cal | noise floor | dB std median | worst | @0.4 m |
+|---|---|---|---|---|---|
+| tx2=50 rx2=25 | 26.2 dB | -38.2 dBr | 0.55 dB | 6.64 | 0.98 |
+| tx2=30 rx2=20 (engine default) | 42.2 dB | -44.4 dBr | 0.16 dB | 1.13 | 0.17 |
+| tx2=45 rx2=10, rx1=20 | **44.0 dB** | **-50.4 dBr** | **0.06 dB** | 0.62 | 0.07 |
+
+**With the reference correctly levelled the radar is extremely repeatable**: two 40-sweep
+means taken minutes apart on a static scene give complex coherence **1.0000** and 41.5 dB
+suppression. There is no mystery drift; nearly all the observed variability was this.
+
+The remaining floor is `|h_signal|`'s own 1.1% per-retune magnitude wobble (~39 dB), which
+is what caps h_cal at ~44 dB. TX runs at `amplitude=0.9` of DAC full scale, which is the
+obvious next suspect, but it has not been tested.
+
+### The reference gain is invisible, unreachable, and STICKY — this is the real trap
+
+- `App.jsx` `sfcwParams` has **no** `tx2Gain`/`rx2Gain`, so `sendSfcwParams()` never sends
+  them. The panel therefore is *not* the source of truth for these two, contrary to the
+  invariant stated in the SFCW params section above.
+- `SFCWEngine` keeps whatever was last set for the **life of the `sdr_server` process**, and
+  `_configure_hardware()` re-pushes it before every sweep. `capture_bgmodel.py` and
+  `span_confirm.py` (`SFCW_PARAMS`) send **tx2=50 rx2=25**. So running either tool once
+  silently moves every subsequent browser sweep into the compressed 26 dB regime until
+  `sdr_server` is restarted — with nothing on screen indicating it. That is the most likely
+  explanation for the symptom appearing intermittently across sessions.
+
+### Reference gain also RE-CALIBRATES h_cal, so it invalidates background models
+
+Changing only TX2/RX2 gain is **not** a constant scaling of h_cal. Measured on a static
+scene (40-sweep means):
+
+| | coherence | suppression |
+|---|---|---|
+| 30/20 vs 30/20 (control) | 1.0000 | 41.5 dB |
+| 30/20 vs 50/25 | 0.8807 | **6.49 dB** |
+
+Per-step `|h_cal|` ratio runs **0.007 to 1.840** with 46 deg of phase scatter — a strongly
+frequency-dependent recalibration, because different AD9361 gain settings distribute gain
+differently across LNA/mixer/PGA and each has its own frequency response.
+
+**Consequence: a background model is only valid at the reference gain it was captured at,
+and nothing records or checks that.** Models built by `capture_bgmodel.py` (50/25) applied
+to browser sweeps (30/20) would be mismatched by construction. This is worth re-examining
+against the Phase 2 "stale model" finding above: its signature was a per-step `|h|` ratio of
+0.60-2.17, "strongly frequency-dependent, so not a gain change" — which is exactly the
+signature a reference-gain change produces. The `geometry` stamp added in Phase 0 records
+`sfcwParams`, but since `sfcwParams` does not contain tx2/rx2 it cannot catch this.
+
+### Separate bug: `sync_rx` in RX_X2 delivers HALF the samples the code assumes
+
+`_rx_loop_dual` calls `sync_rx(buf, num_samples)` with `num_samples=4096` and a buffer sized
+for 4096 samples *per channel*. In `RX_X2`, libbladeRF counts `num_samples` as the **total**
+across both channels. Verified by poisoning the buffer with `0xAA` before the call: **the
+upper 50% is never written**, and throughput is 4886 calls/s at 10 Msps = 2047 per-channel
+samples per call (not 2441 calls/s / 4096 samples).
+
+`buf` is allocated once outside the loop, so every capture is 2048 fresh samples followed by
+2048 samples that are one buffer old. Steady-state harm is small — the stale half comes back
+rotated by `exp(-j*2*pi*100e3*4096/10e6)`, costing 0.8% amplitude and a constant 7.2 deg that
+cancels in the ratio — but:
+
+- **A buffer carried 0.205 ms of signal, not 0.41 ms**, so `settle_count = 10` bought
+  2.05 ms of *settled signal* rather than the 4.10 ms `SfcwPanel.jsx`'s
+  `BUFFER_SAMPLES`/`SAMPLE_RATE` and CLAUDE.md's own sweep-timing section both claim. That
+  bears on the `settle_count` 10 -> 7 regression documented above: it was really 1.43 ms.
+- **The wall clock did NOT halve with it, and that is the confusing part.** Measured
+  retune -> settle-satisfied is **4.40 ms** (p10 4.28, p90 4.50), not 2.05 ms, and it is
+  not buffer loss -- arrivals run at 4882/s against an ideal 4883/s both idle and under
+  sweep load, i.e. exactly real time with nothing dropped. The cause is that `_sweep_core`
+  holds `_rx_cond`'s lock across the whole settle-plus-capture block, so `_rx_capture`
+  blocks on it, the RX thread stalls, buffers back up in the 16-deep ring, and it catches
+  up in the gap between steps (`seqd` counts ~14 arrivals per step inside the block while
+  ~29 actually occur). So the *elapsed* time was roughly what the repo assumed while the
+  *settled signal* was half, and the true settling sat somewhere between those two bounds
+  depending on ring backlog -- unknowable, which is itself the problem. With the fix a
+  buffer is genuinely 4096 samples / 0.41 ms and the ambiguity is gone.
+- Consecutive buffers overlapped 50% in content, so `num_buffers` averaging was over fewer
+  independent captures than it looked.
+
+Fix is to request `2 * n` from `sync_rx` (or size the buffer for what actually arrives) and
+to check the delivered count rather than assuming it.
+
+
+### Fixes shipped and re-measured, same evening (2026-08-29)
+
+Changed: `sync_rx` request corrected in `_rx_loop_dual`; `tx2_gain`/`rx2_gain` added to
+`App.jsx` `sfcwParams` + `sendSfcwParams()` and to `SfcwPanel.jsx`'s Gains section;
+`capture_bgmodel.py` `SFCW_PARAMS` brought into line; `adc_peak` + `gains` added to every
+`sfcw_result` with a headroom bar in the panel and a hysteretic stdout warning;
+`geometryMismatch()` now compares `tx2Gain`/`rx2Gain`.
+
+100 sweeps per row through the real `_perform_sweep()`, static scene:
+
+| | Hz | h_cal | floor | dB std med | worst | rx1 pk | rx2 pk |
+|---|---|---|---|---|---|---|---|
+| shipped, tx2/rx2 = 30/20 | 2.22 | **45.3 dB** | -44.2 dBr | **0.15 dB** | 1.29 | 873 | 373 |
+| repeat of the same config | 2.22 | 45.1 dB | -44.5 dBr | 0.14 dB | 1.17 | 871 | 393 |
+| what the capture tools forced, 50/25 | 2.22 | **34.0 dB** | -43.7 dBr | 0.25 dB | 3.69 | 857 | 1817 |
+
+The two identical rows agreeing to 0.2 dB is the run-to-run error bar for every number
+here. Against the 50/25 a session inherited after running `capture_bgmodel.py` this is
+**+11.3 dB**; against the same 30/20 measured before the `sync_rx` fix (42.2 dB) the fix
+alone is worth **+3.1 dB**; against the original measured baseline (50/25 with the
+half-buffer bug, 25.5 dB) the total is **~20 dB**.
+
+**The `sync_rx` fix costs sweep rate: 3.16 -> 2.22 Hz** (-30%), because a buffer now really
+is 4096 samples / 0.41 ms instead of 2048 / 0.205 ms. What it buys is that `settle_count`
+means what it says -- settling went from 2.05 ms to a genuine 4.10 ms. If the rate is
+wanted back, `settle_count = 5` restores ~3.1 Hz at exactly the 2.05 ms of settling the
+system has actually been running with all along; that is a knowing trade, not a free one,
+and per the `settle_count` regression note above it needs a per-step validation first.
+
+**`tx2/rx2 = 45/10` was shipped for part of this session and then reverted to 30/20.** It
+came from a gain scan run before the `sync_rx` fix; the fix moved the optimum, and 45/10
+measures 45.8 dB post-fix against 30/20's 46.2-47.1. The Pi-side default therefore ends up
+unchanged -- **the engine default was never the bug.** The bugs were that the panel could
+not set it and that the headless tools silently could.
+
+**The ADC warning needs hysteresis, and this is not a detail.** RX1's per-sweep peak sits
+right on any sensible threshold in normal operation -- measured flipping between 78% and
+100% FS from one sweep to the next -- so a plain threshold test printed a warning and a
+recovery every couple of sweeps. With `ADC_HOT_SWEEPS_TO_WARN = 8` /
+`ADC_CLEAN_SWEEPS_TO_CLEAR = 30` the same 300 sweeps produce **exactly one line**, on the
+50/25 run, naming RX2 at 90% FS. Also note RX1 and RX2 need *different* thresholds (0.75
+vs 0.40) because `adc_peak` is a max: RX2's reference is flat across the band so its max
+represents every step, while RX1's max is whichever single frequency the scene is
+strongest at and says nothing about the other fifty.
+
+**RX1 genuinely clips intermittently at `rx1_gain = 25`** -- peak hits the 2048 rail on
+0-8% of sweeps in this scene (18% at one gain setting), which nothing could see before
+`adc_peak` existed. It is not currently costing anything measurable (`|h_signal|` cv stays
+~1.1% at rx1 20 / 25 / 30), so it has been left alone rather than changed blind, per the
+"retest via RF Calib at the exact new numbers" rule above. Watch the panel's RX1 bar; if
+it sits red on a strong target, drop `rx1Gain` and re-measure.
+
+### The `coherent` flag does not measure what its name suggests
+
+Over 100 sweeps per configuration it reads **`coherent = False` 100% of the time in every
+configuration, including the good ones** -- and it did so before any of these changes, so
+nothing here broke it. `_process_h_cal` computes `phase_std` as the residual of a *linear*
+fit to unwrapped phase vs step index, which is only small when the scene is a single
+dominant reflector. A real multi-target scene is not linear in frequency and never will
+be, so against the fixed 0.3 rad cut the flag is pinned False regardless of hardware
+health. Measured: 1.39 rad at 30/20, 3.90 rad at 50/25.
+
+**What is diagnostic is the sweep-to-sweep spread of `phase_std`, not its value.** The
+structure repeats almost exactly when the hardware is healthy and stops repeating when it
+is not:
+
+| | mean phase_std | sd across 100 sweeps |
+|---|---|---|
+| 30/20 | 1.3897 rad | **0.0047** |
+| 30/20, repeat | 1.3915 rad | 0.0048 |
+| 50/25 | 3.9029 rad | 0.0078 |
+
+A retune-timing corruption -- the thing this check exists to catch -- would move `phase_std`
+sweep to sweep, because corrupted sweeps do not repeat. So the useful test is
+`std(phase_std)` over a window, or a comparison against the previous sweep's phase, not a
+fixed absolute cut on one sweep. The flag as shipped is a scene detector wearing a
+hardware-health label; treat it accordingly until it is reworked.
+
+### Tooling
+
+`scratchpad` probes only (not committed). If this needs redoing: drive `SFCWEngine`
+directly with `sdr_server` stopped and keep `h_signal`/`h_reference` separately — the
+websocket only carries `h_cal`, and the whole diagnosis turns on being able to tell the two
+channels apart. Also record `max|I|,|Q|` per channel per step; ADC headroom is still
+unguarded anywhere in `sfcw_engine.py`/`bladerf_driver.py`, and it was the entire answer here.
 
 ## RF Calib panel gains are NOT the SFCW sweep's gains (2026-08-25)
 

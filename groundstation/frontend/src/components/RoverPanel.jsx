@@ -355,6 +355,23 @@ export default function RoverPanel({
                 runway to stop in.
               </p>
             )}
+            <Check
+              label="De-energise the drivers when idle"
+              checked={(cfg?.idle_disable_s ?? 0) > 0}
+              onChange={v => setConfig({ idle_disable_s: v ? 30 : 0 })}
+              disabled={!roverConnected}
+            />
+            {(cfg?.idle_disable_s ?? 0) > 0 && (
+              <NumTile label="Idle after" unit="s" value={cfg.idle_disable_s}
+                       onCommit={v => setConfig({ idle_disable_s: v })} />
+            )}
+            <p className="text-[10px] leading-relaxed text-[#555]">
+              Stops the standstill whine and the holding-current heat — the drivers chop
+              current continuously to hold position, which is what you hear. Off by
+              default: with no endstop and no encoder, an axis that creeps while
+              de-energised is silently in the wrong place and nothing can detect it. The
+              drivers re-energise automatically before any move.
+            </p>
             <div className="grid grid-cols-2 gap-2">
               <InfoTile label="Travel since home"
                         value={roverStatus ? `${roverStatus.travel_mm.toFixed(0)} mm` : '—'} />

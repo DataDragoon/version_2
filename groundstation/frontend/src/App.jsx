@@ -178,6 +178,17 @@ export default function App() {
     settleCount: 10,
     tx1Gain: 50,
     rx1Gain: 25,
+    // Reference channel (TX2 -> loopback cable -> RX2). These were previously absent
+    // here, so sendSfcwParams never sent them and the Pi kept whatever SFCWEngine last
+    // had -- which persists for the life of the sdr_server process, so running
+    // capture_bgmodel.py or span_confirm.py once silently changed every subsequent
+    // browser sweep with nothing on screen saying so. They matter twice over: the level
+    // sets the range-profile noise floor (16 dB between a compressed and a well-levelled
+    // reference), and the gain setting re-calibrates h_cal frequency-by-frequency, so a
+    // background model is only valid at the reference gain it was captured at.
+    // See CLAUDE.md "Sweep-to-sweep variability is set by the REFERENCE channel's level".
+    tx2Gain: 30,
+    rx2Gain: 20,
     rangeOffset: 0.5,
   });
 
@@ -906,6 +917,8 @@ export default function App() {
       settle_count: p.settleCount,
       tx1_gain: p.tx1Gain,
       rx1_gain: p.rx1Gain,
+      tx2_gain: p.tx2Gain,
+      rx2_gain: p.rx2Gain,
       range_offset: p.rangeOffset,
     });
   }, [sendSdr]);

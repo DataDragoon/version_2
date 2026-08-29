@@ -56,7 +56,13 @@ DEFAULT_OFFSET_MM = 160.0
 SFCW_PARAMS = {
     'startFreq': 2000, 'stopFreq': 5000, 'stepSize': 60,
     'numBuffers': 4, 'settleCount': 10,
-    'tx1Gain': 50, 'rx1Gain': 25, 'tx2Gain': 50, 'rx2Gain': 25,
+    # tx2/rx2 MUST match what the SFCW panel uses. The reference gain is not just a
+    # level -- it re-calibrates h_cal frequency-by-frequency (measured 2026-08-29:
+    # 30/20 vs 50/25 gives complex coherence 0.88 and only 6.5 dB of suppression on an
+    # unchanged static scene, with per-step |h_cal| ratios spanning 0.007-1.840). A model
+    # captured at one reference gain is invalid at another, silently. These are now
+    # pushed by App.jsx too, so both sides carry the same numbers.
+    'tx1Gain': 50, 'rx1Gain': 25, 'tx2Gain': 30, 'rx2Gain': 20,
     'rangeOffset': 0.5,
 }
 

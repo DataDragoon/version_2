@@ -209,6 +209,8 @@ class Sim:
         self.move_pending = False
         self.queue = []
         self.pos_valid = pos_valid
+        self.idle_ms = 0
+        self.last_motion_ms = 0
         self.t0 = time.monotonic()
 
     def ms(self):
@@ -227,7 +229,7 @@ class Sim:
             'h_speed': self.h.max_speed, 'h_jog': self.h.jog_speed,
             'h_accel': self.h.accel,
             'limits': self.v.limits_enabled,
-            'pos_valid': self.pos_valid, 'estop': self.estop, 'ms': self.ms(),
+            'pos_valid': self.pos_valid, 'idle_ms': self.idle_ms, 'estop': self.estop, 'ms': self.ms(),
         }
 
     def status(self):
@@ -239,7 +241,7 @@ class Sim:
             'v_stop': self.v.stop_reason, 'h_stop': self.h.stop_reason,
             'moving': self.v.moving() or self.h.moving(),
             'estop': self.estop, 'en': self.enabled,
-            'pos_valid': self.pos_valid,
+            'pos_valid': self.pos_valid, 'idle_ms': self.idle_ms,
             'q': len(self.queue), 'ms': self.ms(),
         }
 
@@ -273,9 +275,13 @@ class Sim:
             if len(self.queue) >= 4:
                 return [{'t': 'err', 'seq': seq, 'code': 'full',
                          'msg': 'move queue is full'}]
+            if not self.estop:
+                self.enabled = True
             self.queue.append(entry)
             out.append({'t': 'ack', 'seq': seq})
         elif c == 'jog':
+            if not self.estop:
+                self.enabled = True
             self.queue.clear()
             self.move_pending = False
             hold = int(msg.get('hold_ms', JOG_WATCHDOG_MS))
@@ -330,6 +336,10 @@ class Sim:
                     ax.min_limit, ax.max_limit = ax.max_limit, ax.min_limit
                 if msg.get('limits') is not None:
                     ax.limits_enabled = bool(msg['limits'])
+            if msg.get('idle_ms') is not None:
+                self.idle_ms = int(msg['idle_ms'])
+                if self.idle_ms == 0 and not self.estop:
+                    self.enabled = True     # see the note in rover.ino's cfg handler
             # status, never hello -- see the note in rover.ino's cfg handler.
             out += [{'t': 'ack', 'seq': seq}, self.status()]
         elif c == 'enable':
@@ -359,6 +369,11 @@ class Sim:
     def tick(self, dt):
         """Advance motion; returns any `done` message that fell due."""
         now = self.ms()
+        if self.v.moving() or self.h.moving():
+            self.last_motion_ms = now
+        elif (self.idle_ms > 0 and self.enabled and not self.estop
+              and not self.queue and now - self.last_motion_ms > self.idle_ms):
+            self.enabled = False
         if self.enabled:
             self.v.update(dt, now)
             self.h.update(dt, now)

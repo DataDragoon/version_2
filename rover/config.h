@@ -153,6 +153,18 @@
 #define RX_BUFFER_SIZE 256
 #define TX_BUFFER_SIZE 384
 
+// De-energise the drivers after this long with no motion. 0 disables the
+// feature, which is the default and the safe choice: an axis that creeps while
+// de-energised is silently in the wrong place, and with no endstop and no
+// encoder there is no way to notice or recover it short of re-declaring the
+// position by hand. Set it (from the panel) if the standstill whine or the
+// holding-current heat matters more than that. Overridden at runtime by `cfg`.
+#define IDLE_DISABLE_MS 0
+
+// Time for a driver to come out of sleep and its coil current to settle before
+// it is asked to step. The A4988 family wakes in about a millisecond.
+#define DRIVER_WAKE_MS 5
+
 // Position is saved to emulated EEPROM only after motion has been settled this
 // long, so a jog does not write flash once per step.
 #define PERSIST_SETTLE_MS 3000

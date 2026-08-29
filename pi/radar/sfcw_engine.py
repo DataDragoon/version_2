@@ -33,6 +33,27 @@ SPEED_OF_LIGHT = 299_792_458
 # every frequency past it (this happened: a prior 1-6 GHz/10 MHz table needed 501
 # profiles against a 256 cap).
 MAX_QUICK_TUNE_PROFILES = 256  # NUM_BBP_FASTLOCK_PROFILES, fpga_common/bladerf2_common.h
+
+# SC16_Q11 is 12-bit signed: +-2047 (the negative rail reaches -2048).
+ADC_FULL_SCALE = 2047.0
+# Fraction of full scale above which the AD9361 RX path compresses enough to matter.
+# The two receivers need DIFFERENT thresholds even though it is the same front end,
+# because adc_peak is a max over the sweep and the two channels' peaks mean different
+# things. RX2 carries a flat CW reference (|h_reference| spans only 3.5 dB across
+# 2-5 GHz), so its per-sweep max is representative of every step: 385 counts is clean,
+# 896 already costs 6 dB of h_cal stability, 1780 costs 11 dB. RX1 carries the scene,
+# whose level spans ~43 dB across the band, so its max is one strong step and says
+# nothing about the other fifty -- measured 2026-08-29, RX1 peaking at 886 (43% FS)
+# costs nothing detectable (h_cal 45.2 dB, and rx1_gain 20 vs 25 vs 30 all give
+# |h_signal| cv ~1.1%). Warning on RX1 at 40% cried wolf on the normal configuration.
+ADC_HOT_FRACTION_RX2 = 0.40   # reference: flat CW, max == typical
+ADC_HOT_FRACTION_RX1 = 0.75   # signal: max is a single step, only real clipping matters
+# The per-sweep peak sits right on the threshold in normal operation (RX1 measured
+# flipping between 78% and 100% FS from one sweep to the next), so a bare
+# threshold test flaps and prints a warning every second sweep. Warn only after a
+# run of hot sweeps, and clear only after a longer run of clean ones.
+ADC_HOT_SWEEPS_TO_WARN = 8
+ADC_CLEAN_SWEEPS_TO_CLEAR = 30
 QT_MASTER_START_FREQ = 2_000_000_000
 QT_MASTER_STOP_FREQ = 5_000_000_000
 QT_MASTER_STEP = 20_000_000
@@ -48,6 +69,33 @@ class SFCWEngine:
         self.settle_count = 10
         self.tx1_gain = 50
         self.rx1_gain = 25
+        # Reference-channel (TX2 -> loopback cable -> RX2) gains. These set the level
+        # the reference lands at on RX2's ADC, and that level is the single largest
+        # driver of sweep-to-sweep variability in the whole system: h_cal = h_signal /
+        # h_reference, so the reference's own instability is MULTIPLICATIVE and shows up
+        # identically at every frequency step regardless of that step's signal level.
+        # Measured 2026-08-29 (see CLAUDE.md "Sweep-to-sweep variability is set by the
+        # REFERENCE channel's level"), 40 sweeps per point, peak RX2 ADC count over the
+        # run vs h_cal sweep-to-sweep scatter -- all with the sync_rx fix in place:
+        #   50/25 -> peak 1769 (86% FS) -> 33.6 dB   <- what the capture tools used to set
+        #   45/20 -> peak 1616          -> 38.3 dB
+        #   40/20 -> peak 1313          -> 43.8 dB
+        #   35/20 -> peak  887          -> 45.5 dB
+        #   30/20 -> peak  888          -> 46.2 dB   <- shipped, also 47.1 dB on a rerun
+        #   25/20 -> peak  245          -> 45.8 dB
+        #   15/30 -> peak 2048          -> 43.8 dB
+        # Everything with a peak under ~900 counts sits within ~1.5 dB of optimal, which
+        # is about the run-to-run spread; above ~1300 it degrades fast. So this is a broad
+        # plateau with a cliff on the hot side, not a sharp optimum -- aim for a few
+        # hundred counts and do not chase the last decibel.
+        #
+        # NOTE these were 45/10 for part of 2026-08-29. That came from a scan run BEFORE
+        # the sync_rx half-buffer fix, which moved the optimum; 45/10 measures 45.8 dB
+        # post-fix, about 1 dB worse than 30/20. Do not re-derive these from a bench scan
+        # without re-checking that the RX path is otherwise healthy first.
+        #
+        # Do NOT raise these to "get more reference signal" -- more is strictly worse
+        # once RX2 is compressing. adc_peak in every sfcw_result reports where it is.
         self.tx2_gain = 30
         self.rx2_gain = 20
         self.rx_gain_min = 5
@@ -68,6 +116,10 @@ class SFCWEngine:
         self._qt_master_rx = None
         self._qt_master_tx = None
         self._use_quick_tune = True
+        self._last_adc_peak = None
+        self._adc_hot_state = ()
+        self._adc_hot_run = {'rx1': 0, 'rx2': 0}
+        self._adc_clean_run = 0
 
     @property
     def num_steps(self):
@@ -263,7 +315,7 @@ class SFCWEngine:
                         result = None
                     else:
                         h_cal_avg = h_cal_accum / completed
-                        result = self._process_h_cal(h_cal_avg)
+                        result = self._process_h_cal(h_cal_avg, self._last_adc_peak)
                 if result is not None and callback:
                     callback(result)
             except Exception as e:
@@ -524,14 +576,16 @@ class SFCWEngine:
                     'freq_mhz': freqs[i] / 1e6,
                 })
 
-        h_cal, dropped_steps = self._sweep_core(freqs, qt_rx, qt_tx, num_buffers, settle_count, progress)
+        h_cal, dropped_steps, adc_peak = self._sweep_core(
+            freqs, qt_rx, qt_tx, num_buffers, settle_count, progress)
         if h_cal is None:
             return None
 
         if dropped_steps > 0:
             print(f"[sfcw] WARNING: {dropped_steps}/{num_steps} steps had incomplete captures")
 
-        return self._process_h_cal(h_cal)
+        self._warn_if_adc_hot(adc_peak)
+        return self._process_h_cal(h_cal, adc_peak)
 
     def _perform_sweep_raw(self):
         """Like _perform_sweep but returns raw h_cal array for averaging."""
@@ -544,7 +598,9 @@ class SFCWEngine:
 
         freqs, qt_rx, qt_tx = self._build_sweep_grid(start, stop, step)
 
-        h_cal, _ = self._sweep_core(freqs, qt_rx, qt_tx, num_buffers, settle_count)
+        h_cal, _, adc_peak = self._sweep_core(freqs, qt_rx, qt_tx, num_buffers, settle_count)
+        self._last_adc_peak = adc_peak
+        self._warn_if_adc_hot(adc_peak)
         return h_cal
 
     def _sweep_core(self, freqs, qt_rx, qt_tx, num_buffers, settle_count, progress_cb=None):
@@ -571,6 +627,12 @@ class SFCWEngine:
         stop_event = self._stop_event
 
         dropped_steps = 0
+        # Peak |I|,|Q| seen on each RX, in ADC counts of 2047 full scale. Nothing in
+        # this repo checked ADC headroom before 2026-08-29, and a too-hot reference was
+        # the entire cause of the variability investigated then -- it is cheap to
+        # measure and it is the first thing to look at when sweeps get noisy.
+        adc_peak_rx1 = 0.0
+        adc_peak_rx2 = 0.0
 
         for i in range(num_steps):
             if stop_event.is_set():
@@ -610,6 +672,14 @@ class SFCWEngine:
                 ref_cplx = (ref_arr[:, 0::2] + 1j * ref_arr[:, 1::2]) * ref_tone_scaled
                 h_signal[i] = sig_cplx.mean()
                 h_reference[i] = ref_cplx.mean()
+                # max(|min|, max) rather than np.abs(...).max() -- two reductions with
+                # no temporary allocation, which matters at ~3 sweeps/s on the Pi.
+                p1 = max(-sig_arr.min(), sig_arr.max())
+                if p1 > adc_peak_rx1:
+                    adc_peak_rx1 = p1
+                p2 = max(-ref_arr.min(), ref_arr.max())
+                if p2 > adc_peak_rx2:
+                    adc_peak_rx2 = p2
             else:
                 dropped_steps += 1
 
@@ -621,9 +691,54 @@ class SFCWEngine:
         h_cal = np.zeros(num_steps, dtype=np.complex128)
         h_cal[valid] = h_signal[valid] / h_reference[valid]
 
-        return h_cal, dropped_steps
+        adc_peak = {
+            'rx1': float(adc_peak_rx1),
+            'rx2': float(adc_peak_rx2),
+            'full_scale': float(ADC_FULL_SCALE),
+        }
+        return h_cal, dropped_steps, adc_peak
 
-    def _process_h_cal(self, h_cal):
+    def _warn_if_adc_hot(self, adc_peak):
+        """Warn when an RX has been close enough to full scale to compress, sustained.
+
+        Deliberately hysteretic. Sweeps free-run at 3-6 Hz and the per-sweep peak sits
+        right on the threshold in ordinary operation, so a plain threshold test prints a
+        warning and a recovery every couple of sweeps and buries everything else on
+        stdout. A warning needs ADC_HOT_SWEEPS_TO_WARN consecutive hot sweeps and clears
+        only after ADC_CLEAN_SWEEPS_TO_CLEAR consecutive clean ones.
+        """
+        if not adc_peak:
+            return
+        limits = {'rx1': ADC_HOT_FRACTION_RX1 * ADC_FULL_SCALE,
+                  'rx2': ADC_HOT_FRACTION_RX2 * ADC_FULL_SCALE}
+        hot = []
+        for n in ('rx1', 'rx2'):
+            if adc_peak.get(n, 0.0) > limits[n]:
+                self._adc_hot_run[n] += 1
+            else:
+                self._adc_hot_run[n] = 0
+            if self._adc_hot_run[n] >= ADC_HOT_SWEEPS_TO_WARN:
+                hot.append(n)
+
+        if hot:
+            self._adc_clean_run = 0
+            key = tuple(hot)
+            if key != self._adc_hot_state:
+                self._adc_hot_state = key
+                detail = ', '.join(
+                    f"{n.upper()}={adc_peak[n]:.0f}/{ADC_FULL_SCALE:.0f} "
+                    f"({100 * adc_peak[n] / ADC_FULL_SCALE:.0f}% FS)" for n in hot)
+                print(f"[sfcw] WARNING: RX ADC running hot -- {detail}. The front end is "
+                      f"compressing; on RX2 (the reference) that raises the range-profile "
+                      f"noise floor by up to 13 dB. Turn the corresponding gain down.")
+        elif self._adc_hot_state:
+            self._adc_clean_run += 1
+            if self._adc_clean_run >= ADC_CLEAN_SWEEPS_TO_CLEAR:
+                self._adc_hot_state = ()
+                self._adc_clean_run = 0
+                print("[sfcw] RX ADC levels back within headroom.")
+
+    def _process_h_cal(self, h_cal, adc_peak=None):
         num_steps = len(h_cal)
         start = self.start_freq
         stop = self.stop_freq
@@ -675,6 +790,15 @@ class SFCWEngine:
             'stop_freq': int(start + (num_steps - 1) * step),
             'range_offset': self.range_offset,
             'timestamp': time.time(),
+            # Peak |I|,|Q| in ADC counts on each RX over the whole sweep, so the panel
+            # can show headroom. RX2 (the reference) above ~40% of full scale means the
+            # reference path is compressing, which raises the range-profile noise floor
+            # by up to 16 dB -- see the tx2/rx2 defaults above.
+            'adc_peak': adc_peak,
+            'gains': {
+                'tx1': self.tx1_gain, 'rx1': self.rx1_gain,
+                'tx2': self.tx2_gain, 'rx2': self.rx2_gain,
+            },
             'phase_coherence': {
                 'phase_std_rad': phase_std,
                 'phase_std_deg': float(np.degrees(phase_std)),

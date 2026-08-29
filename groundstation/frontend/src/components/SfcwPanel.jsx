@@ -26,7 +26,11 @@ function geometryMismatch(bgModel, lidarOffsetMm, params) {
     out.push(`offset ${g.lidarAntennaOffsetMm} mm → ${lidarOffsetMm} mm`);
   }
   const gp = g.sfcwParams || {};
-  for (const k of ['startFreq', 'stopFreq', 'stepSize', 'tx1Gain', 'rx1Gain', 'numBuffers', 'settleCount']) {
+  // tx2Gain/rx2Gain belong here as much as any of the others: the reference gain
+  // re-calibrates h_cal frequency-by-frequency (30/20 vs 50/25 measured at complex
+  // coherence 0.88 / 6.5 dB suppression on an unchanged scene), so a model captured at
+  // a different reference gain is invalid even though nothing about the scene moved.
+  for (const k of ['startFreq', 'stopFreq', 'stepSize', 'tx1Gain', 'rx1Gain', 'tx2Gain', 'rx2Gain', 'numBuffers', 'settleCount']) {
     if (gp[k] != null && params?.[k] != null && gp[k] !== params[k]) {
       out.push(`${k} ${gp[k]} → ${params[k]}`);
     }
@@ -36,13 +40,31 @@ function geometryMismatch(bgModel, lidarOffsetMm, params) {
 
 // Must match pi/radar/sfcw_engine.py: _start_tx_rx() captures n = 4096 samples
 // per buffer at the 10 Msps set in _configure_hardware().
+//
+// This was silently only HALF true until 2026-08-29. libbladeRF counts sync_rx's
+// num_samples as the total across both channels in RX_X2, so _rx_loop_dual was getting
+// 2048 samples per channel per buffer, not 4096 -- a buffer was 0.205 ms of signal, and
+// settle_count = 10 bought 2.05 ms of retune settling rather than the 4.10 ms everything
+// here assumed. bladerf_driver.py now requests num_samples * 2, so a buffer really is
+// 4096 samples / 0.41 ms and these numbers are finally what they claim to be.
 const BUFFER_SAMPLES = 4096;
 const SAMPLE_RATE = 10_000_000;
 const BUFFER_TIME_MS = (BUFFER_SAMPLES / SAMPLE_RATE) * 1000;
 
-export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, rangeScale, onRangeScaleChange, scaleRange, onScaleRangeChange, getDynamicScale, lidarMm, bgModel, bgRef, bgCapturing, onCaptureBg, onLoadBgModel, onClearBg,
+// SC16_Q11 full scale, and the fraction above which the AD9361 RX path compresses
+// enough to matter. Mirrors ADC_FULL_SCALE / ADC_HOT_FRACTION_* in sfcw_engine.py --
+// RX2 carries a flat CW reference so its per-sweep max represents every step, while
+// RX1's max is whichever single frequency the scene happens to be strongest at, so the
+// same threshold on RX1 fires on a perfectly healthy configuration. See the engine.
+const ADC_FULL_SCALE = 2047;
+const ADC_HOT = { rx1: 0.75, rx2: 0.40 };
+// Below this the reference runs out of SNR instead -- measured 27 counts -> 29.7 dB,
+// vs 45.0 dB at 169 counts. The good window is wide but it does have both edges.
+const ADC_COLD_COUNTS = 60;
+
+export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, adcPeak, rangeScale, onRangeScaleChange, scaleRange, onScaleRangeChange, getDynamicScale, lidarMm, bgModel, bgRef, bgCapturing, onCaptureBg, onLoadBgModel, onClearBg,
   bgDiag, bgStats, onResetBgStats, lidarProvenance, lidarOffsetMm, onLidarOffsetChange }) {
-  const { startFreq, stopFreq, stepSize, numBuffers, settleCount, tx1Gain, rx1Gain, rangeOffset } = params;
+  const { startFreq, stopFreq, stepSize, numBuffers, settleCount, tx1Gain, rx1Gain, tx2Gain, rx2Gain, rangeOffset } = params;
   const [coherenceRunning, setCoherenceRunning] = useState(false);
   const lidarBuf = useRef([]);
   const [lidarAvg, setLidarAvg] = useState(null);
@@ -97,6 +119,8 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
       settle_count: overrides.settleCount ?? settleCount,
       tx1_gain: overrides.tx1Gain ?? tx1Gain,
       rx1_gain: overrides.rx1Gain ?? rx1Gain,
+      tx2_gain: overrides.tx2Gain ?? tx2Gain,
+      rx2_gain: overrides.rx2Gain ?? rx2Gain,
       range_offset: overrides.rangeOffset ?? rangeOffset,
     });
   };
@@ -278,7 +302,28 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             min={0}
             max={60}
           />
+          <EditableField
+            label="TX2 ref"
+            value={tx2Gain}
+            unit="dB"
+            onChange={(v) => { update('tx2Gain', v); sendParams({ tx2Gain: v }); }}
+            min={0}
+            max={66}
+          />
+          <EditableField
+            label="RX2 ref"
+            value={rx2Gain}
+            unit="dB"
+            onChange={(v) => { update('rx2Gain', v); sendParams({ rx2Gain: v }); }}
+            min={0}
+            max={60}
+          />
         </div>
+        <span className="text-[9px] text-[#333333] leading-tight px-1">
+          TX2/RX2 drive the reference loopback. h_cal divides by it, so its level sets the
+          range-profile noise floor for every step at once — keep RX2 peak in the green band.
+        </span>
+        <AdcHeadroom adcPeak={adcPeak} />
       </Section>
 
       {/* Sweep Info */}
@@ -534,6 +579,61 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
         </button>
       </Section>
     </>
+  );
+}
+
+// Peak |I|,|Q| each RX reached over the last sweep, in ADC counts. This is the first
+// thing to look at when sweeps get noisy: a reference above ~40% of full scale is
+// compressing, which was worth 16 dB of range-profile noise floor when it was found.
+function AdcHeadroom({ adcPeak }) {
+  if (!adcPeak) return null;
+  const full = adcPeak.full_scale || ADC_FULL_SCALE;
+  const rows = [['RX1 sig', adcPeak.rx1, ADC_HOT.rx1], ['RX2 ref', adcPeak.rx2, ADC_HOT.rx2]];
+  return (
+    <div className="flex flex-col gap-0.5 px-1 pt-1">
+      {rows.map(([label, v, hotFrac]) => {
+        if (v == null) return null;
+        const hot = hotFrac * full;
+        const pct = (v / full) * 100;
+        // Cold only matters on the reference — RX1 is however strong the scene is,
+        // and a weak scene is not a misconfiguration.
+        const cold = label === 'RX2 ref' && v < ADC_COLD_COUNTS;
+        const isHot = v > hot;
+        const tone = isHot ? 'text-[#cc4422]' : cold ? 'text-[#bb8800]' : 'text-[#227744]';
+        return (
+          <div key={label} className="flex items-center gap-1.5 text-[9px] leading-tight">
+            <span className="text-[#333333] w-[42px] shrink-0">{label}</span>
+            <div className="flex-1 h-[3px] bg-[#dddddd] relative">
+              <div
+                className={cn('h-full absolute left-0 top-0',
+                  isHot ? 'bg-[#cc4422]' : cold ? 'bg-[#bb8800]' : 'bg-[#227744]')}
+                style={{ width: `${Math.min(100, pct)}%` }}
+              />
+              <div className="absolute top-[-1px] bottom-[-1px] w-px bg-[#999999]"
+                   style={{ left: `${hotFrac * 100}%` }} />
+            </div>
+            <span className={cn('tabular-nums w-[62px] text-right shrink-0', tone)}>
+              {Math.round(v)} · {pct.toFixed(0)}%
+            </span>
+          </div>
+        );
+      })}
+      {adcPeak.rx2 != null && adcPeak.rx2 > ADC_HOT.rx2 * full && (
+        <span className="text-[9px] text-[#cc4422] leading-tight pt-0.5">
+          Reference compressing — turn RX2/TX2 down. Costs up to 11 dB of noise floor.
+        </span>
+      )}
+      {adcPeak.rx2 != null && adcPeak.rx2 < ADC_COLD_COUNTS && (
+        <span className="text-[9px] text-[#bb8800] leading-tight pt-0.5">
+          Reference too weak — turn RX2/TX2 up. Target 150–400 counts.
+        </span>
+      )}
+      {adcPeak.rx1 != null && adcPeak.rx1 > ADC_HOT.rx1 * full && (
+        <span className="text-[9px] text-[#cc4422] leading-tight pt-0.5">
+          RX1 near full scale — signal path may be clipping. Turn RX1 down.
+        </span>
+      )}
+    </div>
   );
 }
 

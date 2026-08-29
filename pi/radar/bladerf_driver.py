@@ -421,9 +421,20 @@ class BladeRFDriver:
         # RX_X2: interleaved [RX1_I, RX1_Q, RX2_I, RX2_Q, ...]
         # num_samples is per-channel, so total buffer is num_samples * 2 channels * 2 (I+Q) * 2 bytes
         buf = bytearray(num_samples * 2 * 2 * 2)
+        # libbladeRF counts sync_rx's num_samples as the TOTAL across both channels in
+        # RX_X2, not per channel — so asking for num_samples here returned only
+        # num_samples/2 per channel and left the upper half of buf untouched, i.e.
+        # holding the PREVIOUS iteration's samples (buf is reused). Every capture was
+        # half fresh, half one buffer stale, and every buffer-count-to-time conversion
+        # in this repo (settle_count, SfcwPanel's BUFFER_TIME_MS) was 2x off as a result.
+        # Verified 2026-08-29 by poisoning buf with 0xAA before the call: at num_samples
+        # only the first half comes back written, at num_samples*2 all of it does, and
+        # the arrival rate halves from 4886/s to 2442/s = exactly 4096 samples/channel
+        # at 10 Msps. See CLAUDE.md "sync_rx in RX_X2 delivers HALF the samples".
+        req = num_samples * 2
         try:
             while not self._rx_stop.is_set():
-                self.device.sync_rx(buf, num_samples)
+                self.device.sync_rx(buf, req)
                 iq = np.frombuffer(buf, dtype=np.int16).copy()
                 # Deinterleave: [I1, Q1, I2, Q2, I1, Q1, I2, Q2, ...]
                 rx1 = np.empty(num_samples * 2, dtype=np.int16)

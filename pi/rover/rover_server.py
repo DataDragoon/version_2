@@ -119,6 +119,13 @@ DEFAULT_CONFIG = {
     # stop arriving, so this bounds how far a dropped link can carry the rover:
     # at the 20 mm/s jog speed, 500 ms is 10 mm plus 0.4 mm of stopping.
     'jog_hold_ms': 500,
+
+    # De-energise the drivers after this many seconds of no motion. 0 = never,
+    # and that is the deliberate default: with no endstop and no encoder, an axis
+    # that creeps while de-energised is silently in the wrong place and there is
+    # no way to notice. Turn it on if the standstill whine from the A4988-class
+    # drivers, or their holding-current heat, matters more than that.
+    'idle_disable_s': 0.0,
 }
 
 # Inclusive (min, max) per numeric setting. Typed into a panel field, an
@@ -139,6 +146,7 @@ CONFIG_BOUNDS = {
     'y_min_mm': (-10000.0, 10000.0),
     'y_max_mm': (-10000.0, 10000.0),
     'jog_hold_ms': (100.0, 5000.0),
+    'idle_disable_s': (0.0, 3600.0),
 }
 
 
@@ -407,6 +415,7 @@ class Rover:
             v_accel=self.config['y_accel'] * self.spmm('y'),
             v_lo=y_lo, v_hi=y_hi,
             limits=bool(self.config['limits_enabled']),
+            idle_ms=int(self.config['idle_disable_s'] * 1000),
         )
 
     def _ingest_status(self, msg):
