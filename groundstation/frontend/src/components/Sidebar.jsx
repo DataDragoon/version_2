@@ -50,6 +50,8 @@ export default function Sidebar({
   sfcwParams,
   onSfcwParamsChange,
   sfcwResult,
+  sfcwBgSubMode,
+  onSfcwBgSubModeChange,
   coherenceResult,
   sfcwRangeScale,
   onSfcwRangeScaleChange,
@@ -311,6 +313,8 @@ export default function Sidebar({
                   bgModel={sfcwBgModel}
                   bgRef={sfcwBgRef}
                   bgCapturing={sfcwBgCapturing}
+                  bgSubMode={sfcwBgSubMode}
+                  onBgSubModeChange={onSfcwBgSubModeChange}
                   bgDiag={sfcwBgDiag}
                   bgStats={sfcwBgStats}
                   onResetBgStats={onResetSfcwBgStats}

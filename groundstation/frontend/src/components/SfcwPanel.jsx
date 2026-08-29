@@ -62,7 +62,7 @@ const ADC_HOT = { rx1: 0.75, rx2: 0.40 };
 // vs 45.0 dB at 169 counts. The good window is wide but it does have both edges.
 const ADC_COLD_COUNTS = 60;
 
-export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, adcPeak, rangeScale, onRangeScaleChange, scaleRange, onScaleRangeChange, getDynamicScale, lidarMm, bgModel, bgRef, bgCapturing, onCaptureBg, onLoadBgModel, onClearBg,
+export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcwStatus, sendSdr, params, onParamsChange, coherenceResult, adcPeak, rangeScale, onRangeScaleChange, scaleRange, onScaleRangeChange, getDynamicScale, lidarMm, bgModel, bgRef, bgCapturing, onCaptureBg, onLoadBgModel, onClearBg, bgSubMode, onBgSubModeChange,
   bgDiag, bgStats, onResetBgStats, lidarProvenance, lidarOffsetMm, onLidarOffsetChange }) {
   const { startFreq, stopFreq, stepSize, numBuffers, settleCount, tx1Gain, rx1Gain, tx2Gain, rx2Gain, rangeOffset } = params;
   const [coherenceRunning, setCoherenceRunning] = useState(false);
@@ -380,6 +380,39 @@ export default function SfcwPanel({ isConnected, sdrConnected, sfcwRunning, sfcw
             Clear BG
           </button>
         </div>
+
+        {/* Subtraction domain. Only meaningful once there is a background to subtract, so
+            it appears with one. The two modes answer different questions -- see the note
+            on sfcwBgSubMode in App.jsx -- and neither is a strictly better version of the
+            other, which is why this is a toggle and not a setting with a right answer. */}
+        {(bgRef || bgModel) && (
+          <div className="mt-2 flex flex-col gap-1 px-3 py-2 rounded-xl border border-white/8 bg-[#0a0a0a]/60">
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] uppercase tracking-wider text-white/40 shrink-0">Subtract</span>
+              <div className="flex-1 grid grid-cols-2 gap-1">
+                {[['complex', 'Complex'], ['magnitude', 'Magnitude']].map(([m, lbl]) => (
+                  <button
+                    key={m}
+                    onClick={() => onBgSubModeChange(m)}
+                    className={cn(
+                      'px-2 py-1 rounded-md text-[10px] font-medium transition-all border',
+                      bgSubMode === m
+                        ? 'bg-[#4ecdc4]/15 border-[#4ecdc4]/40 text-[#4ecdc4]'
+                        : 'bg-white/5 border-white/10 text-white/40 hover:text-white/70'
+                    )}
+                  >
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <span className="text-[9px] text-[#333333] leading-tight">
+              {bgSubMode === 'complex'
+                ? 'Vector difference of h_cal — removes the wall return so a target beneath it is not buried. Needs sub-mm standoff: 1 mm = 12° at 5 GHz.'
+                : 'Δ dB of the range profile vs the background — the statistic that detected the target (+4.4 dB), and it tolerates ~1 mm of standoff error. R^n and LIN are disabled: both cancel in a ratio.'}
+            </span>
+          </div>
+        )}
 
         {/* Phase 0.4 -- what the subtraction ACTUALLY did on the last sweep.
             "A model is loaded" and "the model was applied" are different

@@ -243,6 +243,13 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
   const FLOOR_MIN_SWEEPS = 6;
   const FLOOR_SMOOTH = 10;   // +/- bins for the along-range smoother
   const AVG_MAX = 32;       // largest selectable Avg, so the complex ring never grows past it
+  // Detection threshold for the magnitude difference, in dB. Calibrated 2026-08-28 from
+  // the target A/B: the target produced +4.4 dB at 21.2 cm while the target-free control
+  // region (0-10 cm wall/coupling, which the target left undisturbed) held to 0.23 dB, so
+  // 3x that control is the cut. PROVISIONAL -- that control was measured before the
+  // reference-gain and sync_rx fixes dropped the noise floor ~15 dB, so the real
+  // threshold is now likely lower and the A/B is worth re-running to recalibrate it.
+  const DETECT_THRESHOLD_DB = 0.7;
 
   // Parallel ring buffer of the raw complex sweeps behind those rows, untouched
   // by window / range-comp / averaging / dB conversion. The Imaging Bench needs
@@ -295,6 +302,11 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
 
   // Recomputed profile state
   const [recomputed, setRecomputed] = useState(null);
+  // A magnitude difference is already a ratio in dB; 10^(x/20) of it is meaningless, so
+  // the LIN path is forced off in that mode rather than left to draw a plausible-looking
+  // wrong trace. Everything downstream reads effScaleMode, not scaleMode.
+  const isDiff = !!(recomputed && recomputed.isDiff);
+  const effScaleMode = isDiff ? 'db' : scaleMode;
 
   // Session-wide Y-axis tracking (only expands, never shrinks within a session)
   const sessionY = useRef({ min: Infinity, max: -Infinity });
@@ -382,6 +394,23 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     const { magnitudeDb, nfft } = computeRangeProfile(
       srcReal, srcImag, winFn, 4
     );
+
+    // Magnitude-difference mode: |profile| - |reference profile| in dB, both transformed
+    // with the SAME window and zero-pad so the difference is meaningful. This is the
+    // statistic that actually detected the target in the 2026-08-28 A/B (+4.4 dB at
+    // 21.2 cm against a 0.23 dB control region) -- and unlike the complex difference it
+    // tolerates ~1 mm of standoff error, because a sub-mm shift is a small fraction of a
+    // range bin in magnitude but a large phase rotation in complex.
+    const magDiff = sfcwResult && sfcwResult.bg_sub_mode === 'magnitude'
+      && sfcwResult.bg_h_cal_real && sfcwResult.bg_h_cal_imag
+      && sfcwResult.bg_h_cal_real.length === hCal.real.length;
+    let diffDb = null;
+    if (magDiff) {
+      const bg = computeRangeProfile(sfcwResult.bg_h_cal_real, sfcwResult.bg_h_cal_imag,
+                                     winFn, 4).magnitudeDb;
+      diffDb = new Float64Array(magnitudeDb.length);
+      for (let i = 0; i < magnitudeDb.length; i++) diffDb[i] = magnitudeDb[i] - bg[i];
+    }
     // The floor estimator must always see SINGLE-sweep profiles, in both modes, or it
     // measures the scatter of overlapping sliding averages and then gets divided by
     // sqrt(N) a second time. In incoherent mode magnitudeDb already is one sweep.
@@ -399,11 +428,14 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     let startIdx = 0;
     while (startIdx < half && allDistances[startIdx] < 0) startIdx++;
     const distances = allDistances.slice(startIdx);
-    const clippedMag = magnitudeDb.slice(startIdx);
-    const clippedSingle = singleDb === magnitudeDb ? clippedMag : singleDb.slice(startIdx);
+    const clippedMag = (diffDb || magnitudeDb).slice(startIdx);
+    const clippedSingle = diffDb ? clippedMag
+      : (singleDb === magnitudeDb ? clippedMag : singleDb.slice(startIdx));
 
-    // R^n range compensation (STC) — use true physical distance (add back offset)
-    if (rangeComp > 0) {
+    // R^n range compensation (STC) — use true physical distance (add back offset).
+    // Skipped on a magnitude difference: the same gain is applied to both profiles, so it
+    // cancels exactly. Applying it would be a no-op that merely looked like a control.
+    if (rangeComp > 0 && !diffDb) {
       for (let i = 0; i < clippedMag.length; i++) {
         const r = distances[i] + hCal.range_offset;
         if (r > 0.01) {
@@ -414,7 +446,8 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
       }
     }
 
-    setRecomputed({ magnitudes: clippedMag, distances, single: clippedSingle });
+    setRecomputed({ magnitudes: clippedMag, distances, single: clippedSingle,
+                    isDiff: !!diffDb });
   }, [windowType, kaiserBeta, rangeComp, sfcwResult, avgMode, avgCount]);
 
   // Averaging — uses recomputed data
@@ -520,7 +553,8 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     const {
       mags, dists, view, traceColor, title, crosshair,
       showCFAR, isDb, sessionY, manual, manualMin, manualMax, onScale,
-      useSession = true, zeroLine = false, floor = null, floorDivisor = 1
+      useSession = true, zeroLine = false, floor = null, floorDivisor = 1,
+      detectThreshold = 0
     } = opts;
     const n = mags.length;
     const pad = { top: 24, bottom: 36, left: 52, right: 16 };
@@ -616,6 +650,33 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
       ctx.font = '9px monospace';
       ctx.textAlign = 'left';
       ctx.fillText('0 dB', pad.left + 4, zy - 3);
+      ctx.restore();
+    }
+
+    // Detection threshold band for the magnitude difference. Everything inside +/- this
+    // is "indistinguishable from the background"; a target is a rise that clears it and
+    // stays there. Drawn as a shaded band rather than two lines so the eye reads the
+    // inside as "nothing", which is the call being made.
+    if (detectThreshold > 0) {
+      const yHi = yToPixel(detectThreshold);
+      const yLo = yToPixel(-detectThreshold);
+      ctx.save();
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.fillRect(pad.left, Math.min(yHi, yLo), plotW, Math.abs(yLo - yHi));
+      ctx.strokeStyle = 'rgba(78, 205, 196, 0.35)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      for (const yy of [yHi, yLo]) {
+        ctx.beginPath();
+        ctx.moveTo(pad.left, yy);
+        ctx.lineTo(w - pad.right, yy);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(78, 205, 196, 0.75)';
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(`\u00b1${detectThreshold.toFixed(2)} dB detect`, w - pad.right - 4, yHi - 4);
       ctx.restore();
     }
 
@@ -1025,7 +1086,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
   useEffect(() => {
     const dbMags = averaged || (recomputed ? recomputed.magnitudes : (sfcwResult && sfcwResult.magnitudes));
     if (!dbMags) return;
-    const row = scaleMode === 'db' ? Array.from(dbMags) : Array.from(dbMags).map(db => Math.pow(10, db / 20));
+    const row = effScaleMode === 'db' ? Array.from(dbMags) : Array.from(dbMags).map(db => Math.pow(10, db / 20));
     waterfallHistory.current.push(row);
     if (waterfallHistory.current.length > WATERFALL_MAX_ROWS) {
       waterfallHistory.current.shift();
@@ -1053,7 +1114,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     // CFAR over 100 rows every animation frame would be tens of millions of ops
     // a second. Switching mode rebuilds this from waterfallHistory (below), so a
     // mode change re-renders the whole existing history instantly.
-    if (scaleMode === 'db') {
+    if (effScaleMode === 'db') {
       wfDisplay.current.push(transformWfRow(row, wfMode, refRow.current, {
         guard: cfarGuard, train: cfarTrain, alpha: cfarAlpha, variant: cfarVariant,
       }));
@@ -1063,12 +1124,12 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     if (wfDisplay.current.length > WATERFALL_MAX_ROWS) wfDisplay.current.shift();
 
     setRawCount(rawHistory.current.length);
-  }, [averaged, recomputed, sfcwResult, scaleMode, wfMode, cfarGuard, cfarTrain, cfarAlpha, cfarVariant]);
+  }, [averaged, recomputed, sfcwResult, effScaleMode, wfMode, cfarGuard, cfarTrain, cfarAlpha, cfarVariant]);
 
   // Rebuild the transformed history whenever the transform itself changes.
   useEffect(() => {
     const cfar = { guard: cfarGuard, train: cfarTrain, alpha: cfarAlpha, variant: cfarVariant };
-    wfDisplay.current = scaleMode === 'db'
+    wfDisplay.current = effScaleMode === 'db'
       ? waterfallHistory.current.map(r => transformWfRow(r, wfMode, refRow.current, cfar))
       : waterfallHistory.current.slice();
     // The zeroed modes are in different units from RAW, so session extremes
@@ -1076,12 +1137,16 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     sessionY.current = { min: Infinity, max: -Infinity };
   }, [wfMode, refVersion, cfarGuard, cfarTrain, cfarAlpha, cfarVariant, scaleMode]);
 
-  // Clear waterfall when scale mode changes. rawHistory is intentionally left
-  // alone — see its declaration.
+  // Clear waterfall when scale mode changes, and equally when the subtraction domain
+  // does: rows already in the buffer are absolute dB in one mode and a dB RATIO in the
+  // other, and stacking the two in one image would be quietly meaningless. The buffer
+  // refills at the sweep rate (~30 s for a full 100 rows at 3.35 Hz). rawHistory is
+  // intentionally left alone — see its declaration.
   useEffect(() => {
     waterfallHistory.current = [];
     wfDisplay.current = [];
-  }, [scaleMode]);
+    sessionY.current = { min: Infinity, max: -Infinity };
+  }, [scaleMode, isDiff]);
 
   // Drop the raw buffer on unmount so a panel switch does not leak sweeps into
   // the next session.
@@ -1093,7 +1158,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
       if (result && (recomputed || result.magnitudes)) {
         const dists = recomputed ? Array.from(recomputed.distances) : result.distances;
         const dbMags = averaged || (recomputed ? recomputed.magnitudes : result.magnitudes);
-        const isDb = scaleMode === 'db';
+        const isDb = effScaleMode === 'db';
         const mags = isDb ? dbMags : Array.from(dbMags).map(db => Math.pow(10, db / 20));
         const modeInfo = WF_MODES[wfMode] || WF_MODES.raw;
         const zeroed = modeInfo.zeroed && isDb;
@@ -1104,9 +1169,11 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
               { guard: cfarGuard, train: cfarTrain, alpha: cfarAlpha, variant: cfarVariant })
           : mags;
         const traceColor = isDb ? TRACE_COLOR : LINEAR_TRACE;
-        const title = traceOn
-          ? `RANGE PROFILE (${modeInfo.label} dB)`
-          : (isDb ? 'RANGE PROFILE (dB)' : 'RANGE PROFILE (LINEAR)');
+        const title = isDiff
+          ? 'RANGE PROFILE (\u0394 dB vs BG)'
+          : traceOn
+            ? `RANGE PROFILE (${modeInfo.label} dB)`
+            : (isDb ? 'RANGE PROFILE (dB)' : 'RANGE PROFILE (LINEAR)');
 
         // Apply range scale to view
         let view = traceView;
@@ -1131,11 +1198,16 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
           manualMax: scaleRange ? scaleRange.max : 1,
           onScale: reportScale.current,
           useSession: yMode === 'session',
-          zeroLine: traceOn,
+          // 0 dB is "identical to the background", so it is the decision line here too.
+          zeroLine: traceOn || isDiff,
+          detectThreshold: isDiff ? DETECT_THRESHOLD_DB : 0,
           // Suppressed in the zeroed trace modes (CFAR-relative and friends): those
           // rescale the trace against their own reference, so an absolute floor drawn
           // over them would be meaningless rather than merely unhelpful.
-          floor: showFloor && !traceOn ? noiseFloor : null,
+          // Suppressed on a difference as well: the estimator's units are linear
+          // amplitude, and on a ratio trace that line would be a number with no
+          // meaning. The +/- threshold lines do this job in that mode instead.
+          floor: showFloor && !traceOn && !isDiff ? noiseFloor : null,
           floorDivisor: Math.sqrt(Math.max(1, avgCount)),
         });
         drawWaterfall(
@@ -1150,7 +1222,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     };
     animRef.current = requestAnimationFrame(render);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [drawChart, drawWaterfall, traceView, crosshairTrace, crosshairWaterfall, cfarEnabled, averaged, recomputed, scaleMode, rangeScale, manualScale, scaleRange,
+  }, [drawChart, drawWaterfall, traceView, crosshairTrace, crosshairWaterfall, cfarEnabled, averaged, recomputed, effScaleMode, rangeScale, manualScale, scaleRange,
       colormap, wfMode, wfFixed, wfSpan, applyModeToTrace, yMode, cfarGuard, cfarTrain, cfarAlpha, cfarVariant,
       showFloor, noiseFloor, avgCount]);
 
@@ -1549,6 +1621,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
         {/* Scale toggle button */}
         <button
           onClick={() => {
+            if (isDiff) return;
             setScaleMode(m => m === 'db' ? 'linear' : 'db');
             sessionY.current = { min: Infinity, max: -Infinity };
             // Pinned limits are in the units we are leaving — drop back to dynamic.
@@ -1561,7 +1634,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
               : 'bg-[#6B9BD2]/20 text-[#6B9BD2] border-[#6B9BD2]/30'
           )}
         >
-          {scaleMode === 'db' ? 'dB' : 'LIN'}
+          {isDiff ? '\u0394dB' : scaleMode === 'db' ? 'dB' : 'LIN'}
         </button>
         {/* Range scale toggle button (only in bscan mode) */}
         {onRangeScaleToggle && (

@@ -1973,6 +1973,45 @@ it; from the Pi's timestamps, not render timing, so it reports what the radar is
 rather than how fast the browser redrew. The hook is called unconditionally at the top of
 `Viewport` because the per-panel branches are early returns.
 
+### Complex vs magnitude background subtraction (2026-08-30)
+
+**The complex/magnitude toggle is back, and it must not be deleted again.** It was removed
+once on the reasoning that complex was the only correct mode. The 2026-08-28 target A/B
+showed the two do different jobs and both are needed:
+
+| | what it is | what it is for | tolerance to standoff error |
+|---|---|---|---|
+| **complex** | vector difference of `h_cal` | removing the wall/coupling return, so a target 16.6 dB beneath it is not buried | poor -- 1 mm = 12 deg at 5 GHz |
+| **magnitude** | `\|profile\|` minus `\|reference profile\|`, in dB | the detection DECISION -- this is the statistic that actually found the target (+4.4 dB at 21.2 cm against a 0.23 dB control) | good -- survives ~1 mm, which the complex difference does not |
+
+Complex is for seeing; magnitude is for deciding. Neither is a better version of the other.
+
+**Where each happens, and why they differ.** Complex subtraction stays in `App.jsx`
+`sfcwProcessed` and writes back into `h_cal_real/imag` (it has to -- `SfcwDisplay`
+recomputes its own profile from those, so anything replacing only `magnitudes` is
+discarded). Magnitude subtraction *cannot* be expressed as a modified `h_cal`, so App
+instead passes the background spectrum through as `bg_h_cal_real/imag` with
+`bg_sub_mode: 'magnitude'`, and `SfcwDisplay` transforms both with whatever window is
+currently selected and differences the results. Doing it there rather than in App keeps the
+window / zero-pad controls live and guarantees both profiles are built identically, which
+is the only way their difference means anything.
+
+Consequences worth knowing:
+- **R^n and LIN are disabled in magnitude mode.** Range compensation applies the same gain
+  to both profiles so it cancels exactly, and `10^(x/20)` of a dB *ratio* is meaningless.
+  Both are suppressed rather than left to draw a plausible-looking wrong trace.
+- **The waterfall is cleared on a mode change**, because rows already in it are absolute dB
+  in one mode and a ratio in the other. It refills at the sweep rate (~30 s for 100 rows).
+  Making the toggle re-render the existing history instead would need the display to hold
+  genuinely raw `h_cal` in both modes -- possible (App could pass the background in complex
+  mode too, letting the display reconstruct `raw = result + bg`) but not done.
+- **The FLOOR overlay is suppressed** in magnitude mode: its estimator is in linear
+  amplitude and that line has no meaning on a ratio trace.
+- A **+/- 0.7 dB detection band** is drawn instead, from `DETECT_THRESHOLD_DB`. That is 3x
+  the 0.23 dB target-free control region from the A/B. **It is provisional** -- the control
+  was measured before the reference-gain and sync_rx fixes dropped the floor ~15 dB, so the
+  real threshold is now probably lower and re-running the A/B would buy sensitivity.
+
 ### Tooling
 
 `scratchpad` probes only (not committed). If this needs redoing: drive `SFCWEngine`

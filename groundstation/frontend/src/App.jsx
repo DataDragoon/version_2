@@ -195,6 +195,20 @@ export default function App() {
   const sfcwParamsRef = useRef(sfcwParams);
   sfcwParamsRef.current = sfcwParams;
 
+  // How the background is removed. NOTE a complex/magnitude toggle was deliberately
+  // deleted here once before, on the reasoning that complex was the only correct mode --
+  // do not delete it again. The 2026-08-28 target A/B established that the two modes do
+  // DIFFERENT jobs and both are needed:
+  //   complex   -- subtracts the wall/coupling return so a target 16.6 dB below it is not
+  //                buried. Coherent, so it needs sub-mm standoff accuracy: at 5 GHz 1 mm
+  //                of standoff error is 12 deg of phase error.
+  //   magnitude -- |current| - |reference| on the RANGE PROFILE, which is the statistic
+  //                that actually detected the target (+4.4 dB at 21.2 cm against a
+  //                0.23 dB control region) and which tolerated ~1 mm of standoff error
+  //                where the complex difference would have been swamped by it.
+  // Neither replaces the other; complex is for seeing, magnitude is for deciding.
+  const [sfcwBgSubMode, setSfcwBgSubMode] = useState('complex');
+
   // Background Model state
   const [bgModelCaptures, setBgModelCaptures] = useState([]);
   // Positions are static, so sweeps within a capture are replicas whose only
@@ -591,6 +605,22 @@ export default function App() {
       return noop('no background selected');
     }
 
+    diag.mode = sfcwBgSubMode;
+
+    // Magnitude mode does its subtraction in the RANGE domain, not here: |profile| minus
+    // |reference profile|. That cannot be expressed as a modified h_cal, so instead the
+    // background spectrum rides along and SfcwDisplay transforms both with whatever
+    // window it currently has and differences the results. Doing it that way keeps the
+    // window / zero-pad / range-comp controls live and keeps both profiles built the
+    // same way, which is the only way the difference means anything.
+    if (sfcwBgSubMode === 'magnitude') {
+      return {
+        result: { ...sfcwResult, bg_h_cal_real: bgReal, bg_h_cal_imag: bgImag,
+                  bg_sub_mode: 'magnitude' },
+        diag,
+      };
+    }
+
     const subReal = new Array(numSteps);
     const subImag = new Array(numSteps);
     for (let i = 0; i < numSteps; i++) {
@@ -608,10 +638,11 @@ export default function App() {
         h_cal_imag: subImag,
         magnitudes: rp.magnitudes,
         distances: rp.distances,
+        bg_sub_mode: 'complex',
       },
       diag,
     };
-  }, [sfcwResult, sfcwBgModel, sfcwBgRef, sfcwStandoffMm]);
+  }, [sfcwResult, sfcwBgModel, sfcwBgRef, sfcwStandoffMm, sfcwBgSubMode]);
 
   const processedSfcwResult = sfcwProcessed.result;
 
@@ -1276,6 +1307,8 @@ export default function App() {
         sfcwBgModel={sfcwBgModel}
         sfcwBgRef={sfcwBgRef}
         sfcwBgCapturing={sfcwBgCapturing}
+        sfcwBgSubMode={sfcwBgSubMode}
+        onSfcwBgSubModeChange={setSfcwBgSubMode}
         sfcwBgDiag={sfcwBgDiag}
         sfcwBgStats={sfcwBgStats}
         onResetSfcwBgStats={resetSfcwBgStats}
