@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { Activity, Radio, Radar, ScanLine, Grid3x3, Map, Zap, Brain, FlaskConical, Move } from 'lucide-react';
 import ImuDisplay from './ImuDisplay';
@@ -76,6 +76,9 @@ export default function Viewport({
   // Which C-scan cell the B-scan pane is showing the row for; null follows the
   // most recent capture.
   const [selectedCell, setSelectedCell] = useState(null);
+  // Called unconditionally, before any of the per-panel early returns -- hooks cannot
+  // live inside those branches. Idles to null whenever the SFCW pane is not the one up.
+  const sweepRate = useSweepRate(sfcwResult, activePanel === 'sfcw' && (sfcwRunning || !!sfcwResult));
 
   if (!activePanel) {
     return (
@@ -287,7 +290,13 @@ export default function Viewport({
     return (
       <div className="flex-1 flex flex-col h-screen overflow-hidden bg-black">
         <div className="relative flex flex-col min-h-0" style={{ flex: '1 1 0%' }}>
-          <PaneHeader icon={Radar} label="SFCW Radar" active={sfcwRunning || !!sfcwResult} color="orange" />
+          <PaneHeader
+            icon={Radar}
+            label="SFCW Radar"
+            active={sfcwRunning || !!sfcwResult}
+            color="orange"
+            meta={sweepRate ? `${sweepRate.ms.toFixed(0)} ms / sweep · ${sweepRate.hz.toFixed(2)} Hz` : null}
+          />
           <div className="flex-1 min-h-0 relative overflow-hidden">
             {(sfcwRunning || sfcwResult) && (
               <div className="absolute inset-0 pointer-events-none">
@@ -521,7 +530,38 @@ export default function Viewport({
   return null;
 }
 
-function PaneHeader({ icon: Icon, label, active, color }) {
+// Live sweep cadence, measured from the Pi's own timestamps rather than from render
+// timing, so it reports what the radar is actually doing and not how fast React redrew.
+// Median of the adjacent differences, so one dropped or stalled frame does not move it.
+const SWEEP_RATE_WINDOW = 12;
+
+function useSweepRate(result, active) {
+  const buf = useRef([]);
+  const lastTs = useRef(null);
+  const [rate, setRate] = useState(null);
+
+  useEffect(() => {
+    if (!active) { buf.current = []; lastTs.current = null; setRate(null); }
+  }, [active]);
+
+  useEffect(() => {
+    const t = result && result.timestamp;
+    if (!t || t === lastTs.current) return;
+    lastTs.current = t;
+    buf.current.push(t);
+    if (buf.current.length > SWEEP_RATE_WINDOW) buf.current.shift();
+    if (buf.current.length < 3) return;
+    const d = [];
+    for (let i = 1; i < buf.current.length; i++) d.push(buf.current[i] - buf.current[i - 1]);
+    d.sort((a, b) => a - b);
+    const med = d[d.length >> 1];
+    if (med > 0) setRate({ ms: med * 1000, hz: 1 / med });
+  }, [result]);
+
+  return rate;
+}
+
+function PaneHeader({ icon: Icon, label, active, color, meta }) {
   const colorMap = {
     orange: { accent: '#D1855C', to: '#E5A986' },
     cyan:   { accent: '#22d3ee', to: '#67e8f9' },
@@ -550,14 +590,19 @@ function PaneHeader({ icon: Icon, label, active, color }) {
       >
         {label}
       </span>
-      {active && (
-        <div className="ml-auto flex items-center gap-1.5">
-          <div className="w-1 h-1 rounded-full animate-pulse" style={{ backgroundColor: accent }} />
-          <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: `${accent}b3` }}>
-            Active
-          </span>
-        </div>
-      )}
+      <div className="ml-auto flex items-center gap-3">
+        {meta && (
+          <span className="text-[10px] font-mono tabular-nums text-white/40">{meta}</span>
+        )}
+        {active && (
+          <div className="flex items-center gap-1.5">
+            <div className="w-1 h-1 rounded-full animate-pulse" style={{ backgroundColor: accent }} />
+            <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: `${accent}b3` }}>
+              Active
+            </span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

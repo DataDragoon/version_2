@@ -1951,6 +1951,28 @@ empirical property of where the AD9361 TX gain table lands at this frequency pla
 E3a's +3 dB does NOT add to E3b: 45/5 alone beats the combination by 3.9 dB. `tx1_gain`/
 `rx1_gain` therefore stay at the bench-validated 50/25.
 
+### num_buffers 4 -> 1, and the sweep-rate readout (2026-08-30)
+
+`num_buffers` averages that many post-settle captures per step, so it can only attack noise
+that changes WITHIN a step. Measured 2026-08-29 that term is **0.029% (70.8 dB)** while the
+binding limit -- the per-retune wobble -- is **38.6 dB**. Averaging 4 buffers therefore
+changes the total by `10*log10(1 + 10^-3.2)` = **0.003 dB** while costing 3 buffer-times per
+step. Set to 1 in `SFCWEngine`, `App.jsx` and `capture_bgmodel.py`.
+
+**This reverses the 2026-08-23 restoration of 4 documented above, and that restoration was
+correct at the time** -- the reference was compressed then and the within-step term sat much
+closer to the limit. The justification here is entirely the 32 dB gap between the two, so if
+the RF chain ever regresses this needs re-deriving, not assuming. A bench A/B against
+S_repeat with bracketed controls is still outstanding (the device was in use); the argument
+above is arithmetic from a measurement, not a measured A/B.
+
+`Viewport.jsx` gained `useSweepRate()` -- median of the adjacent differences of the Pi's own
+`sfcw_result.timestamp` over a 12-sweep window, shown in the SFCW pane header as
+`<ms> ms / sweep - <hz> Hz`. Median, not mean, so one stalled or dropped frame does not move
+it; from the Pi's timestamps, not render timing, so it reports what the radar is doing
+rather than how fast the browser redrew. The hook is called unconditionally at the top of
+`Viewport` because the per-panel branches are early returns.
+
 ### Tooling
 
 `scratchpad` probes only (not committed). If this needs redoing: drive `SFCWEngine`

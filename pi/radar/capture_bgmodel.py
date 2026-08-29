@@ -55,7 +55,7 @@ DEFAULT_OFFSET_MM = 160.0
 # the file would record params the hardware never used.
 SFCW_PARAMS = {
     'startFreq': 2000, 'stopFreq': 5000, 'stepSize': 60,
-    'numBuffers': 4, 'settleCount': 3,
+    'numBuffers': 1, 'settleCount': 3,
     # tx2/rx2 MUST match what the SFCW panel uses. The reference gain is not just a
     # level -- it re-calibrates h_cal frequency-by-frequency (measured 2026-08-29:
     # 30/20 vs 50/25 gives complex coherence 0.88 and only 6.5 dB of suppression on an

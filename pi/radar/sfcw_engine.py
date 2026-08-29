@@ -65,7 +65,15 @@ class SFCWEngine:
         self.start_freq = 2_000_000_000
         self.stop_freq = 5_000_000_000
         self.step_size = 60_000_000
-        self.num_buffers = 4
+        # 1, not 4. num_buffers averages that many post-settle captures per step, which
+        # only helps against noise that changes WITHIN a step -- and measured 2026-08-29
+        # that noise is 0.029% (70.8 dB), while the system limit is the per-retune wobble
+        # at 38.6 dB. Averaging 4 buffers buys 6 dB on a term already 32 dB below what
+        # binds, i.e. nothing, and costs 3 buffer-times per step. NOTE this reverses the
+        # 2026-08-23 restoration of 4 documented above: that was correct at the time,
+        # when the reference was compressed and the within-step term was much closer to
+        # the limit. If the RF chain regresses, this needs re-checking, not assuming.
+        self.num_buffers = 1
         # 3, not 10. Validated 2026-08-29 PER STEP, which is what CLAUDE.md's settle_count
         # regression note says an aggregate metric failed to catch: 400 sweeps x 51 steps
         # = 20,400 step-captures at settle=3 produced ZERO cells more than 8 robust sigmas
