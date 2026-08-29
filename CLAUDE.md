@@ -1835,6 +1835,78 @@ measured, the two are identical to three decimals on this scene because nothing 
 within 22 dB of the floor, and they only diverge inside ~6-10 dB of it. Worth switching for
 deep-null work, not urgent.
 
+### settle_count: 10 -> 3 (2026-08-29), validated per step
+
+Once `sync_rx` was fixed a buffer is 0.41 ms again, and `settle_count` turned out not to
+discriminate at all. 100 sweeps at each value, plus 400 each at the two finalists. "bad
+steps" counts `(sweep, step)` cells more than 8 robust sigmas off that step's own median --
+a step that retuned late holds the previous frequency's IQ and lands nowhere near it. This
+is the **per-step** check the regression note above demands; an aggregate correlation is
+what let the last regression ship.
+
+| settle | Hz | h_cal | phase_std | ps sd | bad steps | worst z |
+|---|---|---|---|---|---|---|
+| 10 | 2.22 | 47.1 dB | 1.3615 | 0.0051 | 0/5100 | 2.5 |
+| 5 | 2.88 | 47.3 | 1.3578 | 0.0048 | 0/5100 | 2.9 |
+| 4 | 3.10 | 46.7 | 1.3575 | 0.0054 | 0/5100 | 2.2 |
+| 3 | 3.27 | 47.3 | 1.3581 | 0.0040 | 0/5100 | 3.5 |
+| 2 | 3.52 | 48.0 | 1.3566 | 0.0050 | 0/5100 | 2.9 |
+| 1 | 3.80 | 48.6 | 1.3549 | 0.0039 | 0/5100 | 2.4 |
+
+400-sweep confirmation: **settle=3 -> 3.35 Hz, 0/20400 bad, worst z 2.9**; settle=1 ->
+3.90 Hz, 0/20400 bad, **worst z 7.6**. Gaussian expectation for 20,400 samples is ~4.1, so
+settle=1 threw a genuine tail excursion and settle=3 did not. **3 is chosen for margin, not
+for speed** -- it takes 51% of the rate back (2.22 -> 3.35 Hz) and the last 16% is not worth
+the exact intermittent tail that caused the earlier regression.
+
+Note the `coherent` flag was False 100% of the time at *every* settle value, so it could not
+have picked a winner -- see the section on why it is a scene detector, not a health check.
+
+### The per-retune magnitude wobble: what actually limits h_cal now
+
+With the reference levelled, the binding term is that `|h_signal|` at a fixed frequency
+changes between sweeps even though the scene does not. Measured over 120 sweeps at the
+shipped config, keeping both channels separately:
+
+| | sweep-to-sweep | within a step (4 buffers, 0.4 ms) |
+|---|---|---|
+| `|h_signal|` | 0.912% | 0.025% |
+| `|h_reference|` | 0.731% | 0.011% |
+| `|h_cal|` | 0.815% | **0.029% (70.8 dB)** |
+
+**The instantaneous measurement is superb and the retune is what costs everything** -- 30x
+worse between sweeps than within one, frozen for the duration of a step and re-drawn at the
+next retune. So more `num_buffers` cannot help; the noise it averages is already 30x below
+the limit.
+
+Decomposing by how much the two channels move together (`rho = 0.562` between their
+fractional magnitude fluctuations):
+
+| component | size | cancelled by the ratio? |
+|---|---|---|
+| common to both channels | 0.593% | yes, entirely |
+| signal-channel specific | 0.694% | **no** |
+| reference-channel specific | 0.427% | **no** |
+
+**Only about half of it is common-mode, and the signal channel carries the largest
+uncancelled share.** That is the number to attack, and it points at what is different about
+the TX1 -> antenna -> RX1 path: TX1 runs at 50 dB against TX2's 30 dB (20 dB more drive,
+much closer to TX compression), the TX DAC sits at `amplitude = 0.9` of full scale, and RX1
+sees a 43 dB spread of level across the band and hits the 2048 rail at the strong end.
+Amplitude-dependent gain is exactly the mechanism that was costing 11 dB on the reference.
+
+Untested experiments, in order: (1) sweep `tx_amplitude` 0.9 -> 0.3 and `tx1_gain` 50 -> 40;
+(2) sweep `rx1_gain` 25 -> 10 watching clip% and the signal-specific term; (3) **equalise the
+two chains' operating points** (same gains, a pad on the loopback to match levels) so more
+of the wobble becomes common-mode and cancels -- structurally the right fix, since the
+reference can only cancel what both paths share.
+
+Caveat on the absolute numbers: this run reports `|h_cal|` at 41.8 dB where runs minutes
+earlier gave 47-48 dB on the complex metric. Part is the metric (magnitude-only cv vs
+complex residual, worth ~1 dB) and the rest is that the bench was being handled between
+runs. **The decomposition is a ratio of terms measured within one run and is the robust
+part; do not quote 41.8 dB as the system figure.**
+
 ### Tooling
 
 `scratchpad` probes only (not committed). If this needs redoing: drive `SFCWEngine`

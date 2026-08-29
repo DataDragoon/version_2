@@ -219,6 +219,16 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
   const floorBuffer = useRef([]);
   const [noiseFloor, setNoiseFloor] = useState(null);
   const [showFloor, setShowFloor] = useState(false);
+  // Averaging mode. 'incoherent' averages the MAGNITUDE profiles (what this display has
+  // always done); 'coherent' averages the complex h_cal and transforms once. Both reduce
+  // the visible wobble by sqrt(N), but only coherent removes the noise's contribution to
+  // the mean -- incoherent converges to |signal + noise|, which in a deep null is
+  // dominated by the noise and so can never tell you whether anything is there. The two
+  // are indistinguishable wherever a bin sits more than ~10 dB above the floor, which is
+  // why this had gone unnoticed; the difference is entirely a null-depth question.
+  const hCalBuffer = useRef([]);
+  const lastPushedTs = useRef(null);
+  const [avgMode, setAvgMode] = useState('incoherent');
 
   // Waterfall history buffer
   const waterfallHistory = useRef([]);
@@ -232,6 +242,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
   const FLOOR_WINDOW = 16;
   const FLOOR_MIN_SWEEPS = 6;
   const FLOOR_SMOOTH = 10;   // +/- bins for the along-range smoother
+  const AVG_MAX = 32;       // largest selectable Avg, so the complex ring never grows past it
 
   // Parallel ring buffer of the raw complex sweeps behind those rows, untouched
   // by window / range-comp / averaging / dB conversion. The Imaging Bench needs
@@ -324,10 +335,43 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     setNoiseFloor(null);
   }, [windowType, kaiserBeta, rangeComp]);
 
+  // Switching averaging mode must drop the magnitude buffer too, or the first frames
+  // after a switch to coherent still show the stale incoherent average.
+  useEffect(() => {
+    avgBuffer.current = [];
+    setAveraged(null);
+  }, [avgMode]);
+
   // Recompute range profile client-side when window params change
   useEffect(() => {
     const hCal = hCalRef.current;
     if (!hCal) return;
+
+    // Ring of raw complex sweeps, pushed once per ARRIVAL (not once per effect run --
+    // this effect also fires on a window change, which must not duplicate a sweep).
+    if (hCal.timestamp !== lastPushedTs.current) {
+      lastPushedTs.current = hCal.timestamp;
+      hCalBuffer.current.push({ real: Float64Array.from(hCal.real),
+                                imag: Float64Array.from(hCal.imag) });
+      if (hCalBuffer.current.length > AVG_MAX) hCalBuffer.current.shift();
+    }
+
+    // Coherent averaging: mean of the complex h_cal, transformed once. Equivalent to
+    // averaging the complex range profiles (the IFFT is linear) but cheaper.
+    let srcReal = hCal.real, srcImag = hCal.imag;
+    if (avgMode === 'coherent' && avgCount > 1) {
+      const rows = hCalBuffer.current.filter(r => r.real.length === hCal.real.length)
+                                     .slice(-avgCount);
+      if (rows.length > 1) {
+        const len = hCal.real.length;
+        const ar = new Float64Array(len), ai = new Float64Array(len);
+        for (let j = 0; j < rows.length; j++) {
+          for (let i = 0; i < len; i++) { ar[i] += rows[j].real[i]; ai[i] += rows[j].imag[i]; }
+        }
+        for (let i = 0; i < len; i++) { ar[i] /= rows.length; ai[i] /= rows.length; }
+        srcReal = ar; srcImag = ai;
+      }
+    }
 
     const winFn = windowType === 'kaiser'
       ? (n) => kaiserWindow(n, kaiserBeta)
@@ -336,8 +380,14 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
         : rectangularWindow;
 
     const { magnitudeDb, nfft } = computeRangeProfile(
-      hCal.real, hCal.imag, winFn, 4
+      srcReal, srcImag, winFn, 4
     );
+    // The floor estimator must always see SINGLE-sweep profiles, in both modes, or it
+    // measures the scatter of overlapping sliding averages and then gets divided by
+    // sqrt(N) a second time. In incoherent mode magnitudeDb already is one sweep.
+    const singleDb = srcReal === hCal.real
+      ? magnitudeDb
+      : computeRangeProfile(hCal.real, hCal.imag, winFn, 4).magnitudeDb;
 
     const maxRange = SPEED_OF_LIGHT / (2 * hCal.step_size);
     const half = nfft >> 1;
@@ -350,24 +400,30 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
     while (startIdx < half && allDistances[startIdx] < 0) startIdx++;
     const distances = allDistances.slice(startIdx);
     const clippedMag = magnitudeDb.slice(startIdx);
+    const clippedSingle = singleDb === magnitudeDb ? clippedMag : singleDb.slice(startIdx);
 
     // R^n range compensation (STC) — use true physical distance (add back offset)
     if (rangeComp > 0) {
       for (let i = 0; i < clippedMag.length; i++) {
         const r = distances[i] + hCal.range_offset;
         if (r > 0.01) {
-          clippedMag[i] += rangeComp * 10 * Math.log10(r);
+          const g = rangeComp * 10 * Math.log10(r);
+          clippedMag[i] += g;
+          if (clippedSingle !== clippedMag) clippedSingle[i] += g;
         }
       }
     }
 
-    setRecomputed({ magnitudes: clippedMag, distances });
-  }, [windowType, kaiserBeta, rangeComp, sfcwResult]);
+    setRecomputed({ magnitudes: clippedMag, distances, single: clippedSingle });
+  }, [windowType, kaiserBeta, rangeComp, sfcwResult, avgMode, avgCount]);
 
   // Averaging — uses recomputed data
   useEffect(() => {
     const mags = recomputed ? recomputed.magnitudes : (sfcwResult && sfcwResult.magnitudes);
     if (!mags) return;
+    // In coherent mode the averaging already happened upstream on h_cal; averaging the
+    // resulting magnitudes again would apply it twice and lag the display by 2N sweeps.
+    if (avgMode === 'coherent') { setAveraged(null); return; }
 
     avgBuffer.current.push(Array.from(mags));
     if (avgBuffer.current.length > avgCount) {
@@ -386,7 +442,7 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
       }
       setAveraged(avg);
     }
-  }, [recomputed, sfcwResult, avgCount]);
+  }, [recomputed, sfcwResult, avgCount, avgMode]);
 
   // Noise floor estimate: per-bin standard deviation of LINEAR amplitude across the last
   // FLOOR_WINDOW sweeps. Linear, not dB, because the error is additive in amplitude and
@@ -398,7 +454,9 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
   // is white sweep to sweep (lag-1 correlation 0.06) and the floor was measured to follow
   // 10*log10(N) out to N=32, so averaging really does buy the full reduction.
   useEffect(() => {
-    const mags = recomputed ? recomputed.magnitudes : (sfcwResult && sfcwResult.magnitudes);
+    const mags = recomputed
+      ? (recomputed.single || recomputed.magnitudes)
+      : (sfcwResult && sfcwResult.magnitudes);
     if (!mags) return;
     const n = mags.length;
     const lin = new Float64Array(n);
@@ -1261,6 +1319,24 @@ export default function SfcwDisplay({ sfcwResult, sfcwProgress, sfcwRunning, ran
               <option key={v} value={v}>{v === 1 ? 'Off' : `${v}x`}</option>
             ))}
           </select>
+          {/* Coherent vs incoherent. Disabled at Avg=Off, where the two are identical. */}
+          <button
+            onClick={() => setAvgMode(avgMode === 'coherent' ? 'incoherent' : 'coherent')}
+            disabled={avgCount === 1}
+            title={avgCount === 1
+              ? 'Set Avg above 1 to compare averaging modes'
+              : 'COH averages complex h_cal (removes the noise bias in nulls); INC averages magnitudes'}
+            className={cn(
+              'px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-medium transition-all border',
+              avgCount === 1
+                ? 'bg-white/5 text-white/20 border-white/10 cursor-not-allowed'
+                : avgMode === 'coherent'
+                  ? 'bg-[#4ecdc4]/20 text-[#4ecdc4] border-[#4ecdc4]/30'
+                  : 'bg-white/5 text-white/40 border-white/10'
+            )}
+          >
+            {avgMode === 'coherent' ? 'Coh' : 'Inc'}
+          </button>
         </div>
 
         <div className="w-px h-3 bg-white/10" />

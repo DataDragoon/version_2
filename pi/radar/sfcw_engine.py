@@ -66,7 +66,16 @@ class SFCWEngine:
         self.stop_freq = 5_000_000_000
         self.step_size = 60_000_000
         self.num_buffers = 4
-        self.settle_count = 10
+        # 3, not 10. Validated 2026-08-29 PER STEP, which is what CLAUDE.md's settle_count
+        # regression note says an aggregate metric failed to catch: 400 sweeps x 51 steps
+        # = 20,400 step-captures at settle=3 produced ZERO cells more than 8 robust sigmas
+        # off that step's median, worst excursion 2.9 sigma (Gaussian expectation for that
+        # many samples is ~4.1). settle=1 is faster still (3.90 vs 3.35 Hz) and equally
+        # clean on the aggregate, but threw a 7.6-sigma excursion in the same test -- the
+        # exact intermittent tail that produced the earlier regression -- so 3 is chosen
+        # for margin, not for speed. Do not drop below it without repeating the per-step
+        # check; an aggregate correlation will not see this.
+        self.settle_count = 3
         self.tx1_gain = 50
         self.rx1_gain = 25
         # Reference-channel (TX2 -> loopback cable -> RX2) gains. These set the level

@@ -175,7 +175,7 @@ export default function App() {
     stopFreq: 5000,
     stepSize: 60,
     numBuffers: 4,
-    settleCount: 10,
+    settleCount: 3,
     tx1Gain: 50,
     rx1Gain: 25,
     // Reference channel (TX2 -> loopback cable -> RX2). These were previously absent
