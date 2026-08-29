@@ -1997,16 +1997,29 @@ window / zero-pad controls live and guarantees both profiles are built identical
 is the only way their difference means anything.
 
 Consequences worth knowing:
-- **R^n and LIN are disabled in magnitude mode.** Range compensation applies the same gain
-  to both profiles so it cancels exactly, and `10^(x/20)` of a dB *ratio* is meaningless.
-  Both are suppressed rather than left to draw a plausible-looking wrong trace.
+- **dB and LINEAR are two DIFFERENT quantities here, not two views of one** (2026-08-30).
+  dB gives `20log10|P| - 20log10|P_bg|`, a *ratio*: "by what fraction did this bin change",
+  level-independent, and therefore amplifying noise wherever the profile nears the floor
+  exactly as an ordinary dB trace does. LINEAR gives `|P| - |P_bg|`, an absolute
+  *amplitude* difference: "how much energy was actually added here", so a bin sitting on
+  the noise floor contributes almost nothing however wildly its ratio swings. Neither is
+  the other rescaled, so the choice is made in the recompute (which now depends on
+  `scaleMode`) and NOT by converting at draw time -- the usual `10^(x/20)` step is skipped
+  in diff mode or it would be applied twice. The +/-0.7 dB detection band is drawn only on
+  the dB flavour, because a relative cut has no single linear value.
+- **R^n is disabled in magnitude mode.** Range compensation applies the same gain to both
+  profiles, so it cancels exactly; leaving it live would be a control that does nothing.
 - **The waterfall is cleared on a mode change**, because rows already in it are absolute dB
   in one mode and a ratio in the other. It refills at the sweep rate (~30 s for 100 rows).
   Making the toggle re-render the existing history instead would need the display to hold
   genuinely raw `h_cal` in both modes -- possible (App could pass the background in complex
   mode too, letting the display reconstruct `raw = result + bg`) but not done.
-- **The FLOOR overlay is suppressed** in magnitude mode: its estimator is in linear
-  amplitude and that line has no meaning on a ratio trace.
+- **The FLOOR overlay is suppressed** in magnitude mode, and its estimator now skips the
+  buffer entirely there: it converts stored rows with `10^(x/20)`, which is wrong for a dB
+  ratio and wrong again for a linear difference.
+- **The waterfall's wf transforms (CFAR-relative etc.) are bypassed** on a difference --
+  they are defined against an absolute dB profile, and a difference is already referenced
+  to something.
 - A **+/- 0.7 dB detection band** is drawn instead, from `DETECT_THRESHOLD_DB`. That is 3x
   the 0.23 dB target-free control region from the A/B. **It is provisional** -- the control
   was measured before the reference-gain and sync_rx fixes dropped the floor ~15 dB, so the
