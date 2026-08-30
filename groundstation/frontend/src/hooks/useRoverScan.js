@@ -167,7 +167,13 @@ export function useRoverScan({
           const off = Math.hypot(status.x_mm - st.target.x_mm, status.y_mm - st.target.y_mm);
           if (off <= POS_TOL_MM) {
             if (st.phase === 'homing') {
-              gotoCell(st.index);
+              // Homing parks at the origin and STOPS there. The raster is a
+              // separate, explicit action so the operator gets a window at a
+              // known position -- with the sweep already running -- to capture
+              // a background reference before the gantry starts moving.
+              st.phase = 'ready';
+              st.message = 'At grid origin — capture a background reference now if you want one.';
+              publish();
             } else {
               st.phase = 'settling';
               st.settleUntil = now + st.settleMs;
@@ -192,6 +198,12 @@ export function useRoverScan({
         }
         return;
       }
+
+      // Parked at the origin, sweeping, waiting for the operator to start the
+      // raster. Nothing to time out -- the checks above still watch the link
+      // and the e-stop, which is the whole reason the machine stays alive.
+      case 'ready':
+        return;
 
       case 'settling':
         if (now >= st.settleUntil) {
@@ -298,6 +310,24 @@ export function useRoverScan({
     timer.current = setInterval(() => tick(), TICK_MS);
   }, [issueMove, tick]);
 
+  // Second half of the start: begin the raster from the origin the arming run
+  // parked on. Only valid from 'ready' -- pressing it at any other time would
+  // race the state machine.
+  const beginRaster = useCallback(() => {
+    const st = machine.current;
+    if (!st || st.phase !== 'ready') return;
+    const o = optsRef.current;
+    // The operator may have captured cells (or pressed Undo) while parked, so
+    // take the count as it stands rather than what arming saw.
+    const startIndex = Math.min(o.capturedCount, st.total);
+    if (startIndex >= st.total) {
+      finish('done', `Grid already full — ${st.total} cells captured.`, null, false);
+      return;
+    }
+    st.message = null;
+    gotoCell(startIndex);
+  }, [finish, gotoCell]);
+
   // The operator's stop is an emergency stop: it latches, and it is meant to.
   const stop = useCallback(() => {
     if (machine.current) finish('stopped', 'Scan stopped — E-stop latched.', null, true);
@@ -312,5 +342,5 @@ export function useRoverScan({
 
   useEffect(() => () => { if (timer.current) clearInterval(timer.current); }, []);
 
-  return { ...ui, start, stop, clearStatus };
+  return { ...ui, start, beginRaster, stop, clearStatus };
 }

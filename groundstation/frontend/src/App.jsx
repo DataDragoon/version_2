@@ -8,7 +8,7 @@ import { useBgModelWorker } from './hooks/useBgModelWorker';
 import { inferBgModel } from './lib/bgModelInfer';
 import { computeCaptureStats } from './lib/bgCaptureStats';
 import { computeRangeProfile } from './lib/rangeProfile';
-import { applyBscanBg, bgForStandoff, freqGrid } from './lib/bscanBg';
+import { applyBscanBg, bgForStandoff } from './lib/bscanBg';
 import { cellForIndex } from './lib/cscanGrid';
 import { useRoverScan } from './hooks/useRoverScan';
 import { DEFAULT_PARAMS as IMAGING_DEFAULT_PARAMS } from './lib/imagingEffects';
@@ -369,9 +369,9 @@ export default function App() {
     hStep: 5,
     vCount: 1,
     vStep: 5,
-    maxDepth: 30,
+    maxDepth: 70,
     gateStart: 2,
-    gateEnd: 15,
+    gateEnd: 70,
     metric: 'peak',
     // How the raster is driven. 'manual' is the hand-held original: the
     // operator places the head and presses Capture, snaking up from the
@@ -438,8 +438,7 @@ export default function App() {
       const pos = bscanData.find(p => p.h_cal_real && p.lidar_standoff_mm != null);
       if (!pos) return null;
       const numSteps = pos.h_cal_real.length;
-      const bg = bgForStandoff(bscanBgSource, pos.lidar_standoff_mm, numSteps,
-        freqGrid(sfcwParams.startFreq, sfcwParams.stopFreq, numSteps));
+      const bg = bgForStandoff(bscanBgSource, pos.lidar_standoff_mm, numSteps);
       if (!bg) return null;
       real = bg.bgReal;
       imag = bg.bgImag;
@@ -467,51 +466,6 @@ export default function App() {
     [bscanData, bscanBgSource, bgApplied, sfcwParams],
   );
 
-  // Compute spatial alignment bin shifts using lidar standoff data
-  const alignShifts = useMemo(() => {
-    if (processedBscanData.length < 2) {
-      return { scanShifts: processedBscanData.map(() => 0), bgShift: 0 };
-    }
-
-    const distances = processedBscanData[0].distances;
-    if (!distances || distances.length < 2) {
-      return { scanShifts: processedBscanData.map(() => 0), bgShift: 0 };
-    }
-    const binSpacingM = distances[1] - distances[0];
-
-    const hasLidar = processedBscanData.every(pos => pos.lidar_standoff_mm != null);
-    if (!hasLidar) {
-      return { scanShifts: processedBscanData.map(() => 0), bgShift: 0 };
-    }
-
-    const standoffs = processedBscanData.map(pos => pos.lidar_standoff_mm / 1000);
-    const maxStandoff = Math.max(...standoffs);
-
-    const scanShifts = standoffs.map(s => (maxStandoff - s) / binSpacingM);
-
-    // The BG row is drawn at whatever standoff it was evaluated at — the
-    // reference sweep's, or the position the model was sampled at.
-    let bgShift = 0;
-    if (bscanBgDisplay && bscanBgDisplay.standoffMm != null) {
-      bgShift = (maxStandoff - bscanBgDisplay.standoffMm / 1000) / binSpacingM;
-    } else if (bscanBgDisplay && bscanBgDisplay.magnitudes) {
-      let bgPeakIdx = 0, maxVal = -Infinity;
-      for (let i = 0; i < bscanBgDisplay.magnitudes.length; i++) {
-        if (bscanBgDisplay.magnitudes[i] > maxVal) { maxVal = bscanBgDisplay.magnitudes[i]; bgPeakIdx = i; }
-      }
-      const maxStandoffScanPeak = (() => {
-        const idx = standoffs.indexOf(maxStandoff);
-        const mags = processedBscanData[idx].magnitudes;
-        let pk = 0, mv = -Infinity;
-        for (let i = 0; i < mags.length; i++) { if (mags[i] > mv) { mv = mags[i]; pk = i; } }
-        return pk;
-      })();
-      bgShift = maxStandoffScanPeak - bgPeakIdx;
-      if (bgShift < 0) bgShift = 0;
-    }
-
-    return { scanShifts, bgShift };
-  }, [processedBscanData, bscanBgDisplay]);
   // 2D Map state
   const [mapGateStart, setMapGateStart] = useState(2);
   const [mapGateEnd, setMapGateEnd] = useState(15);
@@ -1006,9 +960,11 @@ export default function App() {
 
   const handleBscanAction = useCallback((action) => {
     if (action === 'start_session') {
-      // In rover mode the session IS the automated raster: it starts the sweep
-      // itself, drives to the origin and captures every cell without further
-      // input. Manual mode is untouched.
+      // In rover mode the session ARMS the raster: it starts the sweep and
+      // drives to the grid origin, then parks there. The raster itself is
+      // 'start_raster' below, so the operator gets a window at a known position
+      // -- sweeping -- to capture a background reference before anything moves.
+      // Manual mode is untouched.
       if (bscanParams.scanMode === 'rover') {
         roverScan.start();
         return;
@@ -1016,6 +972,9 @@ export default function App() {
       if (sfcwRunning) return;
       sendSfcwParams();
       sendSdr({ cmd: 'sfcw_start' });
+    } else if (action === 'start_raster') {
+      // Second half of the rover start; a no-op unless parked at the origin.
+      if (bscanParams.scanMode === 'rover') roverScan.beginRaster();
     } else if (action === 'stop_session') {
       // Stopping a rover raster is an emergency stop, deliberately: it is the
       // only control on screen while the gantry is moving on its own.
@@ -1422,7 +1381,6 @@ export default function App() {
         onSfcwDynamicScale={handleSfcwDynamicScale}
         bscanData={processedBscanData}
         bscanBgDisplay={bscanBgDisplay}
-        bscanAlignShifts={alignShifts}
         bscanParams={bscanParams}
         bscanCapturing={bscanCapturing}
         roverScan={roverScan}

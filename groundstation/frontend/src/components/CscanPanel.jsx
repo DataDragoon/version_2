@@ -8,6 +8,7 @@ const LIDAR_AVG_WINDOW = 20;
 // What the automation is doing right now, in the operator's terms.
 const PHASE_TEXT = {
   homing: 'Driving to the grid origin',
+  ready: 'Parked at origin — ready to scan',
   moving: 'Moving to the next cell',
   settling: 'Settling',
   capturing: 'Sweeping',
@@ -82,6 +83,12 @@ export default function CscanPanel({
   const roverLinked = roverConnected && !!roverStatus?.board_connected;
   const roverEstopped = !!roverStatus?.estop;
   const scanning = !!roverScan?.active;
+  // Parked at the origin with the sweep running, waiting for the operator to
+  // start the raster. This is the window in which a background reference can be
+  // captured at a known position before anything moves.
+  const armed = scanning && roverScan.phase === 'ready';
+  // Actually rastering, as opposed to armed or homing.
+  const rastering = scanning && !armed && roverScan.phase !== 'homing';
   // In rover mode the session is the raster, so the button tracks the
   // automation rather than the bare sweep.
   const sessionActive = roverMode ? (scanning || sfcwRunning) : sfcwRunning;
@@ -314,14 +321,16 @@ export default function CscanPanel({
           <div className="flex flex-col gap-0.5 text-left min-w-0">
             <span className="text-sm font-semibold text-white">
               {sessionActive
-                ? (roverMode ? 'Stop Scan · E-Stop' : 'Stop Session')
-                : (roverMode ? 'Start Rover Scan' : 'Start Session')}
+                ? (roverMode ? 'Stop Session · E-Stop' : 'Stop Session')
+                : 'Start Session'}
             </span>
             <span className="text-xs text-[#555555] leading-relaxed">
               {sessionActive
                 ? (roverMode
                     ? (scanning
-                        ? `${PHASE_TEXT[roverScan.phase] || 'Scanning'} — cell ${roverScan.index + 1}/${roverScan.total}`
+                        ? (armed
+                            ? PHASE_TEXT.ready
+                            : `${PHASE_TEXT[roverScan.phase] || 'Scanning'} — cell ${roverScan.index + 1}/${roverScan.total}`)
                         : 'Sweeping — stop latches the E-stop')
                     : 'Sweeping continuously...')
                 : !sdrConnected ? 'SDR not connected'
@@ -330,14 +339,58 @@ export default function CscanPanel({
                     : roverEstopped ? 'E-stop latched — clear it first'
                     : !fitsLimits ? 'Grid does not fit inside the soft limits'
                     : gridFull ? 'Grid full — start a new scan'
-                    : `Raster ${stats.total - captured} cell${stats.total - captured === 1 ? '' : 's'} automatically`
+                    : 'Sweep and drive to the grid origin — the raster starts separately'
                   : 'Start continuous sweep'}
             </span>
           </div>
         </button>
 
+        {/* Second half of the start. Arming parks the head on the grid origin
+            with the sweep already running, which is the only moment where a
+            background reference can be taken at a known position before the
+            gantry moves. Pressing this begins the raster. */}
+        {roverMode && armed && (
+          <>
+            <button
+              onClick={() => onScanAction('start_raster')}
+              disabled={gridFull}
+              className={cn(
+                'group relative flex items-center gap-3 w-full p-4 rounded-2xl border',
+                'transition-all duration-500 cursor-pointer',
+                'disabled:cursor-not-allowed disabled:opacity-40',
+                gridFull
+                  ? 'bg-[#0a0a0a]/50 border-white/5'
+                  : 'bg-[#4aff8a]/8 border-[#4aff8a]/30 hover:border-[#4aff8a]/50',
+              )}
+            >
+              <div className={cn(
+                'flex items-center justify-center w-10 h-10 rounded-xl shrink-0',
+                gridFull ? 'bg-white/5' : 'bg-[#4aff8a]/15',
+              )}>
+                <svg className="w-4 h-4 text-[#4aff8a]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                </svg>
+              </div>
+              <div className="flex flex-col gap-0.5 text-left min-w-0">
+                <span className="text-sm font-semibold text-white">Start Scan</span>
+                <span className="text-xs text-[#555555] leading-relaxed">
+                  {gridFull
+                    ? 'Grid full — start a new scan'
+                    : `Raster ${stats.total - captured} cell${stats.total - captured === 1 ? '' : 's'} automatically`}
+                </span>
+              </div>
+            </button>
+            <div className="px-2 text-[9px] text-white/40 leading-relaxed">
+              The head is parked on the grid origin and sweeping. Capture a
+              background reference now if you want one — a reference is only
+              valid near the position and standoff it was taken at, so taking it
+              here, rather than mid-raster, is the point of this pause.
+            </div>
+          </>
+        )}
+
         {/* Progress along the raster, and whatever ended it. */}
-        {roverMode && scanning && (
+        {roverMode && rastering && (
           <>
             <div className="relative h-1.5 rounded-full bg-white/5 overflow-hidden">
               <div
@@ -745,7 +798,7 @@ export default function CscanPanel({
           {bgModel
             ? 'Model background, inferred per cell from that cell’s own lidar standoff.'
             : bgRef
-              ? 'Reference sweep, phase-aligned to each cell by lidar standoff.'
+              ? 'Reference sweep, subtracted exactly as captured. It only holds near the standoff and position it was taken at — recapture if either moves.'
               : 'Capture a reference sweep or load a model to subtract the background.'}
         </div>
       </Section>

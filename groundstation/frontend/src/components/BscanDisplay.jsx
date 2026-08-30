@@ -12,7 +12,7 @@ function jet(t) {
   ];
 }
 
-function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, bgDisplay, animatedShifts, animatedBgShift, scaleRange) {
+function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, bgDisplay, scaleRange) {
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   const rect = canvas.getBoundingClientRect();
@@ -110,14 +110,6 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, b
     return scanData[scanIdx].magnitudes;
   };
 
-  // Get pixel offset for a row from animated shifts
-  const getRowPixelOffset = (rowIdx) => {
-    if (hasBg && rowIdx === 0) return (animatedBgShift || 0) * cellW;
-    const scanIdx = hasBg ? rowIdx - 1 : rowIdx;
-    if (!animatedShifts || scanIdx >= animatedShifts.length) return 0;
-    return animatedShifts[scanIdx] * cellW;
-  };
-
   // Clip region for plot area
   ctx.save();
   ctx.beginPath();
@@ -127,7 +119,6 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, b
   if (displayMode === 'color') {
     for (let rowIdx = 0; rowIdx < totalRows; rowIdx++) {
       const mags = getMagsForRow(rowIdx);
-      const pxOffset = getRowPixelOffset(rowIdx);
       for (let binIdx = 0; binIdx < numBins; binIdx++) {
         const db = (startBin + binIdx < mags.length) ? mags[startBin + binIdx] : dbMin;
         let t;
@@ -139,7 +130,7 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, b
         }
         const [r, g, b] = jet(t);
         ctx.fillStyle = `rgb(${r},${g},${b})`;
-        const x = pad.left + binIdx * cellW + pxOffset;
+        const x = pad.left + binIdx * cellW;
         const y = pad.top + rowIdx * cellH;
         ctx.fillRect(x, y, Math.ceil(cellW) + 1, Math.ceil(cellH) + 1);
       }
@@ -169,7 +160,6 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, b
       const bandTop = pad.top + rowIdx * cellH;
       const bandH = cellH;
       const isBgRow = hasBg && rowIdx === 0;
-      const pxOffset = getRowPixelOffset(rowIdx);
 
       // BG row uses dashed orange; scan rows use solid colors
       if (isBgRow) {
@@ -194,7 +184,7 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, b
         } else {
           normalized = (db - dbMin) / (dbMax - dbMin);
         }
-        const x = pad.left + binIdx * cellW + cellW / 2 + pxOffset;
+        const x = pad.left + binIdx * cellW + cellW / 2;
         const y = bandTop + bandH - normalized * bandH;
 
         if (binIdx === 0) ctx.moveTo(x, y);
@@ -363,53 +353,28 @@ function drawBscan(canvas, scanData, params, crosshair, isLinear, displayMode, b
   }
 }
 
-export default function BscanDisplay({ scanData, bgDisplay, params, capturing, sfcwProgress, scaleMode, displayMode, targetShifts, targetBgShift, scaleRange }) {
+export default function BscanDisplay({ scanData, bgDisplay, params, capturing, sfcwProgress, scaleMode, displayMode, scaleRange }) {
   const canvasRef = useRef(null);
   const animRef = useRef(null);
   const [crosshair, setCrosshair] = useState(null);
-  const currentShiftsRef = useRef([]);
-  const currentBgShiftRef = useRef(0);
 
   const isLinear = scaleMode === 'linear';
   const mode = displayMode || 'color';
 
-  const lerpSpeed = 0.08;
-
+  // Kept as a rAF loop rather than a one-shot draw: drawBscan sizes itself from
+  // getBoundingClientRect(), so redrawing every frame is what makes the canvas
+  // follow a panel resize. Nothing here is animated any more -- there used to be
+  // a per-row lerp toward lidar-derived range-bin shifts, but the shifts were
+  // hard-wired to zero at the call site and the producer was dead code, so the
+  // whole path was removed (2026-08-30).
   useEffect(() => {
     const render = () => {
-      // Lerp current shifts toward target shifts
-      const targets = targetShifts || [];
-      const current = currentShiftsRef.current;
-
-      // Resize current array if needed
-      while (current.length < targets.length) current.push(0);
-      if (current.length > targets.length) current.length = targets.length;
-
-      for (let i = 0; i < current.length; i++) {
-        const target = targets[i] || 0;
-        const diff = target - current[i];
-        if (Math.abs(diff) < 0.01) {
-          current[i] = target;
-        } else {
-          current[i] += diff * lerpSpeed;
-        }
-      }
-
-      // Lerp BG shift
-      const bgTarget = targetBgShift || 0;
-      const bgDiff = bgTarget - currentBgShiftRef.current;
-      if (Math.abs(bgDiff) < 0.01) {
-        currentBgShiftRef.current = bgTarget;
-      } else {
-        currentBgShiftRef.current += bgDiff * lerpSpeed;
-      }
-
-      drawBscan(canvasRef.current, scanData, params, crosshair, isLinear, mode, bgDisplay, current, currentBgShiftRef.current, scaleRange);
+      drawBscan(canvasRef.current, scanData, params, crosshair, isLinear, mode, bgDisplay, scaleRange);
       animRef.current = requestAnimationFrame(render);
     };
     animRef.current = requestAnimationFrame(render);
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [scanData, params, crosshair, isLinear, mode, bgDisplay, targetShifts, targetBgShift, scaleRange]);
+  }, [scanData, params, crosshair, isLinear, mode, bgDisplay, scaleRange]);
 
   return (
     <div className="flex flex-col w-full h-full">

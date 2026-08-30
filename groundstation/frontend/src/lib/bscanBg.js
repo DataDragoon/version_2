@@ -1,11 +1,12 @@
 // B-scan background subtraction — groundstation-side, mirroring the SFCW panel.
 //
 // Two mutually exclusive sources, never both:
-//   - captured reference: one sweep, phase-aligned to each position by the
-//     lidar standoff difference. Only valid near the standoff it was taken at.
+//   - captured reference: one sweep, subtracted exactly as captured. It is only
+//     valid near the standoff AND the position it was taken at; nothing here
+//     tries to extrapolate it to either, because the attempt to do so made it
+//     worse (see bgForStandoff).
 //   - ML model: the background is inferred per position from that position's
-//     own standoff, so no alignment fudge is needed and it stays valid across
-//     the whole captured span.
+//     own standoff, so it stays valid across the whole captured span.
 //
 // The Pi ships raw h_cal and holds no background state; everything here runs
 // on the groundstation so B-scan exports, SAR and BG-model training data all
@@ -14,10 +15,8 @@
 import { inferBgModel } from './bgModelInfer';
 import { computeRangeProfile } from './rangeProfile';
 
-const SPEED_OF_LIGHT = 299792458;
-
 // Background spectrum to subtract at one position, or null if unavailable.
-export function bgForStandoff({ bgRef, bgModel }, standoffMm, numSteps, freqs) {
+export function bgForStandoff({ bgRef, bgModel }, standoffMm, numSteps) {
   if (bgModel) {
     if (bgModel.sfcwParams && bgModel.sfcwParams.numSteps !== numSteps) return null;
     if (standoffMm == null) return null;
@@ -26,25 +25,28 @@ export function bgForStandoff({ bgRef, bgModel }, standoffMm, numSteps, freqs) {
 
   if (bgRef && bgRef.h_cal_real && bgRef.h_cal_imag) {
     if (bgRef.h_cal_real.length !== numSteps) return null;
-    // Phase-align the reference to this position's standoff. Without lidar on
-    // both ends there is nothing to align by, so subtract as-is.
-    let deltaD = 0;
-    if (standoffMm != null && bgRef.lidar_standoff_mm != null) {
-      deltaD = (standoffMm - bgRef.lidar_standoff_mm) / 1000;
-    }
-    const deltaPhasePerHz = 2 * Math.PI * 2 * deltaD / SPEED_OF_LIGHT;
-    const bgReal = new Array(numSteps);
-    const bgImag = new Array(numSteps);
-    for (let i = 0; i < numSteps; i++) {
-      const phase = deltaPhasePerHz * freqs[i];
-      const cosP = Math.cos(phase);
-      const sinP = Math.sin(phase);
-      const r = bgRef.h_cal_real[i];
-      const m = bgRef.h_cal_imag[i];
-      bgReal[i] = r * cosP - m * sinP;
-      bgImag[i] = r * sinP + m * cosP;
-    }
-    return { bgReal, bgImag };
+    // Subtracted exactly as captured. There used to be a lidar-driven phase
+    // ramp here that shifted the reference in range to "correct" for each
+    // cell's standoff; it is gone deliberately and must not come back without
+    // a bench measurement first. Two reasons (both measured on `row4`, an
+    // empty-wall 15x4 C-scan, 2026-08-30 -- see CLAUDE.md):
+    //
+    //   1. Its sign was inverted. An echo at distance d is exp(-j*2pi*2d*f/c),
+    //      so pushing the background OUT by deltaD needs exp(-j...); the code
+    //      applied exp(+j...) and pulled it IN, turning a deltaD error into
+    //      2*deltaD. Verified: a synthetic echo at 100 mm given deltaD=+10 mm
+    //      landed at 90 mm instead of 110 mm.
+    //   2. Even with the sign right it loses. Mean suppression over row4's 60
+    //      cells: 4.4 dB as shipped, 6.4 dB sign-corrected, 10.9 dB with no
+    //      alignment at all. The dominant background term sits at alpha ~ 0 (a
+    //      static coupling reflection that does not move with standoff), so
+    //      shifting the WHOLE spectrum corrupts the largest component to fix a
+    //      smaller one -- in either direction.
+    //
+    // The shipped version drove the mismatched rows to NEGATIVE suppression,
+    // i.e. the subtraction added more energy than it removed, manufacturing
+    // detections on a wall with nothing in it.
+    return { bgReal: bgRef.h_cal_real, bgImag: bgRef.h_cal_imag };
   }
 
   return null;
@@ -75,7 +77,7 @@ export function applyBscanBg(bscanData, { enabled, bgRef, bgModel }, sfcwParams)
     let imag = pos.h_cal_imag;
 
     if (active) {
-      const bg = bgForStandoff({ bgRef, bgModel }, pos.lidar_standoff_mm, numSteps, freqs);
+      const bg = bgForStandoff({ bgRef, bgModel }, pos.lidar_standoff_mm, numSteps);
       if (bg) {
         real = new Array(numSteps);
         imag = new Array(numSteps);

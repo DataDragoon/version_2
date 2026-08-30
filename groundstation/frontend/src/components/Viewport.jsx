@@ -43,7 +43,6 @@ export default function Viewport({
   onSfcwDynamicScale,
   bscanData,
   bscanBgDisplay,
-  bscanAlignShifts,
   bscanParams,
   bscanCapturing,
   roverScan,
@@ -452,8 +451,6 @@ export default function Viewport({
                 scaleMode={bscanScaleMode}
                 displayMode={bscanDisplayMode}
                 scaleRange={bscanScaleRange}
-                targetShifts={rowData.map(() => 0)}
-                targetBgShift={0}
               />
               {rowData.length === 0 && (
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

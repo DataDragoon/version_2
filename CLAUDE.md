@@ -2076,3 +2076,257 @@ there is no clipping/saturation check anywhere in `sfcw_engine.py` or `bladerf_d
 (`_process_h_cal`'s phase-coherence check catches retune-timing corruption, not amplitude
 clipping). Both are real, unguarded failure modes; the odd-harmonic spurs from the RF Calib
 panel are, by contrast, structurally rejected by the demod and a lower-priority concern.
+
+## Rover C-scans are background-gradient limited, not motion limited (2026-08-30)
+
+Three 12x3 rover-driven C-scans (`3row`, `3row2`, `3row3`, 50 mm pitch, one pipe near
+the scan centre; `3row` with no background, the other two with a corner `bgRef`) showed
+nothing on the GUI, against a static rig that works consistently. Diagnosed offline from
+the exported v6 JSON. **The target is not detectable in any of the three**, and the reason
+is not the rover moving.
+
+**Note `hStep`/`vStep` are in CENTIMETRES.** `hStep: 5` is a 50 mm cell pitch, and the
+rover positions confirm it (x steps of 50.0 mm). Easy to misread as 5 mm and conclude the
+gantry is mis-scaled.
+
+### The dominant error is a smooth background gradient locked to ABSOLUTE rail position
+
+`|gain|` of each cell against a common reference falls monotonically from ~1.12 at
+x = 750 mm to ~0.80 at x = 1550 mm -- a ~30% amplitude ramp across the scan, plus a phase
+ramp worth ~0.6-1 mm of apparent standoff. It is not drift and not noise:
+
+- **It is spatial, not temporal.** The rover snake captures the middle row RIGHT-TO-LEFT
+  and the outer two LEFT-TO-RIGHT. All nine rows across the three scans have the
+  same-sign `ix` gradient (-0.006 to -0.020 per cell). A drift in time would flip the
+  sign on the three reversed rows. It does not. **Regression cannot settle this** -- in a
+  snake, capture index is a deterministic function of `(ix, iy)`, so "t adds nothing on
+  top of x,y" is vacuous. The direction-reversal test is the only clean discriminator;
+  use it.
+- **It reproduces.** `3row2` and `3row3` overlap over 350 mm of rail and agree to ~0.03
+  in `|gain|` at matched absolute x. Same position -> same background.
+- **It lives at the WALL, not in the coupling.** Band-resolved swing across a row:
+  0-6 cm (the alpha~0 coupling) **0.55 dB**, 6-10 cm 1.05 dB, **10-16 cm 6.3 dB**,
+  16-30 cm 1.7 dB. So this is NOT the cable/coupling term CLAUDE.md's staleness section
+  blames elsewhere -- that term is rock stable here. It is the wall return itself.
+- **The standoff is fine.** The wall peak stays at 13.3-14.5 cm across the whole scan
+  (<1 mm of movement), so the rail is parallel to the wall and this is not a range shift.
+
+**The mechanism is a TILTED WALL changing the standoff, and it is anisotropic
+(established 2026-08-30 from `row4`, which had LiDAR; supersedes an earlier
+"coherent speckle" reading of the same data that was WRONG).** Two hypotheses were tested
+and rejected first, do not re-run them: (1) beam/illumination change -- rejected because the
+top-vs-bottom difference *reverses sign* across the band (+5.1 dB at 2-3 GHz, -2.7 at 3-4,
++1.5 at 4-5, same in all three scans); a real amplitude effect cannot do that. (2) a
+two-echo relative path shift -- modelling `h(top) = a*NEAR(bot) + b*exp(-j2pi f tau)*FAR(bot)`
+railed `tau` at the search boundary and bought 0.6-1.1 dB.
+
+**The decorrelation is strongly anisotropic, and that is the whole tell:**
+
+| separation | 50 mm | 100 mm | 150 mm | 200 mm |
+|---|---|---|---|---|
+| **horizontal** (same row) | 20.1-21.9 dB | 17.3-20.6 | 14.6-19.2 | 12.4-18.4 |
+| **vertical** (same column) | 10.2-10.8 dB | 3.5-4.9 | 0.3 | -- |
+| `row4` standoff change, horizontal | 1.2 mm | 1.8 | 2.2 | 2.4 |
+| `row4` standoff change, vertical | 3.4 mm | 7.7 | 10.2 | -- |
+
+Moving 200 mm sideways costs a few dB; moving 150 mm up destroys the background entirely.
+The LiDAR says why: sideways changes the standoff by ~2 mm, upwards by ~10 mm. **Suppression
+tracks standoff change, not distance travelled**, and the numbers sit close to CLAUDE.md's
+own measured standoff-sensitivity table (5 mm -> 9.6 dB, 10 mm -> 4.2 dB). The same
+anisotropy is present in the LiDAR-less `3row*` scans, so the tilt was there too.
+
+**Methodological warning that produced the wrong first answer:** the original decorrelation
+sweep matched cells on x, so *every* pair it measured was vertically separated. It probed
+one axis and the conclusion "isotropic speckle, decorrelates in ~20 mm, cut the pitch"
+was drawn from it. **Always measure both axes before calling a spatial effect isotropic.**
+The pitch was never the problem -- horizontally, 50 mm sampling is fine.
+
+**This is the explanation for "static works, moving does not".** Held still the background
+is stable to ~20 dB and a +4.4 dB target is easy. Drive the rover vertically and the
+standoff walks by ~7 mm per 100 mm of travel, which alone costs ~15 dB. The false target
+seen while driving is the standoff-mismatched background failing to cancel.
+
+**Consequence: a single captured `bgRef` cannot work on a rover raster.** Subtracting the
+corner reference gives only 14-18 dB, and the best-matching cells are scattered randomly
+over the grid with no spatial structure -- the residual left on screen is the gradient,
+not the scene. A 6.3 dB position-dependent swing at exactly the wall range sits on top of
+the **+4.4 dB** a real target produced in the 2026-08-28 static A/B.
+
+### Per-cell repeatability drops ~18 dB under the rover
+
+Revisiting the same physical (x,y) one minute apart (`3row2` vs `3row3`, 24 matched cells)
+gives **20.3 dB** suppression / coherence 0.9943, against 38.6 dB single-sweep `S_repeat`
+and 41.5 dB on the static bench. Magnitude-domain detector noise floor is **0.70-1.13 dB**
+versus the static A/B's **0.23 dB** control region -- 3-5x worse.
+
+**Settling is NOT the cause and is ruled out.** The first cell of each row follows a slow
+50 mm Y move, the rest follow fast X moves; after removing a smooth 2D fit their residuals
+are indistinguishable (-26.8 dB row-start vs -25.6 dB mean for the others, inside the
+scatter). So the 100 ms `roverSettleMs` used here was not leaving the structure ringing.
+
+### Adjacent cells are independent, so no image can form
+
+Residual patches correlate **+0.79** between scans at the same absolute position, but only
+**+0.11 to +0.23** between rows 50 mm apart within one scan. Each cell is individually
+repeatable while its neighbour 50 mm away is an independent sample -- so the plan view is
+a field of uncorrelated cells regardless of colour scale. No hyperbola appears in any
+B-scan under any of four background strategies (raw, corner `bgRef`, per-row mean
+subtraction, 2D polynomial detrend), and after detrending, residual bumps of 1-4 dB sit at
+random x and repeat neither between rows nor between scans.
+
+### Also: these scans have NO LiDAR at all
+
+`lidar_standoff_mm` is `null` and `lidar_n` is `0` for all 36 cells in all three files.
+So `bgForStandoff()`'s phase alignment was the identity and the BG-model path would have
+been dead on arrival (`inferBgModel` needs a standoff). Harmless for a fixed-standoff rail
+raster, but it means a model-based background was never an option for these captures --
+check `lidar_n` before blaming the model.
+
+### What to try next, in order
+
+1. **Level the rig against the wall.** This is the root cause and by far the cheapest fix:
+   `row4` measured a 17 mm standoff span (40.4 mm bottom-left to 23.2 mm top-right) over a
+   700 x 150 mm grid. Get that under ~2 mm and the vertical axis behaves like the
+   horizontal one already does. The 50 mm pitch is NOT the problem.
+2. **Reference per row, not per scan.** Even untilted, a single `bgRef` only holds while
+   the standoff does. Capturing one reference per row costs almost nothing and removes the
+   dominant residual term.
+3. **Or self-reference along the scan line**, the standard GPR move: subtract the per-row
+   mean, or SVD out the leading components (`lib/svd.js` still exists and the Aligned /
+   SAR / 2D Map panels already do this; it was removed from the C-scan panel). This needs
+   no reference capture but will absorb any target broad enough to look like trend, which
+   is the likely reason the polynomial detrends here found nothing.
+3. Re-run the 2026-08-28 target A/B **on the rail** (target in / target out at one fixed
+   cell) before scanning again. It is the only measurement that has ever detected this
+   target, it costs two captures, and it separates "the target is invisible to the sensor"
+   from "the raster is destroying it".
+
+## `bscanBg.js` phase-alignment has an INVERTED SIGN and is net-harmful (2026-08-30)
+
+Found on `row4` -- a 15x4 C-scan of an EMPTY wall (no target, so every detection is false by
+construction) captured with the LiDAR working, background taken at the top-left corner.
+Reported symptom: "the bottom rows came out near clean but the upper rows had detections."
+
+### The sign is backwards
+
+`bgForStandoff()` in `groundstation/frontend/src/lib/bscanBg.js` multiplies the reference by
+`exp(+j*2*pi*2*deltaD*f/c)` where `deltaD = standoff_cell - standoff_ref`. An echo at
+distance `d` is `exp(-j*2*pi*2*d*f/c)`, so that factor moves the background the **wrong way**.
+Verified empirically: a synthetic echo placed at 100 mm, given `deltaD = +10 mm`, moves to
+**90 mm** when it must move to 110 mm. **The correction therefore applies `-deltaD` instead
+of `+deltaD`, doubling the standoff error to `2*deltaD` rather than removing it.**
+
+### It costs 6.5 dB and drives suppression NEGATIVE
+
+Mean suppression over `row4`'s 60 cells, sweeping an alignment strength `alpha` on `deltaD`:
+
+| alpha | -1.0 (sign flipped) | -0.5 | **-0.25 (optimum)** | **0 (no alignment)** | +0.5 | **+1.0 (shipped)** |
+|---|---|---|---|---|---|---|
+| suppression | 6.41 dB | 10.44 | **11.88** | **10.90** | 6.96 | **4.38** |
+
+Per row with the shipped code, top to bottom: **-0.2, 1.2, 6.6, 10.0 dB** -- the top two rows
+go *negative*, i.e. the subtraction adds more energy than it removes. Without alignment the
+same rows give 7.6, 9.7, 15.6, 10.6 dB. Even the reference cell itself drops 29.2 -> 20.3 dB,
+because its own `deltaD` of 0.8 mm gets doubled to 1.6 mm.
+
+**Fixing the sign is NOT enough and is not the recommended change.** A correctly-signed full
+alignment (`alpha = -1`) still scores 6.41 dB, worse than doing nothing (10.90). The reason is
+CLAUDE.md's own echo decomposition: the dominant background component sits at alpha ~ 0, a
+static coupling reflection that does not move with standoff at all, so shifting the *whole*
+spectrum corrupts the largest term in either direction. The optimum `alpha = -0.25` is the
+fraction of background energy that actually tracks standoff, and it only buys 1.0 dB over
+disabling alignment entirely. **Recommended: disable the alignment (or gate it behind a small
+tuned alpha), do not merely flip the sign.**
+
+### Why the top rows and not the bottom
+
+The wall is tilted. LiDAR standoff runs **40.4 mm at bottom-left to 23.2 mm at top-right**;
+row means bottom-to-top are 37.2 / 34.5 / 29.2 / 27.0 mm. The reference was captured at
+**37.6 mm**, which matches the BOTTOM rows -- so the bottom rows are near-zero mismatch and
+clean, while the top rows are 10-14 mm out. Regressing aligned suppression on standoff
+mismatch and on lateral distance from the reference cell gives **-1.256 dB per mm of
+mismatch, R^2 = 0.827** (correlation -0.910), with lateral distance contributing
+**+0.0001 dB/mm, i.e. nothing**. Standoff mismatch is the entire story in this scan.
+
+Note the top-left reference cell is an outlier for its own row (36.8 mm against 23-25 mm
+across the rest of it), so "top-left corner" happened to pick a standoff representative of
+the far side of the grid. Picking a corner is not a neutral choice on a tilted wall.
+
+## C-scan pipeline changes (2026-08-30)
+
+Three changes, all in the direction of "the pipeline does what the UI says it does".
+
+**1. The captured-reference phase alignment is GONE** (`lib/bscanBg.js` `bgForStandoff`).
+It is not a toggle and never was -- it applied itself silently whenever both the cell and
+the `bgRef` carried a LiDAR standoff, which is why it only surfaced once the LiDAR was
+fixed. The `3row*` scans predate that and were never aligned; `row4` was. See the sign-bug
+section above for the measurements. `bgForStandoff` no longer takes `freqs`, and the
+now-unused `SPEED_OF_LIGHT` came out of that file with it.
+
+**2. Gate/depth defaults raised to 70 cm** (`App.jsx` `bscanParams`): `gateEnd` 15 -> 70 and
+`maxDepth` 30 -> **70**. `maxDepth` was raised deliberately alongside it, not incidentally --
+the Max Depth field's own `onChange` clamps `gateEnd` to `maxDepth`, so leaving it at 30
+would have silently snapped the new 70 cm gate back to 30 the first time anyone touched that
+field. They need to move together. Note `maxDepth` also sets the B-scan display depth and is
+read by `sar.worker.js`, so SAR now reconstructs to 70 cm by default.
+
+**3. Rover session is now ARM then SCAN, two presses** (`hooks/useRoverScan.js`,
+`CscanPanel.jsx`, `App.jsx` `handleBscanAction`). Start Session starts the sweep and drives
+to the grid origin, then parks in a new `'ready'` phase and waits. A separate **Start Scan**
+button begins the raster (`roverScan.beginRaster()`, action `'start_raster'`). The reason is
+that a background reference is only valid near the position it was taken at, and the old
+flow began rastering immediately, so there was no moment at a known position -- with the
+sweep already running -- to capture one. `beginRaster()` re-reads `capturedCount` at the
+moment it is pressed rather than trusting what arming saw, so capturing or undoing while
+parked cannot desync the start index. It is a no-op unless the phase is exactly `'ready'`.
+
+The `'ready'` phase keeps the machine and its 40 ms tick alive, so the link-lost and e-stop
+checks at the top of `tick()` still run while parked -- that is the whole reason it does not
+just halt. Verified headlessly (React shimmed to four functions, timers stubbed, fake clock):
+arming parks at `ready` and stays there through 5 s of ticks without self-starting; Start
+Scan then snakes a 3x2 grid top-left downwards in the correct order and finishes `done` with
+6 cells; `beginRaster()` during `homing` is a no-op; e-stop and link-loss while parked both
+abort and stop the sweep.
+
+### Known hidden behaviour still in the C-scan path (audited 2026-08-30, NOT changed)
+
+- ~~`alignShifts` dead code~~ **REMOVED 2026-08-30** (see below). Everything else in this
+  list was audited and deliberately left alone.
+- **The C-scan recomputes its own range profiles and throws the Pi's away.**
+  `applyBscanBg` calls `computeRangeProfile` for every cell *even when background
+  subtraction is off*, replacing `magnitudes`/`distances` from the wire. That profile is a
+  **rectangular-windowed, 4x zero-padded IFFT with no range compensation and no averaging**
+  -- so the C-scan and its B-scan pane do not match the SFCW panel's live display, whose
+  window / Kaiser beta / R^n / Avg controls do not exist here.
+- **The rover raster silently discards one sweep per cell** (`skip: 1`), because a sweep in
+  flight when the settle expires started while the gantry was still moving. Costs ~250 ms a
+  cell and is invisible on screen.
+- **The BG *model* path still does a phase unwind** -- `lib/bgModelInterp.js`
+  `UNWIND_ALPHA = 0.80`, applied on build and rewound on inference. This is a different
+  animal from the deleted `bgRef` alignment (it is fitted across many knots rather than
+  extrapolating one capture, and it measured 20.2 dB LOO) but it is equally invisible, and
+  `inferBgModel` still **clamps silently** outside the model's standoff span.
+- **`metric: 'energy'` is a mean, not a sum** (`cscanGrid.js` `gatedIntensity` returns
+  `10*log10(sumLin/count)`), so it does not scale with gate width the way the name implies.
+
+### The third standoff-alignment path, removed 2026-08-30
+
+Separate from the `bgRef` phase ramp: `App.jsx` carried a ~45-line `alignShifts` `useMemo`
+computing per-position range-bin shifts from LiDAR standoff, handed to `Viewport` as
+`bscanAlignShifts`, declared as a prop there and **read by nothing**. Its consumer half
+lived in `BscanDisplay` -- a per-frame lerp toward `targetShifts`, which `Viewport.jsx` fed
+`rowData.map(() => 0)`, i.e. hard-wired to zero. So the display animated toward zero forever
+and `getRowPixelOffset()` always returned 0.
+
+The whole path is gone: the `useMemo`, both props, `getRowPixelOffset`, the `pxOffset` terms
+in the two x-coordinate expressions, the two shift refs and the lerp. **Provably
+behaviour-neutral** -- the offsets were always exactly 0.
+
+Two things worth keeping in mind about what was left behind:
+- **The rAF loop in `BscanDisplay` stays, deliberately.** With the lerp gone there is
+  nothing animated, so a one-shot draw looks tempting -- but `drawBscan` sizes itself from
+  `getBoundingClientRect()`, and redrawing every frame is what makes the canvas track a
+  panel resize. Replacing it with a draw-on-change effect needs a ResizeObserver first.
+- It also fixed a latent bug: `targetShifts={rowData.map(() => 0)}` built a fresh array
+  every render, so that effect's dependency changed identity every render and tore down and
+  restarted the rAF loop each time. It now re-runs only when something real changes.
