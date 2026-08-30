@@ -36,11 +36,46 @@ class BladeRFDriver:
         self._lock = threading.Lock()
         self._tx_buffer = None
         self._dual_channel = False
+        # SC12Q11 on the wire (33% fewer bytes), unpacked to SC16_Q11 by
+        # libbladeRF before it reaches us -- so nothing downstream changes.
+        # Requires FPGA >= v0.16.0; on an older image bit 21 is an unused
+        # control-register bit and the samples come back silently wrong, so
+        # open() checks the version rather than trusting it.
+        self.sample_format = Format.SC16_Q11_PACKED
 
     def open(self):
         self.device = bladerf.BladeRF()
         self.serial = self.device.get_serial()
+        self._check_packed_supported()
         self._configure_channels()
+
+    def _check_packed_supported(self):
+        """Fall back to SC16_Q11 if the loaded FPGA predates packed mode.
+
+        libbladeRF applies no version gate to SC16_Q11_PACKED: it sets control
+        register bit 21 and unpacks whatever arrives as if it were SC12. On an
+        FPGA older than v0.16.0 (the release that added the packer) that bit is
+        simply unused, so the device keeps sending 16-bit samples and the host
+        reinterprets them -- plausible-looking garbage, no error. Checking the
+        version turns that into one visible line.
+        """
+        if self.sample_format != Format.SC16_Q11_PACKED:
+            return
+        try:
+            v = self.device.get_fpga_version()
+            ok = (v.major, v.minor, v.patch) >= (0, 16, 0)
+        except Exception as e:
+            print(f"[bladerf] FPGA version check failed ({e}); "
+                  f"falling back to SC16_Q11")
+            self.sample_format = Format.SC16_Q11
+            return
+        if not ok:
+            print(f"[bladerf] FPGA v{v.major}.{v.minor}.{v.patch} predates packed "
+                  f"mode (needs >= 0.16.0); falling back to SC16_Q11")
+            self.sample_format = Format.SC16_Q11
+        else:
+            print(f"[bladerf] FPGA v{v.major}.{v.minor}.{v.patch}: "
+                  f"SC16_Q11_PACKED enabled")
 
     def close(self):
         self.stop_tx()
@@ -267,7 +302,7 @@ class BladeRFDriver:
         self.tx_running = True
         self.device.sync_config(
             layout=ChannelLayout.TX_X1,
-            fmt=Format.SC16_Q11_PACKED,
+            fmt=self.sample_format,
             num_buffers=16,
             # 8192, not 4096. Packed sends 3 bytes per sample and sync_init
             # requires bytes-per-buffer to be a multiple of 3x the 8192-byte
@@ -312,7 +347,7 @@ class BladeRFDriver:
         self.rx_running = True
         self.device.sync_config(
             layout=ChannelLayout.RX_X1,
-            fmt=Format.SC16_Q11_PACKED,
+            fmt=self.sample_format,
             num_buffers=16,
             # 8192, not 4096. Packed sends 3 bytes per sample and sync_init
             # requires bytes-per-buffer to be a multiple of 3x the 8192-byte
@@ -364,7 +399,7 @@ class BladeRFDriver:
         self._rebuild_tx_dual_buffer()
         self.device.sync_config(
             layout=ChannelLayout.TX_X2,
-            fmt=Format.SC16_Q11_PACKED,
+            fmt=self.sample_format,
             num_buffers=16,
             # 8192, not 4096. Packed sends 3 bytes per sample and sync_init
             # requires bytes-per-buffer to be a multiple of 3x the 8192-byte
@@ -417,7 +452,7 @@ class BladeRFDriver:
         self._dual_channel = True
         self.device.sync_config(
             layout=ChannelLayout.RX_X2,
-            fmt=Format.SC16_Q11_PACKED,
+            fmt=self.sample_format,
             num_buffers=16,
             # 8192, not 4096. Packed sends 3 bytes per sample and sync_init
             # requires bytes-per-buffer to be a multiple of 3x the 8192-byte
