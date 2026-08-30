@@ -5,6 +5,86 @@ import time
 import numpy as np
 import bladerf
 from bladerf._bladerf import ChannelLayout, Format, ffi, libbladeRF
+from datetime import datetime
+
+# Per-buffer timing for the driver's own threads. sfcw_engine's log covers the
+# sweep thread; this covers the RX and TX threads it runs alongside, so any
+# contention between them and the sweep thread's numpy work is visible rather
+# than inferred.
+#
+# Buffers arrive ~2442/s, so per-buffer lines are impossible -- these accumulate
+# and emit one summary line per REPORT_PERIOD_S instead.
+_THREAD_TIMING_LOG = True
+REPORT_PERIOD_S = 2.0
+
+
+def set_thread_timing_log(enabled):
+    global _THREAD_TIMING_LOG
+    _THREAD_TIMING_LOG = bool(enabled)
+
+
+def _emit(line):
+    """print() that degrades to ASCII rather than raising on a non-UTF-8 console."""
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        print(line.encode('ascii', 'replace').decode('ascii'), flush=True)
+
+
+def _log_thread(event, **details):
+    if not _THREAD_TIMING_LOG:
+        return
+    ts = datetime.now().strftime('%H:%M:%S.%f')
+    detail = ' '.join(f'{k}={v}' for k, v in details.items()) if details else ''
+    _emit(f"[{ts}] RXTX | {event:<26} {detail}")
+
+
+def _fmt(seconds):
+    if seconds < 0.001:
+        return f"{seconds*1e6:.0f}µs"
+    if seconds < 1:
+        return f"{seconds*1e3:.1f}ms"
+    return f"{seconds:.3f}s"
+
+
+class _PhaseAccum:
+    """Running per-buffer totals for one thread, flushed on a wall-clock period.
+
+    Tracks max as well as mean: a mean hides the stalls, and it is the stalls
+    that starve the sweep thread.
+    """
+
+    def __init__(self, label, names):
+        self.label = label
+        self.names = names
+        self.reset(time.perf_counter())
+
+    def reset(self, now):
+        self.t0 = now
+        self.n = 0
+        self.sums = {k: 0.0 for k in self.names}
+        self.maxes = {k: 0.0 for k in self.names}
+
+    def add(self, **spans):
+        self.n += 1
+        for k, v in spans.items():
+            self.sums[k] += v
+            if v > self.maxes[k]:
+                self.maxes[k] = v
+
+    def maybe_report(self, now):
+        if not _THREAD_TIMING_LOG or now - self.t0 < REPORT_PERIOD_S or self.n == 0:
+            return
+        elapsed = now - self.t0
+        busy = sum(self.sums[k] for k in self.names if k != 'wait')
+        detail = {}
+        for k in self.names:
+            detail[k] = f"{_fmt(self.sums[k]/self.n)}/{_fmt(self.maxes[k])}"
+        _log_thread(f"{self.label} {self.n} buf in {_fmt(elapsed)}",
+                    rate=f"{self.n/elapsed:.0f}/s",
+                    busy=f"{100.0*busy/elapsed:.1f}%",
+                    **detail)
+        self.reset(now)
 
 SCALE = 2047
 MGC = libbladeRF.BLADERF_GAIN_MGC
@@ -278,11 +358,22 @@ class BladeRFDriver:
         self._tx_thread.start()
 
     def _tx_loop(self):
+        acc = _PhaseAccum("TX_X1 fmt=SC16_Q11 bufsz=4096",
+                          ('lock', 'pack', 'wait'))
         try:
             while not self._tx_stop.is_set():
+                t0 = time.perf_counter()
                 with self._lock:
                     buf = self._tx_buffer
-                self.device.sync_tx(buf.tobytes(), len(buf) // 2)
+                t1 = time.perf_counter()
+                # tobytes() copies the whole waveform every iteration; timed
+                # separately because it is ours to remove, unlike sync_tx.
+                raw = buf.tobytes()
+                t2 = time.perf_counter()
+                self.device.sync_tx(raw, len(buf) // 2)
+                t3 = time.perf_counter()
+                acc.add(lock=t1-t0, pack=t2-t1, wait=t3-t2)
+                acc.maybe_report(t3)
         except Exception as e:
             print(f"[bladerf] TX error: {e}")
         finally:
@@ -320,11 +411,19 @@ class BladeRFDriver:
 
     def _rx_loop(self, callback, num_samples):
         buf = bytearray(num_samples * 2 * 2)
+        acc = _PhaseAccum("RX_X1 fmt=SC16_Q11 bufsz=4096",
+                          ('wait', 'copy', 'cb'))
         try:
             while not self._rx_stop.is_set():
+                t0 = time.perf_counter()
                 self.device.sync_rx(buf, num_samples)
+                t1 = time.perf_counter()
                 iq = np.frombuffer(buf, dtype=np.int16).copy()
+                t2 = time.perf_counter()
                 callback(iq)
+                t3 = time.perf_counter()
+                acc.add(wait=t1-t0, copy=t2-t1, cb=t3-t2)
+                acc.maybe_report(t3)
         except Exception as e:
             print(f"[bladerf] RX error: {e}")
         finally:
@@ -370,12 +469,19 @@ class BladeRFDriver:
     def _tx_loop_dual(self):
         """TX loop for dual channel — replays the interleaved buffer, re-read each
         iteration (like _tx_loop) so live waveform/rate changes take effect."""
+        acc = _PhaseAccum("TX_X2 fmt=SC16_Q11 bufsz=4096",
+                          ('lock', 'wait'))
         try:
             while not self._tx_stop.is_set():
+                t0 = time.perf_counter()
                 with self._lock:
                     tx_bytes = self._tx_dual_bytes
                     n_samples = self._tx_dual_n_samples
+                t1 = time.perf_counter()
                 self.device.sync_tx(tx_bytes, n_samples)
+                t2 = time.perf_counter()
+                acc.add(lock=t1-t0, wait=t2-t1)
+                acc.maybe_report(t2)
         except Exception as e:
             print(f"[bladerf] TX dual error: {e}")
         finally:
@@ -432,10 +538,19 @@ class BladeRFDriver:
         # the arrival rate halves from 4886/s to 2442/s = exactly 4096 samples/channel
         # at 10 Msps. See CLAUDE.md "sync_rx in RX_X2 delivers HALF the samples".
         req = num_samples * 2
+        # 'wait' is time blocked inside sync_rx, i.e. waiting on USB. Everything
+        # after it is CPU this thread takes from the sweep thread.
+        acc = _PhaseAccum("RX_X2 fmt=SC16_Q11 bufsz=4096",
+                          ('wait', 'copy', 'deint', 'cb'))
         try:
             while not self._rx_stop.is_set():
+                t0 = time.perf_counter()
                 self.device.sync_rx(buf, req)
+                t1 = time.perf_counter()
+
                 iq = np.frombuffer(buf, dtype=np.int16).copy()
+                t2 = time.perf_counter()
+
                 # Deinterleave: [I1, Q1, I2, Q2, I1, Q1, I2, Q2, ...]
                 rx1 = np.empty(num_samples * 2, dtype=np.int16)
                 rx2 = np.empty(num_samples * 2, dtype=np.int16)
@@ -443,7 +558,13 @@ class BladeRFDriver:
                 rx1[1::2] = iq[1::4]  # RX1 Q
                 rx2[0::2] = iq[2::4]  # RX2 I
                 rx2[1::2] = iq[3::4]  # RX2 Q
+                t3 = time.perf_counter()
+
                 callback(rx1, rx2)
+                t4 = time.perf_counter()
+
+                acc.add(wait=t1-t0, copy=t2-t1, deint=t3-t2, cb=t4-t3)
+                acc.maybe_report(t4)
         except Exception as e:
             print(f"[bladerf] RX dual error: {e}")
         finally:
