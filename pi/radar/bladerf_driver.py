@@ -15,7 +15,7 @@ from datetime import datetime
 # Buffers arrive ~2442/s, so per-buffer lines are impossible -- these accumulate
 # and emit one summary line per REPORT_PERIOD_S instead.
 _THREAD_TIMING_LOG = True
-REPORT_PERIOD_S = 2.0
+REPORT_PERIOD_S = 1.0
 
 
 def set_thread_timing_log(enabled):
@@ -72,8 +72,16 @@ class _PhaseAccum:
             if v > self.maxes[k]:
                 self.maxes[k] = v
 
-    def maybe_report(self, now):
-        if not _THREAD_TIMING_LOG or now - self.t0 < REPORT_PERIOD_S or self.n == 0:
+    def maybe_report(self, now, force=False):
+        """Emit a summary if the period elapsed, or unconditionally on force.
+
+        force is used when the loop exits: a sweep that runs for less than one
+        period would otherwise produce no thread line at all, which is exactly
+        when you most want one.
+        """
+        if not _THREAD_TIMING_LOG or self.n == 0:
+            return
+        if not force and now - self.t0 < REPORT_PERIOD_S:
             return
         elapsed = now - self.t0
         busy = sum(self.sums[k] for k in self.names if k != 'wait')
@@ -377,6 +385,7 @@ class BladeRFDriver:
         except Exception as e:
             print(f"[bladerf] TX error: {e}")
         finally:
+            acc.maybe_report(time.perf_counter(), force=True)
             try:
                 self.device.enable_module(bladerf.CHANNEL_TX(0), False)
             except Exception:
@@ -427,6 +436,7 @@ class BladeRFDriver:
         except Exception as e:
             print(f"[bladerf] RX error: {e}")
         finally:
+            acc.maybe_report(time.perf_counter(), force=True)
             try:
                 self.device.enable_module(bladerf.CHANNEL_RX(0), False)
             except Exception:
@@ -485,6 +495,7 @@ class BladeRFDriver:
         except Exception as e:
             print(f"[bladerf] TX dual error: {e}")
         finally:
+            acc.maybe_report(time.perf_counter(), force=True)
             try:
                 self.device.enable_module(bladerf.CHANNEL_TX(0), False)
                 self.device.enable_module(bladerf.CHANNEL_TX(1), False)
@@ -568,6 +579,7 @@ class BladeRFDriver:
         except Exception as e:
             print(f"[bladerf] RX dual error: {e}")
         finally:
+            acc.maybe_report(time.perf_counter(), force=True)
             try:
                 self.device.enable_module(bladerf.CHANNEL_RX(0), False)
                 self.device.enable_module(bladerf.CHANNEL_RX(1), False)

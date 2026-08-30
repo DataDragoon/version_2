@@ -894,12 +894,19 @@ class SFCWEngine:
 
             # One line for EVERY step: each transaction's time as this step
             # experienced it.
+            # The compute breakdown goes on EVERY step, not just the verbose
+            # ones: a single step's DSP figure varies enough between runs
+            # (226us to 830us seen on identical code) that spot samples cannot
+            # be reasoned from -- you need the whole sweep's distribution.
             _log_timing(f"  Step {i:3d} {f/1e9:.3f}GHz",
                         ok="yes" if sig_bufs else "NO_DATA",
                         retune=_format_duration(t_tuned - t_cmd),
                         settle=_format_duration(settle_ph / 1e3),
                         usb_wait=_format_duration(bufs_ph / 1e3),
                         dsp=_format_duration(dsp_s),
+                        asarray=_format_duration(t_d1 - t_d0),
+                        iq_mix=_format_duration(t_d2 - t_d1),
+                        adc_pk=_format_duration(t_d3 - t_d2),
                         total=_format_duration(step_ms / 1e3))
 
             if verbose:
