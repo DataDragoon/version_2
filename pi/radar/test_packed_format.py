@@ -139,9 +139,19 @@ def main():
     driver.open()
     print(f"serial={driver.serial}  fs={driver.sample_rate/1e6:g} Msps  "
           f"cw_offset={driver.cw_offset/1e3:g} kHz")
+    # peak_adc came out ~57% lower on whichever format ran second, with
+    # spectral purity untouched -- that is a level/settling effect, not
+    # corruption. --reverse swaps the order: if the drop follows the ORDER it
+    # is TX settling, if it follows the FORMAT it is real.
+    reverse = '--reverse' in sys.argv
     try:
-        plain = collect(driver, Format.SC16_Q11, "SC16_Q11 (baseline)")
-        packed = collect(driver, Format.SC16_Q11_PACKED, "SC16_Q11_PACKED")
+        if reverse:
+            print("(--reverse: running PACKED first)")
+            packed = collect(driver, Format.SC16_Q11_PACKED, "SC16_Q11_PACKED")
+            plain = collect(driver, Format.SC16_Q11, "SC16_Q11 (baseline)")
+        else:
+            plain = collect(driver, Format.SC16_Q11, "SC16_Q11 (baseline)")
+            packed = collect(driver, Format.SC16_Q11_PACKED, "SC16_Q11_PACKED")
     finally:
         driver.close()
 
