@@ -5,12 +5,13 @@ Packed mode has no version gate in libbladeRF and no error path: on an FPGA
 older than v0.16.0 the device keeps sending 16-bit samples while the host
 unpacks them as SC12, producing plausible-looking garbage. Sample values alone
 cannot detect this -- the unpacker masks to 12 bits, so |I|,|Q| <= 2047 either
-way. What does detect it is coherence.
+way. What does detect it is where the tone lands in the spectrum.
 
-TX2 loops into RX2 through a short cable carrying a CW tone at cw_offset. Mixing
-that down with exp(-j2*pi*cw_offset*t) must give a phasor that barely moves from
-buffer to buffer. Corrupted unpacking scrambles the bit boundaries, the mixed
-phasor decorrelates, and the coherence ratio below collapses toward 0.
+TX2 loops into RX2 through a short cable carrying a CW tone at cw_offset, so
+every buffer's FFT must show one dominant bin at that offset. Scrambled bit
+boundaries smear that peak across the band. The test is per-buffer and
+phase-independent, and it validates the SC16_Q11 baseline before judging
+packed -- a metric that cannot pass the known-good case proves nothing.
 
 Run on the Pi:  python3 test_packed_format.py
 """
@@ -62,48 +63,74 @@ def collect(driver, fmt, label):
         return None
 
     n = len(bufs[0][0]) // 2
-    t = np.arange(n, dtype=np.float64) / driver.sample_rate
-    ref_tone = np.exp(-1j * 2 * np.pi * driver.cw_offset * t)
 
-    sig_phasors = np.empty(len(bufs), dtype=np.complex128)
-    ref_phasors = np.empty(len(bufs), dtype=np.complex128)
+
+
+    # Spectral purity, NOT cross-buffer phase. Each buffer is mixed against a
+    # ref_tone that restarts at t=0, while the RF tone runs continuously, so
+    # consecutive phasors rotate by (cw_offset * buffer_period) mod 1 turn --
+    # 345 deg per buffer at 100 kHz / 4096 / 10 Msps. Averaging those gives ~0
+    # for CORRECT data, which is what the first version of this script wrongly
+    # reported as corruption. Purity is per-buffer and phase-independent: a CW
+    # tone puts nearly all its power in one FFT bin no matter its phase, and
+    # scrambled bit boundaries smear it across the band.
+    expected_bin = int(round(driver.cw_offset / driver.sample_rate * n))
+
+    def purity(iq):
+        spec = np.abs(np.fft.fft(iq)) ** 2
+        total = spec.sum()
+        if total <= 0:
+            return 0.0, -1
+        k = int(np.argmax(spec))
+        # Peak bin plus its two neighbours, to be fair to leakage between bins.
+        lobe = spec[(k - 1) % n] + spec[k] + spec[(k + 1) % n]
+        return float(lobe / total), k
+
+    ref_pur = np.empty(len(bufs))
+    sig_pur = np.empty(len(bufs))
+    ref_bin = np.empty(len(bufs), dtype=int)
     peak = 0.0
+    stale = 0
+    prev2 = None
     for k, (rx1, rx2) in enumerate(bufs):
         i1 = rx1[0::2].astype(np.float64)
         q1 = rx1[1::2].astype(np.float64)
         i2 = rx2[0::2].astype(np.float64)
         q2 = rx2[1::2].astype(np.float64)
-        sig_phasors[k] = np.mean((i1 + 1j * q1) / 2047.0 * ref_tone)
-        ref_phasors[k] = np.mean((i2 + 1j * q2) / 2047.0 * ref_tone)
+        sig_pur[k], _ = purity(i1 + 1j * q1)
+        ref_pur[k], ref_bin[k] = purity(i2 + 1j * q2)
         peak = max(peak, np.abs(i1).max(), np.abs(q1).max(),
                    np.abs(i2).max(), np.abs(q2).max())
-
-    # Coherence: |mean of phasors| / mean of |phasors|. A steady tone gives ~1.0;
-    # phasors with random phase average toward 0.
-    def coherence(p):
-        denom = np.mean(np.abs(p))
-        return float(np.abs(np.mean(p)) / denom) if denom > 0 else 0.0
+        # Any part of a buffer identical to the previous one means it was not
+        # rewritten -- the failure mode that bit the RX_X2 half-buffer bug.
+        if prev2 is not None and np.array_equal(rx2[n:], prev2[n:]):
+            stale += 1
+        prev2 = rx2
 
     dt = np.diff(arrivals)
     rate = 1.0 / np.median(dt) if len(dt) else 0.0
+    bin_hz = float(np.median(ref_bin)) * driver.sample_rate / n
 
     m = {
         'buffers': len(bufs),
         'buf_rate_hz': rate,
         'eff_msps': rate * n / 1e6,
         'peak_adc': peak,
-        'ref_mag': float(np.mean(np.abs(ref_phasors))),
-        'ref_coherence': coherence(ref_phasors),
-        'ref_phase_std_deg': float(np.degrees(np.std(np.angle(
-            ref_phasors / np.mean(ref_phasors))))) if np.abs(np.mean(ref_phasors)) > 0 else float('nan'),
-        'sig_coherence': coherence(sig_phasors),
+        'ref_purity': float(np.mean(ref_pur)),
+        'sig_purity': float(np.mean(sig_pur)),
+        'ref_tone_hz': bin_hz,
+        'bin_agree': float(np.mean(ref_bin == expected_bin)),
+        'stale_frac': stale / max(len(bufs) - 1, 1),
     }
     print(f"  buffers={m['buffers']}  rate={m['buf_rate_hz']:.1f}/s  "
           f"effective={m['eff_msps']:.2f} Msps")
-    print(f"  peak ADC={m['peak_adc']:.0f}/2047  ref |phasor|={m['ref_mag']:.5f}")
-    print(f"  REF coherence={m['ref_coherence']:.4f}  "
-          f"phase std={m['ref_phase_std_deg']:.2f} deg")
-    print(f"  SIG coherence={m['sig_coherence']:.4f}")
+    print(f"  peak ADC={m['peak_adc']:.0f}/2047  stale second-halves="
+          f"{100*m['stale_frac']:.1f}%")
+    print(f"  REF tone at {m['ref_tone_hz']/1e3:.1f} kHz "
+          f"(expected {driver.cw_offset/1e3:.1f}), "
+          f"bin agrees on {100*m['bin_agree']:.0f}% of buffers")
+    print(f"  REF spectral purity={m['ref_purity']:.4f}  "
+          f"SIG purity={m['sig_purity']:.4f}")
     return m
 
 
@@ -126,28 +153,38 @@ def main():
     print(f"{'metric':<22}{'SC16_Q11':>13}{'PACKED':>13}{'delta':>13}")
     print("-" * 62)
     for key, fmt in (('buf_rate_hz', '{:.1f}'), ('eff_msps', '{:.2f}'),
-                     ('peak_adc', '{:.0f}'), ('ref_mag', '{:.5f}'),
-                     ('ref_coherence', '{:.4f}'), ('sig_coherence', '{:.4f}')):
+                     ('peak_adc', '{:.0f}'), ('ref_purity', '{:.4f}'),
+                     ('sig_purity', '{:.4f}'), ('ref_tone_hz', '{:.0f}'),
+                     ('bin_agree', '{:.2f}'), ('stale_frac', '{:.3f}')):
         a, b = plain[key], packed[key]
         delta = f"{100*(b-a)/a:+.1f}%" if a else "n/a"
         print(f"{key:<22}{fmt.format(a):>13}{fmt.format(b):>13}{delta:>13}")
     print("=" * 62)
 
-    # The verdict rests on the reference channel: it is a CW tone through a
-    # cable, so it should be near-perfectly coherent in both formats.
-    ratio = packed['ref_coherence'] / plain['ref_coherence'] if plain['ref_coherence'] else 0
-    if ratio > 0.95:
-        print("\nPACKED LOOKS CORRECT: reference coherence held.")
+    # Sanity-check the BASELINE first. SC16_Q11 is known-good, so if it fails
+    # the metric then the metric is broken, not the format -- exactly what the
+    # coherence version of this script got wrong.
+    if plain['ref_purity'] < 0.5 or plain['bin_agree'] < 0.9:
+        print("\nINCONCLUSIVE: the SC16_Q11 baseline itself does not show a clean")
+        print(f"tone (purity {plain['ref_purity']:.4f}, bin agreement "
+              f"{100*plain['bin_agree']:.0f}%). Check the TX2->RX2 cable, gains and")
+        print("cw_offset before drawing any conclusion about packed mode.")
+        return 2
+
+    ratio = packed['ref_purity'] / plain['ref_purity']
+    if ratio > 0.9 and packed['bin_agree'] > 0.9:
+        print("\nPACKED IS CORRECT: the tone stays in the right bin, equally pure.")
         if packed['buf_rate_hz'] > plain['buf_rate_hz'] * 1.05:
-            print("It is also delivering buffers faster -- you were USB-limited, keep it.")
+            print("It also delivers buffers faster -- you were USB-limited, keep it.")
         else:
             print("But throughput did NOT improve: you are not USB-limited here,")
             print("so packed is only costing you unpack CPU. Consider reverting.")
         return 0
 
-    print("\nPACKED IS CORRUPTING SAMPLES: reference coherence collapsed")
-    print(f"({plain['ref_coherence']:.4f} -> {packed['ref_coherence']:.4f}).")
-    print("Revert to Format.SC16_Q11 and check the FPGA image version.")
+    print("\nPACKED IS CORRUPTING SAMPLES: the reference tone smeared")
+    print(f"(purity {plain['ref_purity']:.4f} -> {packed['ref_purity']:.4f}, "
+          f"bin agreement {100*packed['bin_agree']:.0f}%).")
+    print("Revert to Format.SC16_Q11.")
     return 1
 
 
