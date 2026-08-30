@@ -11,12 +11,60 @@ eliminates random PLL phase offsets between TX and RX synthesizers.
 import threading
 import time
 import numpy as np
+from datetime import datetime
 
 from bladerf_driver import BladeRFDriver
 from bladerf._bladerf import ffi, libbladeRF
 import bladerf
 
 SPEED_OF_LIGHT = 299_792_458
+
+_TIMING_LOG = True
+
+
+def set_timing_log(enabled):
+    global _TIMING_LOG
+    _TIMING_LOG = bool(enabled)
+
+
+def _emit(line):
+    """print() that degrades to ASCII rather than raising on a non-UTF-8 console.
+
+    The Pi's journal is UTF-8, so the box-drawing and µ characters render there —
+    but a cp1252 console (or LANG=C) would otherwise raise UnicodeEncodeError from
+    inside _sweep_core and take the sweep down with it.
+    """
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        print(line.encode('ascii', 'replace').decode('ascii'), flush=True)
+
+
+def _log_timing(event, **details):
+    """Log timing events in human-readable format."""
+    if not _TIMING_LOG:
+        return
+    timestamp = datetime.now().strftime('%H:%M:%S.%f')  # Microsecond precision
+    detail_str = ' '.join(f'{k}={v}' for k, v in details.items()) if details else ''
+    _emit(f"[{timestamp}] SFCW | {event:<30} {detail_str}")
+
+
+def _log_separator(char='─'):
+    """Print a visual separator line."""
+    if not _TIMING_LOG:
+        return
+    timestamp = datetime.now().strftime('%H:%M:%S.%f')  # Microsecond precision
+    _emit(f"[{timestamp}] SFCW | {char * 70}")
+
+
+def _format_duration(seconds):
+    """Format duration in human-readable way."""
+    if seconds < 0.001:
+        return f"{seconds*1000000:.0f}µs"
+    elif seconds < 1:
+        return f"{seconds*1000:.1f}ms"
+    else:
+        return f"{seconds:.3f}s"
 
 # Master quick-tune table: covers the whole usable band at a fixed grid, generated
 # once per device connection. Any sweep's start/stop/step is snapped onto this grid
@@ -665,28 +713,108 @@ class SFCWEngine:
         adc_peak_rx1 = 0.0
         adc_peak_rx2 = 0.0
 
+        # Verbose per-packet detail only for these steps; every step still gets
+        # a one-line summary with each transaction's time.
+        log_steps = ({0, 1, 2, num_steps // 2, num_steps - 1}
+                     if _TIMING_LOG else frozenset())
+        retune_failures = 0
+        total_bufs = 0
+        total_wait = settle_count + num_buffers
+        first_ch = 'RX' if use_qt else 'TX'
+        second_ch = 'TX' if use_qt else 'RX'
+        t_tune_ms = []
+        t_settle_ms = []
+        t_bufs_ms = []
+        t_wait_ms = []
+        t_dsp_ms = []
+        t_conv_ms = []
+        t_mix_ms = []
+        t_adc_ms = []
+        t_step_ms = []
+
+        _log_separator('═')
+        _log_timing("SWEEP START", steps=num_steps,
+                    retune="quick_tune" if use_qt else "set_frequency",
+                    buffers=num_buffers, settle_buffers=settle_count)
+        t_core_start = time.perf_counter()
+
         for i in range(num_steps):
             if stop_event.is_set():
                 return None, 0
 
+            t_step_start = time.perf_counter()
+            verbose = i in log_steps
+
             f = int(freqs[i])
+            # Both retune calls are synchronous: they return only once the NIOS has
+            # acknowledged, so each span below is a real "command sent -> ACK
+            # received" time.
+            if verbose:
+                _log_timing(f"  Step {i:3d} >>> {first_ch} retune CMD SENT",
+                            freq=f"{f/1e9:.3f}GHz",
+                            via="schedule_retune" if use_qt else "set_frequency")
+            t_cmd = time.perf_counter()
             if use_qt:
-                libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, qt_rx[i])
-                libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, qt_tx[i])
+                rc_a = libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, qt_rx[i])
+                t_ack_a = time.perf_counter()
+                if verbose:
+                    _log_timing(f"  Step {i:3d} <<< {first_ch} retune ACK RECEIVED",
+                                took=_format_duration(t_ack_a - t_cmd))
+                    _log_timing(f"  Step {i:3d} >>> {second_ch} retune CMD SENT")
+                rc_b = libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, qt_tx[i])
             else:
-                libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
-                libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+                rc_a = libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+                t_ack_a = time.perf_counter()
+                if verbose:
+                    _log_timing(f"  Step {i:3d} <<< {first_ch} retune ACK RECEIVED",
+                                took=_format_duration(t_ack_a - t_cmd))
+                    _log_timing(f"  Step {i:3d} >>> {second_ch} retune CMD SENT")
+                rc_b = libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+            t_tuned = time.perf_counter()
+            if verbose:
+                _log_timing(f"  Step {i:3d} <<< {second_ch} retune ACK RECEIVED",
+                            took=_format_duration(t_tuned - t_ack_a))
+
+            if rc_a != 0 or rc_b != 0:
+                # Always logged, every step: that step's data is at the WRONG
+                # frequency (the Nios rejected the retune, e.g. full queue).
+                retune_failures += 1
+                _log_timing(f"  Step {i:3d} *** RETUNE FAILED",
+                            freq=f"{f/1e9:.3f}GHz",
+                            **{f"{first_ch.lower()}_rc": rc_a, f"{second_ch.lower()}_rc": rc_b},
+                            note="step_data_captured_at_previous_frequency")
+
+            # bladeRF streams continuously on EP0x81 — the Pi sends nothing here,
+            # it just counts arrivals.
+            if verbose:
+                _log_timing(f"  Step {i:3d} ... Pi WAITING (no USB sent)",
+                            waiting_for=f"{total_wait}_buffers_on_EP0x81",
+                            note="bladeRF_streaming_continuously_Pi_just_counts")
+            last_pkt = t_tuned
+            pkt_num = 1
 
             with rx_cond:
                 target_seq = self._rx_seq + settle_count
                 while self._rx_seq < target_seq:
                     if not rx_cond.wait(timeout=1.0):
                         break
+                    if verbose:
+                        now = time.perf_counter()
+                        _log_timing(f"  Step {i:3d}      Pi<<<bladeRF [EP0x81] pkt {pkt_num:2d}/{total_wait}",
+                                    type="SETTLE(discard)",
+                                    dt=_format_duration(now - last_pkt))
+                        last_pkt = now
+                        pkt_num += 1
+                t_settled = time.perf_counter()
+
+                if verbose:
+                    _log_timing(f"  Step {i:3d}      SETTLE DONE ({settle_count} buffers discarded)",
+                                time=_format_duration(t_settled - t_tuned))
 
                 sig_bufs = []
                 ref_bufs = []
                 last_seq = self._rx_seq
-                for _ in range(num_buffers):
+                for buf_idx in range(num_buffers):
                     while self._rx_seq <= last_seq:
                         if not rx_cond.wait(timeout=1.0):
                             break
@@ -696,13 +824,31 @@ class SFCWEngine:
                     sig_bufs.append(self._rx_latest[0])
                     ref_bufs.append(self._rx_latest[1])
 
+                    if verbose:
+                        now = time.perf_counter()
+                        _log_timing(f"  Step {i:3d}      Pi<<<bladeRF [EP0x81] pkt {pkt_num:2d}/{total_wait}",
+                                    type="CAPTURE(keep)", buf=f"{buf_idx+1}/{num_buffers}",
+                                    size=f"{self._rx_latest[0].nbytes}B",
+                                    dt=_format_duration(now - last_pkt))
+                        last_pkt = now
+                        pkt_num += 1
+
+            t_received = time.perf_counter()
+
             if sig_bufs:
+                # DSP, split into its three real costs so the log can show where the
+                # per-step microseconds actually go.
+                t_d0 = time.perf_counter()
                 sig_arr = np.asarray(sig_bufs, dtype=np.float64)
                 ref_arr = np.asarray(ref_bufs, dtype=np.float64)
+                t_d1 = time.perf_counter()
+
                 sig_cplx = (sig_arr[:, 0::2] + 1j * sig_arr[:, 1::2]) * ref_tone_scaled
                 ref_cplx = (ref_arr[:, 0::2] + 1j * ref_arr[:, 1::2]) * ref_tone_scaled
                 h_signal[i] = sig_cplx.mean()
                 h_reference[i] = ref_cplx.mean()
+                t_d2 = time.perf_counter()
+
                 # max(|min|, max) rather than np.abs(...).max() -- two reductions with
                 # no temporary allocation, which matters at ~3 sweeps/s on the Pi.
                 p1 = max(-sig_arr.min(), sig_arr.max())
@@ -711,16 +857,92 @@ class SFCWEngine:
                 p2 = max(-ref_arr.min(), ref_arr.max())
                 if p2 > adc_peak_rx2:
                     adc_peak_rx2 = p2
+                t_d3 = time.perf_counter()
+
+                total_bufs += len(sig_bufs)
+                if verbose:
+                    _log_timing(f"  Step {i:3d}      DSP breakdown ({len(sig_bufs)} buffers)",
+                                asarray_f64=_format_duration(t_d1 - t_d0),
+                                iq_mix_mean=_format_duration(t_d2 - t_d1),
+                                adc_peak=_format_duration(t_d3 - t_d2),
+                                shape=f"{sig_arr.shape[0]}x{sig_arr.shape[1]}")
             else:
                 dropped_steps += 1
+                t_d0 = t_d1 = t_d2 = t_d3 = t_received
 
             if progress_cb and i % 10 == 0:
                 progress_cb(i)
 
+            t_step_end = time.perf_counter()
+
+            # The capture window is USB wait + DSP. Separating them is the whole
+            # point: only the DSP half is ours to optimise.
+            tune = (t_tuned - t_step_start) * 1e3
+            settle_ph = (t_settled - t_tuned) * 1e3
+            bufs_ph = (t_received - t_settled) * 1e3
+            dsp_s = (t_d3 - t_d0)
+            step_ms = (t_step_end - t_step_start) * 1e3
+            t_tune_ms.append(tune)
+            t_settle_ms.append(settle_ph)
+            t_bufs_ms.append(bufs_ph)
+            t_wait_ms.append(settle_ph + bufs_ph)
+            t_dsp_ms.append(dsp_s * 1e3)
+            t_conv_ms.append((t_d1 - t_d0) * 1e3)
+            t_mix_ms.append((t_d2 - t_d1) * 1e3)
+            t_adc_ms.append((t_d3 - t_d2) * 1e3)
+            t_step_ms.append(step_ms)
+
+            # One line for EVERY step: each transaction's time as this step
+            # experienced it.
+            _log_timing(f"  Step {i:3d} {f/1e9:.3f}GHz",
+                        ok="yes" if sig_bufs else "NO_DATA",
+                        retune=_format_duration(t_tuned - t_cmd),
+                        settle=_format_duration(settle_ph / 1e3),
+                        usb_wait=_format_duration(bufs_ph / 1e3),
+                        dsp=_format_duration(dsp_s),
+                        total=_format_duration(step_ms / 1e3))
+
+            if verbose:
+                _log_timing(f"  Step {i:3d}      USB summary: 2x Retune OUT+ACK "
+                            f"+ {pkt_num - 1}x Bulk IN(EP0x81)")
+                if i < num_steps - 1:
+                    print(flush=True)
+
+        t_steps_end = time.perf_counter()
+        _log_separator('─')
+
+        _log_timing("REF DIVISION START", valid_steps=f"{num_steps-dropped_steps}/{num_steps}")
+        t_ref_start = time.perf_counter()
         ref_mag = np.abs(h_reference)
         valid = ref_mag > 1e-10
         h_cal = np.zeros(num_steps, dtype=np.complex128)
         h_cal[valid] = h_signal[valid] / h_reference[valid]
+        t_ref_end = time.perf_counter()
+        _log_timing("REF DIVISION DONE", time=_format_duration(t_ref_end - t_ref_start))
+
+        if retune_failures > 0:
+            _log_timing("*** SWEEP HAD RETUNE FAILURES",
+                        failed_steps=f"{retune_failures}/{num_steps}",
+                        note="those_steps_captured_at_wrong_frequency")
+
+        for label, samples in (('retune_ack ', t_tune_ms), ('settle     ', t_settle_ms),
+                               ('usb_wait   ', t_bufs_ms), ('dsp_total  ', t_dsp_ms),
+                               ('  asarray  ', t_conv_ms), ('  iq_mix   ', t_mix_ms),
+                               ('  adc_peak ', t_adc_ms), ('step_total ', t_step_ms)):
+            s = self._phase_stats(samples)
+            _log_timing(f"  per-step {label}",
+                        total=f"{s['total']}ms", mean=f"{s['mean']}ms",
+                        min=f"{s['min']}ms", max=f"{s['max']}ms")
+        dsp_total_s = float(np.sum(t_dsp_ms)) / 1e3 if t_dsp_ms else 0.0
+        _log_timing("  acquisition DSP",
+                    buffers=total_bufs,
+                    per_buffer=_format_duration(dsp_total_s / total_bufs) if total_bufs else "n/a",
+                    share=f"{100.0 * dsp_total_s / max(t_steps_end - t_core_start, 1e-12):.1f}%_of_steps")
+        _log_timing("SWEEP CORE DONE",
+                    steps=_format_duration(t_steps_end - t_core_start),
+                    ref_div=_format_duration(t_ref_end - t_ref_start),
+                    total=_format_duration(t_ref_end - t_core_start))
+        _log_separator('═')
 
         adc_peak = {
             'rx1': float(adc_peak_rx1),
@@ -728,6 +950,18 @@ class SFCWEngine:
             'full_scale': float(ADC_FULL_SCALE),
         }
         return h_cal, dropped_steps, adc_peak
+
+    @staticmethod
+    def _phase_stats(samples):
+        """total/mean/min/max in ms for one per-step timing phase."""
+        if not samples:
+            return {'total': 0.0, 'mean': 0.0, 'min': 0.0, 'max': 0.0}
+        return {
+            'total': round(float(np.sum(samples)), 3),
+            'mean': round(float(np.mean(samples)), 3),
+            'min': round(float(np.min(samples)), 3),
+            'max': round(float(np.max(samples)), 3),
+        }
 
     def _warn_if_adc_hot(self, adc_peak):
         """Warn when an RX has been close enough to full scale to compress, sustained.
@@ -775,17 +1009,26 @@ class SFCWEngine:
         stop = self.stop_freq
         step = self.step_size
 
+        _log_timing("PROCESSING START", bins=num_steps)
+        t_proc_start = time.perf_counter()
+
         phase_raw = np.angle(h_cal)
         phase_unwrapped = np.unwrap(phase_raw)
         coeffs = np.polyfit(np.arange(num_steps), phase_unwrapped, 1)
         residuals = phase_unwrapped - np.polyval(coeffs, np.arange(num_steps))
         phase_std = float(np.std(residuals))
+        t_phase = time.perf_counter()
 
         window = np.hanning(num_steps)
         h_windowed = h_cal * window
+        t_window = time.perf_counter()
+
         nfft = num_steps * 4
         range_profile = np.fft.ifft(h_windowed, n=nfft)
+        t_ifft = time.perf_counter()
+
         magnitude_db = 20 * np.log10(np.abs(range_profile) + 1e-12)
+        t_mag = time.perf_counter()
 
         max_range = SPEED_OF_LIGHT / (2 * step)
         distances = np.arange(nfft) / nfft * max_range - self.range_offset
@@ -797,11 +1040,13 @@ class SFCWEngine:
         valid = distances >= 0
         distances = distances[valid]
         magnitude_db = magnitude_db[valid]
+        t_axis = time.perf_counter()
 
         h_cal_real = h_cal.real.tolist()
         h_cal_imag = h_cal.imag.tolist()
+        t_tolist = time.perf_counter()
 
-        return {
+        result = {
             'type': 'range_profile',
             'distances': distances.tolist(),
             'magnitudes': magnitude_db.tolist(),
@@ -837,3 +1082,21 @@ class SFCWEngine:
                 'slope_rad_per_step': float(coeffs[0]),
             },
         }
+        t_dict = time.perf_counter()
+
+        # Every compute stage, in order, at microsecond resolution.
+        for label, span, note in (
+                ('phase_diag  ', t_phase - t_proc_start, 'angle+unwrap+polyfit+std'),
+                ('hanning_mul ', t_window - t_phase, f"{num_steps}_bins"),
+                ('ifft        ', t_ifft - t_window, f"n={nfft}_from_{num_steps}"),
+                ('magnitude_db', t_mag - t_ifft, 'abs+20log10'),
+                ('range_axis  ', t_axis - t_mag, f"{len(distances)}_bins_kept_of_{nfft}"),
+                ('h_cal_tolist', t_tolist - t_axis, f"{2*num_steps}_floats_to_python"),
+                ('dict_build  ', t_dict - t_tolist,
+                 f"{len(distances)}_mags+{2*num_steps}_rounded")):
+            _log_timing(f"  proc {label}", time=_format_duration(span),
+                        share=f"{100.0 * span / max(t_dict - t_proc_start, 1e-12):.1f}%", note=note)
+        _log_timing("PROCESSING DONE", total=_format_duration(t_dict - t_proc_start))
+        _log_separator('═')
+
+        return result
