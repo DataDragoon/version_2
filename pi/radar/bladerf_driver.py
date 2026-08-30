@@ -42,6 +42,14 @@ class BladeRFDriver:
         # control-register bit and the samples come back silently wrong, so
         # open() checks the version rather than trusting it.
         self.sample_format = Format.SC16_Q11_PACKED
+        # Stream buffer size in samples. Packed REQUIRES a multiple of 8192
+        # (3 bytes/sample against a 3x8192-byte valid buffer in sync_init), so
+        # enabling packed forced this up from 4096 -- which doubles how long
+        # one buffer takes to complete and therefore how long a step waits for
+        # a fresh one. That is a separate effect from the format itself; keep
+        # them independently settable so a change in sweep timing can be
+        # attributed to the right one.
+        self.buffer_size = 8192
 
     def open(self):
         self.device = bladerf.BladeRF()
@@ -304,11 +312,7 @@ class BladeRFDriver:
             layout=ChannelLayout.TX_X1,
             fmt=self.sample_format,
             num_buffers=16,
-            # 8192, not 4096. Packed sends 3 bytes per sample and sync_init
-            # requires bytes-per-buffer to be a multiple of 3x the 8192-byte
-            # GPIF buffer (streaming/sync.c), i.e. a multiple of 8192 samples.
-            # 4096 is accepted but silently rounded up to this with a warning.
-            buffer_size=8192,
+            buffer_size=self.buffer_size,
             num_transfers=8,
             stream_timeout=3500
         )
@@ -349,11 +353,7 @@ class BladeRFDriver:
             layout=ChannelLayout.RX_X1,
             fmt=self.sample_format,
             num_buffers=16,
-            # 8192, not 4096. Packed sends 3 bytes per sample and sync_init
-            # requires bytes-per-buffer to be a multiple of 3x the 8192-byte
-            # GPIF buffer (streaming/sync.c), i.e. a multiple of 8192 samples.
-            # 4096 is accepted but silently rounded up to this with a warning.
-            buffer_size=8192,
+            buffer_size=self.buffer_size,
             num_transfers=8,
             stream_timeout=3500
         )
@@ -401,11 +401,7 @@ class BladeRFDriver:
             layout=ChannelLayout.TX_X2,
             fmt=self.sample_format,
             num_buffers=16,
-            # 8192, not 4096. Packed sends 3 bytes per sample and sync_init
-            # requires bytes-per-buffer to be a multiple of 3x the 8192-byte
-            # GPIF buffer (streaming/sync.c), i.e. a multiple of 8192 samples.
-            # 4096 is accepted but silently rounded up to this with a warning.
-            buffer_size=8192,
+            buffer_size=self.buffer_size,
             num_transfers=8,
             stream_timeout=3500
         )
@@ -454,11 +450,7 @@ class BladeRFDriver:
             layout=ChannelLayout.RX_X2,
             fmt=self.sample_format,
             num_buffers=16,
-            # 8192, not 4096. Packed sends 3 bytes per sample and sync_init
-            # requires bytes-per-buffer to be a multiple of 3x the 8192-byte
-            # GPIF buffer (streaming/sync.c), i.e. a multiple of 8192 samples.
-            # 4096 is accepted but silently rounded up to this with a warning.
-            buffer_size=8192,
+            buffer_size=self.buffer_size,
             num_transfers=8,
             stream_timeout=3500
         )
