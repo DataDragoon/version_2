@@ -464,31 +464,6 @@ class BladeRFDriver:
         self.rx_running = False
         self._dual_channel = False
 
-    def flush_rx_dual(self, callback, num_samples):
-        """Hard-reset the RX path: tear the stream down and bring it back up clean.
-
-        stop_rx_dual() lets _rx_loop_dual reach its finally block, which calls
-        enable_module(RX, False). That drives the FPGA's rx_enable low, and both the
-        sample and meta FIFOs are held cleared by `not rx_enable_pclk`
-        (bladerf-hosted.vhd) for as long as it stays low -- so everything still sitting
-        in them is discarded. start_rx_dual() then re-runs sync_config, which also
-        re-initialises libbladeRF's own 16-buffer / 8-transfer ring, so partially
-        filled host buffers and in-flight USB transfers are dropped as well.
-
-        That second half is the part that actually matters. The FPGA FIFO holds 8192
-        words, but the stale samples after a retune mostly live in the USB pipeline,
-        not in the FPGA -- an FPGA-side clear alone would not reach them.
-
-        enable_module() resets gain state (see reapply_dual_gains), hence the re-push
-        at the end. Cost is a full stream restart, so call this per sweep, never per
-        step.
-        """
-        if not self.rx_running:
-            return
-        self.stop_rx_dual()
-        self.start_rx_dual(callback, num_samples)
-        self.reapply_dual_gains()
-
     def get_status(self):
         return {
             'connected': self.device is not None,

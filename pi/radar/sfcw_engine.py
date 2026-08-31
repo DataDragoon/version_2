@@ -84,10 +84,6 @@ class SFCWEngine:
         # for margin, not for speed. Do not drop below it without repeating the per-step
         # check; an aggregate correlation will not see this.
         self.settle_count = 3
-        # Tear down and rebuild the RX stream after every delivered sweep, clearing
-        # the FPGA sample/meta FIFOs and libbladeRF's ring so no sweep inherits the
-        # previous one's in-flight samples. Costs one stream restart per sweep.
-        self.reset_fifo_each_sweep = True
         self.tx1_gain = 50
         self.rx1_gain = 25
         # Reference-channel (TX2 -> loopback cable -> RX2) gains. These set the level
@@ -432,15 +428,6 @@ class SFCWEngine:
                 if range_profile is not None and self._callback:
                     self._callback(range_profile)
 
-                # Reset the RX path after every delivered result so the next sweep
-                # starts against an empty FPGA FIFO and an empty USB ring, instead of
-                # inheriting whatever the previous sweep left in flight. Set
-                # reset_fifo_each_sweep = False to get the old free-running behaviour
-                # back; this costs a full stream restart per sweep, so if sweep rate
-                # drops noticeably this is the first thing to turn off.
-                if self.reset_fifo_each_sweep:
-                    self.driver.flush_rx_dual(self._rx_capture, self._rx_num_samples)
-
         except Exception as e:
             print(f"[sfcw] Sweep error: {e}")
             if self._callback:
@@ -566,10 +553,6 @@ class SFCWEngine:
         self._rx_latest = None
         self._rx_seq = 0
         n = 4096
-        # Remembered so flush_rx_dual() can rebuild the stream with identical
-        # geometry -- a flush that changed num_samples would silently change the
-        # buffer time that settle_count is counted in.
-        self._rx_num_samples = n
         t = np.arange(n, dtype=np.float64) / self.driver.sample_rate
         self._ref_tone = np.exp(-1j * 2 * np.pi * self.driver.cw_offset * t)
         self._ref_tone_scaled = self._ref_tone / 2047.0
@@ -675,10 +658,6 @@ class SFCWEngine:
         stop_event = self._stop_event
 
         dropped_steps = 0
-        # One retune-failure line per sweep, not per step: if the RFFE goes bad every
-        # step fails, and at 3+ sweeps/s an unthrottled print is 150+ lines/s of noise
-        # that buries the very first failure you want to read.
-        retune_failed = False
         # Peak |I|,|Q| seen on each RX, in ADC counts of 2047 full scale. Nothing in
         # this repo checked ADC headroom before 2026-08-29, and a too-hot reference was
         # the entire cause of the variability investigated then -- it is cheap to
@@ -692,32 +671,11 @@ class SFCWEngine:
 
             f = int(freqs[i])
             if use_qt:
-                rc_rx = libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, qt_rx[i])
-                rc_tx = libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, qt_tx[i])
+                libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, qt_rx[i])
+                libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, qt_tx[i])
             else:
-                rc_tx = libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
-                rc_rx = libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
-
-            # Both retune paths are already synchronous and already ACKed -- the NIOS
-            # packs a response carrying NIOS_PKT_RETUNE2_RESP_FLAG_SUCCESS
-            # (pkt_retune2.c) and libbladeRF blocks for it -- so a nonzero rc means the
-            # RFFE did NOT land on this frequency. Until 2026-08-31 both returns were
-            # discarded, which meant a failed retune was still captured and averaged,
-            # holding the PREVIOUS step's frequency and indistinguishable from good
-            # data. That is the same failure mode as the settle_count regression in
-            # CLAUDE.md: the range profile is one IFFT across all steps, so a single
-            # wrong bin corrupts the whole sweep, not just that bin. Drop the step
-            # instead -- h_signal/h_reference stay 0 here and the ref_mag > 1e-10 mask
-            # below already excludes zero-reference steps from h_cal.
-            if rc_rx != 0 or rc_tx != 0:
-                if not retune_failed:
-                    retune_failed = True
-                    print(f"[sfcw] WARNING: retune failed at step {i} "
-                          f"({f / 1e6:.1f} MHz): rc_rx={rc_rx} rc_tx={rc_tx}. "
-                          f"Dropping step; further retune failures this sweep are "
-                          f"counted but not logged.")
-                dropped_steps += 1
-                continue
+                libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+                libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
 
             with rx_cond:
                 target_seq = self._rx_seq + settle_count
