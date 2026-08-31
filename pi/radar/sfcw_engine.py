@@ -693,18 +693,28 @@ class SFCWEngine:
             else:
                 rc_tx = libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
                 rc_rx = libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
-            t_ack = time.perf_counter() - t_cmd
+            t_ack_done = time.perf_counter()
+            t_ack = t_ack_done - t_cmd
 
             if t_ack > self.ack_warn_seconds:
                 print(f"[sfcw] WARNING: retune ACK took {t_ack:.3f} s "
                       f"(> {self.ack_warn_seconds:.1f} s) at step {i}")
 
             if self.post_retune_delay > 0.0:
-                print(f"[sfcw] step {i:3d}  {f / 1e6:8.3f} MHz  "
-                      f"ACK {t_ack * 1e3:7.2f} ms (rc_rx={rc_rx} rc_tx={rc_tx})  "
-                      f"-> dwelling {self.post_retune_delay:.1f} s before RX",
+                # Printed the instant the ACK lands, before the dwell starts.
+                print(f"[sfcw] step {i:3d}  {f / 1e6:8.3f} MHz  ACK received in "
+                      f"{t_ack * 1e3:7.2f} ms (rc_rx={rc_rx} rc_tx={rc_tx})  "
+                      f"-> dwelling {self.post_retune_delay:.1f} s",
                       flush=True)
                 time.sleep(self.post_retune_delay)
+                # Printed at the moment the RX data is actually asked for. The
+                # measured offset is wall-clock from ACK to request, so it shows the
+                # real dwell rather than the requested one -- time.sleep() only
+                # guarantees a lower bound, and on a loaded Pi the overshoot is the
+                # thing worth seeing.
+                print(f"[sfcw] step {i:3d}  {f / 1e6:8.3f} MHz  requesting RX data "
+                      f"NOW, {time.perf_counter() - t_ack_done:.3f} s after ACK",
+                      flush=True)
 
             with rx_cond:
                 target_seq = self._rx_seq + settle_count
