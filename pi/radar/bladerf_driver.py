@@ -464,6 +464,102 @@ class BladeRFDriver:
         self.rx_running = False
         self._dual_channel = False
 
+    # -- Pull-model RX: reset the path, then read exactly one block -----------
+    #
+    # start_rx_dual runs a reader thread that pulls continuously, so "when is the
+    # data requested" is not something the sweep controls -- it takes whatever
+    # arrived, and settle_count discards buffers to guess past the stale ones.
+    #
+    # Here the sweep owns both halves. reset_and_read_dual() clears the RX path
+    # and then issues exactly one read, and the sweep calls it only after the
+    # retune has been acknowledged. Nothing is read before the ACK, and nothing
+    # captured before the reset can survive into the block that comes back.
+    #
+    # WHAT THE RESET ACTUALLY CLEARS -- the honest limit of this approach:
+    #
+    #   FPGA sample + meta FIFO   64 KB   CLEARED. enable_module(False) drives
+    #                                     rx_enable low, and both FIFOs are held
+    #                                     cleared by `not rx_enable_pclk`
+    #                                     (bladerf-hosted.vhd:658/670).
+    #   libbladeRF host ring     256 KB   CLEARED, by re-running sync_config.
+    #   FX3 DMA (11 x 8192 B)     88 KB   NOT directly cleared. This firmware
+    #                                     exposes no host-side flush for it. It
+    #                                     should drain because the FPGA stops
+    #                                     producing while rx_enable is low, but
+    #                                     that is a side effect, not a flush, and
+    #                                     it is NOT verified on hardware.
+    #
+    # Cost is a full stream restart per step. This is an experiment to run
+    # against the settle_count path, not a default.
+
+    def start_rx_dual_pull(self, num_buffers=16, buffer_size=4096,
+                           num_transfers=8, stream_timeout=3500):
+        """Start dual RX with NO reader thread. Pair with reset_and_read_dual."""
+        if self.rx_running:
+            return
+        self._rx_stop.clear()
+        self._dual_channel = True
+        self._rx_cfg = dict(num_buffers=num_buffers, buffer_size=buffer_size,
+                            num_transfers=num_transfers,
+                            stream_timeout=stream_timeout)
+        self._sync_config_rx_dual()
+        self.device.enable_module(bladerf.CHANNEL_RX(0), True)
+        self.device.enable_module(bladerf.CHANNEL_RX(1), True)
+        self.rx_running = True
+
+    def _sync_config_rx_dual(self):
+        c = self._rx_cfg
+        self.device.sync_config(
+            layout=ChannelLayout.RX_X2,
+            fmt=Format.SC16_Q11,
+            num_buffers=c['num_buffers'],
+            buffer_size=c['buffer_size'],
+            num_transfers=c['num_transfers'],
+            stream_timeout=c['stream_timeout']
+        )
+
+    def stop_rx_dual_pull(self):
+        if not self.rx_running:
+            return
+        try:
+            self.device.enable_module(bladerf.CHANNEL_RX(0), False)
+            self.device.enable_module(bladerf.CHANNEL_RX(1), False)
+        except Exception:
+            pass
+        self.rx_running = False
+        self._dual_channel = False
+
+    def reset_and_read_dual(self, num_samples, timeout_ms=2000, reset=True):
+        """Clear the RX path, then read exactly one block of num_samples/channel.
+
+        reset=False skips the clear and reads straight away, so the two can be
+        compared with nothing else changed.
+        """
+        if reset:
+            # Disable -> rx_enable low -> FPGA sample/meta FIFOs held cleared.
+            self.device.enable_module(bladerf.CHANNEL_RX(0), False)
+            self.device.enable_module(bladerf.CHANNEL_RX(1), False)
+            # Re-init the host ring; this is what drops libbladeRF's 256 KB.
+            self._sync_config_rx_dual()
+            self.device.enable_module(bladerf.CHANNEL_RX(0), True)
+            self.device.enable_module(bladerf.CHANNEL_RX(1), True)
+            # enable_module() resets gain state -- without this the gains set by
+            # _configure_channels_dual() are silently lost on every step.
+            self.reapply_dual_gains()
+
+        buf = bytearray(num_samples * 2 * 2 * 2)
+        # Same RX_X2 doubling as _rx_loop_dual: libbladeRF counts sync_rx's
+        # num_samples as the TOTAL across both channels, not per channel.
+        self.device.sync_rx(buf, num_samples * 2, timeout_ms)
+        iq = np.frombuffer(buf, dtype=np.int16)
+        rx1 = np.empty(num_samples * 2, dtype=np.int16)
+        rx2 = np.empty(num_samples * 2, dtype=np.int16)
+        rx1[0::2] = iq[0::4]
+        rx1[1::2] = iq[1::4]
+        rx2[0::2] = iq[2::4]
+        rx2[1::2] = iq[3::4]
+        return rx1, rx2
+
     def get_status(self):
         return {
             'connected': self.device is not None,

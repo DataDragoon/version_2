@@ -84,6 +84,24 @@ class SFCWEngine:
         # for margin, not for speed. Do not drop below it without repeating the per-step
         # check; an aggregate correlation will not see this.
         self.settle_count = 3
+        # Reset-and-pull path. When True, _perform_sweep uses _sweep_core_reset,
+        # which per step: issues the retune, WAITS for its ACK (both retune calls
+        # are synchronous -- the NIOS packs a response carrying
+        # NIOS_PKT_RETUNE2_RESP_FLAG_SUCCESS and libbladeRF blocks for it), then
+        # clears the RX path and issues exactly one read.
+        #
+        # That gives the sweep control over both halves the free-running path does
+        # not have: nothing is read before the ACK, and nothing captured before the
+        # reset survives into the block that comes back. settle_count and
+        # num_buffers are unused here -- there is nothing left to discard.
+        #
+        # Default False. NOT validated on hardware, and it costs a full stream
+        # restart per step, so expect a large sweep-rate drop. See
+        # BladeRFDriver.reset_and_read_dual for what the reset does and does NOT
+        # clear -- in particular the FX3's 88 KB is not directly flushed.
+        self.use_reset_and_pull = False
+        # Skip the clear and just pull, for an A/B with everything else identical.
+        self.reset_before_read = True
         self.tx1_gain = 50
         self.rx1_gain = 25
         # Reference-channel (TX2 -> loopback cable -> RX2) gains. These set the level
@@ -556,8 +574,14 @@ class SFCWEngine:
         t = np.arange(n, dtype=np.float64) / self.driver.sample_rate
         self._ref_tone = np.exp(-1j * 2 * np.pi * self.driver.cw_offset * t)
         self._ref_tone_scaled = self._ref_tone / 2047.0
+        self._rx_num_samples = n
         self.driver.start_tx_dual()
-        self.driver.start_rx_dual(self._rx_capture, num_samples=n)
+        if self.use_reset_and_pull:
+            # No reader thread: _sweep_core_reset issues each read itself, and a
+            # background reader would consume the block it is about to ask for.
+            self.driver.start_rx_dual_pull()
+        else:
+            self.driver.start_rx_dual(self._rx_capture, num_samples=n)
         time.sleep(0.05)
 
         # enable_module() resets gain state, so re-push after modules are enabled.
@@ -574,7 +598,10 @@ class SFCWEngine:
         self._gains_dirty = False
 
     def _stop_tx_rx(self):
-        self.driver.stop_rx_dual()
+        if self.use_reset_and_pull:
+            self.driver.stop_rx_dual_pull()
+        else:
+            self.driver.stop_rx_dual()
         self.driver.stop_tx_dual()
         # Restore single-channel config so calib panel works after SFCW
         self.driver._configure_channels()
@@ -607,8 +634,12 @@ class SFCWEngine:
                     'freq_mhz': freqs[i] / 1e6,
                 })
 
-        h_cal, dropped_steps, adc_peak = self._sweep_core(
-            freqs, qt_rx, qt_tx, num_buffers, settle_count, progress)
+        if self.use_reset_and_pull:
+            h_cal, dropped_steps, adc_peak = self._sweep_core_reset(
+                freqs, qt_rx, qt_tx, progress)
+        else:
+            h_cal, dropped_steps, adc_peak = self._sweep_core(
+                freqs, qt_rx, qt_tx, num_buffers, settle_count, progress)
         if h_cal is None:
             return None
 
@@ -629,10 +660,114 @@ class SFCWEngine:
 
         freqs, qt_rx, qt_tx = self._build_sweep_grid(start, stop, step)
 
-        h_cal, _, adc_peak = self._sweep_core(freqs, qt_rx, qt_tx, num_buffers, settle_count)
+        if self.use_reset_and_pull:
+            h_cal, _, adc_peak = self._sweep_core_reset(freqs, qt_rx, qt_tx)
+        else:
+            h_cal, _, adc_peak = self._sweep_core(freqs, qt_rx, qt_tx, num_buffers, settle_count)
         self._last_adc_peak = adc_peak
         self._warn_if_adc_hot(adc_peak)
         return h_cal
+
+    def _sweep_core_reset(self, freqs, qt_rx, qt_tx, progress_cb=None):
+        """Reset-and-pull variant of _sweep_core. Nothing is discarded.
+
+        Per step, strictly ordered:
+          1. issue the retune and BLOCK until its ACK (both retune calls are
+             synchronous, so this is inherent, not an added wait)
+          2. check the ACK status -- a failed retune drops the step instead of
+             being captured at the previous step's frequency
+          3. clear the RX path
+          4. issue exactly one read
+
+        settle_count and num_buffers are unused: with the path cleared at (3),
+        the first block read at (4) is the first block captured after it, so
+        there is nothing stale to skip.
+
+        The DSP tail is deliberately identical to _sweep_core's -- if one changes
+        the other must too.
+
+        Returns (h_cal, dropped_steps, adc_peak), or (None, 0, None) if stopped.
+        """
+        num_steps = len(freqs)
+        h_signal = np.zeros(num_steps, dtype=np.complex128)
+        h_reference = np.zeros(num_steps, dtype=np.complex128)
+
+        dev_ptr = self.driver.device.dev[0]
+        tx_ch = bladerf.CHANNEL_TX(0)
+        rx_ch = bladerf.CHANNEL_RX(0)
+
+        use_qt = qt_rx is not None
+        ref_tone_scaled = self._ref_tone_scaled
+        stop_event = self._stop_event
+        n = self._rx_num_samples
+
+        dropped_steps = 0
+        adc_peak_rx1 = 0.0
+        adc_peak_rx2 = 0.0
+        warned = False
+
+        for i in range(num_steps):
+            if stop_event.is_set():
+                return None, 0, None
+
+            f = int(freqs[i])
+            # (1) retune -- this call does not return until the NIOS has ACKed.
+            if use_qt:
+                rc_rx = libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, qt_rx[i])
+                rc_tx = libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, qt_tx[i])
+            else:
+                rc_tx = libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+                rc_rx = libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+
+            # (2) the ACK actually says something -- use it.
+            if rc_rx != 0 or rc_tx != 0:
+                if not warned:
+                    warned = True
+                    print(f"[sfcw] WARNING: retune failed at step {i} "
+                          f"({f / 1e6:.1f} MHz): rc_rx={rc_rx} rc_tx={rc_tx}. "
+                          f"Dropping step; further failures counted, not logged.")
+                dropped_steps += 1
+                continue
+
+            # (3) clear the RX path, then (4) read exactly one block.
+            try:
+                rx1, rx2 = self.driver.reset_and_read_dual(
+                    n, reset=self.reset_before_read)
+            except Exception as e:
+                if not warned:
+                    warned = True
+                    print(f"[sfcw] WARNING: read failed at step {i} "
+                          f"({f / 1e6:.1f} MHz): {e}")
+                dropped_steps += 1
+                continue
+
+            sig_arr = np.asarray([rx1], dtype=np.float64)
+            ref_arr = np.asarray([rx2], dtype=np.float64)
+            sig_cplx = (sig_arr[:, 0::2] + 1j * sig_arr[:, 1::2]) * ref_tone_scaled
+            ref_cplx = (ref_arr[:, 0::2] + 1j * ref_arr[:, 1::2]) * ref_tone_scaled
+            h_signal[i] = sig_cplx.mean()
+            h_reference[i] = ref_cplx.mean()
+            p1 = max(-sig_arr.min(), sig_arr.max())
+            if p1 > adc_peak_rx1:
+                adc_peak_rx1 = p1
+            p2 = max(-ref_arr.min(), ref_arr.max())
+            if p2 > adc_peak_rx2:
+                adc_peak_rx2 = p2
+
+            if progress_cb and i % 10 == 0:
+                progress_cb(i)
+
+        ref_mag = np.abs(h_reference)
+        valid = ref_mag > 1e-10
+        h_cal = np.zeros(num_steps, dtype=np.complex128)
+        h_cal[valid] = h_signal[valid] / h_reference[valid]
+
+        adc_peak = {
+            'rx1': float(adc_peak_rx1),
+            'rx2': float(adc_peak_rx2),
+            'full_scale': float(ADC_FULL_SCALE),
+        }
+        return h_cal, dropped_steps, adc_peak
 
     def _sweep_core(self, freqs, qt_rx, qt_tx, num_buffers, settle_count, progress_cb=None):
         """Sweep loop: retune, settle, capture num_buffers buffers and average them
