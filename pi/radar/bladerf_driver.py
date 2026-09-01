@@ -10,6 +10,22 @@ SCALE = 2047
 MGC = libbladeRF.BLADERF_GAIN_MGC
 TUNING_MODE_FPGA = libbladeRF.BLADERF_TUNING_MODE_FPGA
 
+# bladerf_direction, from _cdef.py. Passed to bladerf_get_timestamp, which needs a
+# direction rather than a channel because TX and RX keep SEPARATE sample counters.
+DIRECTION_RX = 0
+DIRECTION_TX = 1
+
+# Metadata flags/status bits for SC16_Q11_META. libbladeRF.h defines these but the
+# Python bindings do not re-export them, so they are repeated here.
+#
+# "This flag indicates that calls to bladerf_sync_rx should return any available
+#  samples, rather than wait until the timestamp indicated in the bladerf_metadata
+#  timestamp field."  -- so OMITTING it is what makes sync_rx wait for a target.
+META_FLAG_RX_NOW = 1 << 31
+META_STATUS_UNDERFLOW = 1 << 0   # hardware detected a buffering underflow
+META_STATUS_MINIEXP1 = 1 << 16   # mini_exp pin 1 state, stamped by the FPGA
+META_STATUS_MINIEXP2 = 1 << 17   # mini_exp pin 2 state
+
 
 class BladeRFDriver:
     def __init__(self):
@@ -463,6 +479,95 @@ class BladeRFDriver:
             self._rx_thread = None
         self.rx_running = False
         self._dual_channel = False
+
+    # -- Timestamped RX (SC16_Q11_META) --------------------------------------
+    #
+    # A second RX path, parallel to start_rx_dual/_rx_loop_dual, which exists to
+    # DELETE the settle_count guess rather than tune it.
+    #
+    # The free-running path cannot know which samples are post-retune, because two
+    # separate delays are both unknown to it. bladerf_schedule_retune() with
+    # NIOS_PKT_RETUNE2_NOW fires whenever its control packet happens to land
+    # (measured ~2.4 ms, about six buffer-times at 4096 samples / 10 Msps), and a
+    # buffer arriving at the host was captured num_transfers deep earlier. So
+    # settle_count discards whole buffers blindly to cover both.
+    #
+    # Here neither is guessed. bladerf_schedule_retune() takes a real timestamp,
+    # so the NIOS enqueues the request (enqueue_retune in pkt_retune2.c) and fires
+    # it when the FPGA sample counter reaches that value. The FPGA stamps every
+    # message with that same counter -- fifo_writer.vhd assembles the 128-bit
+    # header whose bits 95:32 are the timestamp -- and omitting
+    # META_FLAG_RX_NOW makes sync_rx block until the requested index. The retune
+    # boundary is then exact, in samples, and nothing needs discarding.
+
+    def get_rx_timestamp(self):
+        return self.get_timestamp(DIRECTION_RX)
+
+    def get_tx_timestamp(self):
+        return self.get_timestamp(DIRECTION_TX)
+
+    def start_rx_dual_meta(self, num_buffers=16, buffer_size=4096,
+                           num_transfers=8, stream_timeout=3500):
+        """Start dual RX in SC16_Q11_META, with NO free-running reader thread.
+
+        The absence of a thread is deliberate: read_at_timestamp() is a pull API
+        and a background reader would race it for the same stream, consuming the
+        very samples the caller asked to wait for.
+        """
+        if self.rx_running:
+            return
+        self._rx_stop.clear()
+        self._dual_channel = True
+        self.device.sync_config(
+            layout=ChannelLayout.RX_X2,
+            fmt=Format.SC16_Q11_META,
+            num_buffers=num_buffers,
+            buffer_size=buffer_size,
+            num_transfers=num_transfers,
+            stream_timeout=stream_timeout
+        )
+        self.device.enable_module(bladerf.CHANNEL_RX(0), True)
+        self.device.enable_module(bladerf.CHANNEL_RX(1), True)
+        self.rx_running = True
+
+    def stop_rx_dual_meta(self):
+        if not self.rx_running:
+            return
+        try:
+            self.device.enable_module(bladerf.CHANNEL_RX(0), False)
+            self.device.enable_module(bladerf.CHANNEL_RX(1), False)
+        except Exception:
+            pass
+        self.rx_running = False
+        self._dual_channel = False
+
+    def read_at_timestamp(self, target_ts, num_samples, timeout_ms=2000):
+        """Block until sample index target_ts, then return num_samples per channel.
+
+        Returns (rx1, rx2, timestamp, status). timestamp is where the returned
+        block actually starts, which is what proves the boundary landed where it
+        was asked for; status carries the hardware bits (META_STATUS_UNDERFLOW,
+        META_STATUS_MINIEXP1/2).
+
+        Raises whatever sync_rx raises on timeout -- a timeout here means the
+        requested index has already gone past, i.e. retune_lead_samples was too
+        small for the command round-trip.
+        """
+        meta = ffi.new("struct bladerf_metadata *")
+        meta.timestamp = int(target_ts)
+        meta.flags = 0  # no META_FLAG_RX_NOW -> wait for meta.timestamp
+        buf = bytearray(num_samples * 2 * 2 * 2)
+        # Same RX_X2 doubling as _rx_loop_dual: libbladeRF counts sync_rx's
+        # num_samples as the TOTAL across both channels, not per channel.
+        self.device.sync_rx(buf, num_samples * 2, timeout_ms, meta)
+        iq = np.frombuffer(buf, dtype=np.int16)
+        rx1 = np.empty(num_samples * 2, dtype=np.int16)
+        rx2 = np.empty(num_samples * 2, dtype=np.int16)
+        rx1[0::2] = iq[0::4]
+        rx1[1::2] = iq[1::4]
+        rx2[0::2] = iq[2::4]
+        rx2[1::2] = iq[3::4]
+        return rx1, rx2, int(meta.timestamp), int(meta.status)
 
     def get_status(self):
         return {

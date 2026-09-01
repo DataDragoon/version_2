@@ -12,7 +12,7 @@ import threading
 import time
 import numpy as np
 
-from bladerf_driver import BladeRFDriver
+from bladerf_driver import BladeRFDriver, META_STATUS_UNDERFLOW
 from bladerf._bladerf import ffi, libbladeRF
 import bladerf
 
@@ -84,6 +84,27 @@ class SFCWEngine:
         # for margin, not for speed. Do not drop below it without repeating the per-step
         # check; an aggregate correlation will not see this.
         self.settle_count = 3
+        # Timestamped-retune path. When True, _perform_sweep uses _sweep_core_meta,
+        # which schedules every retune at a known sample index and reads samples AT
+        # that index -- so settle_count and num_buffers are both unused, and nothing
+        # is discarded. See BladeRFDriver's "Timestamped RX" section for the
+        # mechanism and why the free-running path has to guess instead.
+        #
+        # Default False. This has NOT been validated on hardware, and CLAUDE.md is
+        # explicit that RF timing changes in this repo have a history of regressions
+        # from unverified edits. Turn it on deliberately, and compare S_repeat
+        # against the 38.6 dB baseline PER STEP, not on an aggregate.
+        self.use_timestamped_retune = False
+        # Samples between "now" and the scheduled retune. Must exceed the retune
+        # command round-trip or the NIOS receives the request after its deadline has
+        # already passed. Measured ACK is ~2.4 ms = ~24k samples at 10 Msps, so 50k
+        # is about 2x margin. Too small shows up as read_at_timestamp timing out.
+        self.retune_lead_samples = 50_000
+        # Samples to skip after the scheduled retune before reading, covering the
+        # AD9361 fastlock settle -- spec'd worst case ~250 us = ~2.5k samples at
+        # 10 Msps, so 5k is 2x. This is what replaces settle_count, and unlike it
+        # this is in SAMPLES and is deterministic rather than a race against USB.
+        self.retune_guard_samples = 5_000
         self.tx1_gain = 50
         self.rx1_gain = 25
         # Reference-channel (TX2 -> loopback cable -> RX2) gains. These set the level
@@ -556,8 +577,14 @@ class SFCWEngine:
         t = np.arange(n, dtype=np.float64) / self.driver.sample_rate
         self._ref_tone = np.exp(-1j * 2 * np.pi * self.driver.cw_offset * t)
         self._ref_tone_scaled = self._ref_tone / 2047.0
+        self._rx_num_samples = n
         self.driver.start_tx_dual()
-        self.driver.start_rx_dual(self._rx_capture, num_samples=n)
+        if self.use_timestamped_retune:
+            # No reader thread on this path: _sweep_core_meta pulls samples itself,
+            # and a background reader would consume the very indices it waits for.
+            self.driver.start_rx_dual_meta()
+        else:
+            self.driver.start_rx_dual(self._rx_capture, num_samples=n)
         time.sleep(0.05)
 
         # enable_module() resets gain state, so re-push after modules are enabled.
@@ -574,7 +601,10 @@ class SFCWEngine:
         self._gains_dirty = False
 
     def _stop_tx_rx(self):
-        self.driver.stop_rx_dual()
+        if self.use_timestamped_retune:
+            self.driver.stop_rx_dual_meta()
+        else:
+            self.driver.stop_rx_dual()
         self.driver.stop_tx_dual()
         # Restore single-channel config so calib panel works after SFCW
         self.driver._configure_channels()
@@ -607,8 +637,12 @@ class SFCWEngine:
                     'freq_mhz': freqs[i] / 1e6,
                 })
 
-        h_cal, dropped_steps, adc_peak = self._sweep_core(
-            freqs, qt_rx, qt_tx, num_buffers, settle_count, progress)
+        if self.use_timestamped_retune:
+            h_cal, dropped_steps, adc_peak = self._sweep_core_meta(
+                freqs, qt_rx, qt_tx, progress)
+        else:
+            h_cal, dropped_steps, adc_peak = self._sweep_core(
+                freqs, qt_rx, qt_tx, num_buffers, settle_count, progress)
         if h_cal is None:
             return None
 
@@ -629,10 +663,119 @@ class SFCWEngine:
 
         freqs, qt_rx, qt_tx = self._build_sweep_grid(start, stop, step)
 
-        h_cal, _, adc_peak = self._sweep_core(freqs, qt_rx, qt_tx, num_buffers, settle_count)
+        if self.use_timestamped_retune:
+            h_cal, _, adc_peak = self._sweep_core_meta(freqs, qt_rx, qt_tx)
+        else:
+            h_cal, _, adc_peak = self._sweep_core(freqs, qt_rx, qt_tx, num_buffers, settle_count)
         self._last_adc_peak = adc_peak
         self._warn_if_adc_hot(adc_peak)
         return h_cal
+
+    def _sweep_core_meta(self, freqs, qt_rx, qt_tx, progress_cb=None):
+        """Timestamped variant of _sweep_core. No settling, no discarding.
+
+        Per step: read each module's current sample counter, schedule the retune
+        retune_lead_samples ahead of it, then ask sync_rx for samples starting
+        retune_guard_samples after that instant. The NIOS fires the retune at the
+        scheduled index (enqueue_retune in pkt_retune2.c) and the FPGA stamps the
+        returned block with the same counter, so the frequency boundary is exact
+        rather than inferred. settle_count and num_buffers are unused here.
+
+        TX and RX are scheduled against their OWN counters: pkt_retune2.c compares
+        the requested timestamp with time_tamer_read(module), and the two modules
+        keep separate counters that start when each is enabled.
+
+        The DSP tail below is deliberately identical to _sweep_core's -- if one is
+        changed the other must be too.
+
+        Returns (h_cal, dropped_steps, adc_peak), or (None, 0, None) if stopped.
+        """
+        num_steps = len(freqs)
+        h_signal = np.zeros(num_steps, dtype=np.complex128)
+        h_reference = np.zeros(num_steps, dtype=np.complex128)
+
+        dev_ptr = self.driver.device.dev[0]
+        tx_ch = bladerf.CHANNEL_TX(0)
+        rx_ch = bladerf.CHANNEL_RX(0)
+
+        use_qt = qt_rx is not None
+        ref_tone_scaled = self._ref_tone_scaled
+        stop_event = self._stop_event
+        n = self._rx_num_samples
+
+        dropped_steps = 0
+        underflows = 0
+        adc_peak_rx1 = 0.0
+        adc_peak_rx2 = 0.0
+
+        for i in range(num_steps):
+            if stop_event.is_set():
+                return None, 0, None
+
+            f = int(freqs[i])
+            rx_target = self.driver.get_rx_timestamp() + self.retune_lead_samples
+            tx_target = self.driver.get_tx_timestamp() + self.retune_lead_samples
+
+            # ffi.NULL for quick_tune means a full scheduled retune. Note the
+            # non-quick-tune path cannot use bladerf_set_frequency here: only
+            # schedule_retune accepts a timestamp.
+            qtr = qt_rx[i] if use_qt else ffi.NULL
+            qtt = qt_tx[i] if use_qt else ffi.NULL
+            rc_rx = libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, rx_target, f, qtr)
+            rc_tx = libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, tx_target, f, qtt)
+            if rc_rx != 0 or rc_tx != 0:
+                dropped_steps += 1
+                continue
+
+            try:
+                rx1, rx2, ts, status = self.driver.read_at_timestamp(
+                    rx_target + self.retune_guard_samples, n)
+            except Exception as e:
+                # A timeout here almost always means retune_lead_samples is too
+                # small for the command round-trip, so the requested index had
+                # already streamed past before sync_rx was asked for it.
+                if dropped_steps == 0:
+                    print(f"[sfcw] WARNING: timestamped read failed at step {i} "
+                          f"({f / 1e6:.1f} MHz): {e}. If this repeats, raise "
+                          f"retune_lead_samples (currently "
+                          f"{self.retune_lead_samples}).")
+                dropped_steps += 1
+                continue
+
+            if status & META_STATUS_UNDERFLOW:
+                underflows += 1
+
+            sig_arr = np.asarray([rx1], dtype=np.float64)
+            ref_arr = np.asarray([rx2], dtype=np.float64)
+            sig_cplx = (sig_arr[:, 0::2] + 1j * sig_arr[:, 1::2]) * ref_tone_scaled
+            ref_cplx = (ref_arr[:, 0::2] + 1j * ref_arr[:, 1::2]) * ref_tone_scaled
+            h_signal[i] = sig_cplx.mean()
+            h_reference[i] = ref_cplx.mean()
+            p1 = max(-sig_arr.min(), sig_arr.max())
+            if p1 > adc_peak_rx1:
+                adc_peak_rx1 = p1
+            p2 = max(-ref_arr.min(), ref_arr.max())
+            if p2 > adc_peak_rx2:
+                adc_peak_rx2 = p2
+
+            if progress_cb and i % 10 == 0:
+                progress_cb(i)
+
+        if underflows:
+            print(f"[sfcw] WARNING: {underflows}/{num_steps} steps reported a "
+                  f"hardware RX underflow (META_STATUS_UNDERFLOW)")
+
+        ref_mag = np.abs(h_reference)
+        valid = ref_mag > 1e-10
+        h_cal = np.zeros(num_steps, dtype=np.complex128)
+        h_cal[valid] = h_signal[valid] / h_reference[valid]
+
+        adc_peak = {
+            'rx1': float(adc_peak_rx1),
+            'rx2': float(adc_peak_rx2),
+            'full_scale': float(ADC_FULL_SCALE),
+        }
+        return h_cal, dropped_steps, adc_peak
 
     def _sweep_core(self, freqs, qt_rx, qt_tx, num_buffers, settle_count, progress_cb=None):
         """Sweep loop: retune, settle, capture num_buffers buffers and average them
