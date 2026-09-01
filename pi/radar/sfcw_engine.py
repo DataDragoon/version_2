@@ -105,6 +105,10 @@ class SFCWEngine:
         # 10 Msps, so 5k is 2x. This is what replaces settle_count, and unlike it
         # this is in SAMPLES and is deterministic rather than a race against USB.
         self.retune_guard_samples = 5_000
+        # Per-step timestamp trace on the timestamped path. Prints the FPGA sample
+        # counter at command time, at the scheduled retune, and at the returned
+        # block, plus the deltas. Only ever fires when use_timestamped_retune is on.
+        self.log_retune_timestamps = True
         self.tx1_gain = 50
         self.rx1_gain = 25
         # Reference-channel (TX2 -> loopback cable -> RX2) gains. These set the level
@@ -713,23 +717,33 @@ class SFCWEngine:
                 return None, 0, None
 
             f = int(freqs[i])
-            rx_target = self.driver.get_rx_timestamp() + self.retune_lead_samples
+            # ts_at_cmd is the FPGA sample counter at the moment the command is
+            # issued. Everything below is measured against it, so the printed
+            # numbers are all in the SAME clock the samples are stamped in -- which
+            # is the whole point: wall-clock and sample-clock disagree by the
+            # pipeline depth, and it was that disagreement that made settle_count
+            # necessary.
+            ts_at_cmd = self.driver.get_rx_timestamp()
+            rx_target = ts_at_cmd + self.retune_lead_samples
             tx_target = self.driver.get_tx_timestamp() + self.retune_lead_samples
+            ts_requested = rx_target + self.retune_guard_samples
 
             # ffi.NULL for quick_tune means a full scheduled retune. Note the
             # non-quick-tune path cannot use bladerf_set_frequency here: only
             # schedule_retune accepts a timestamp.
             qtr = qt_rx[i] if use_qt else ffi.NULL
             qtt = qt_tx[i] if use_qt else ffi.NULL
+            t_cmd = time.perf_counter()
             rc_rx = libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, rx_target, f, qtr)
             rc_tx = libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, tx_target, f, qtt)
+            t_ack = time.perf_counter() - t_cmd
             if rc_rx != 0 or rc_tx != 0:
                 dropped_steps += 1
                 continue
 
             try:
                 rx1, rx2, ts, status = self.driver.read_at_timestamp(
-                    rx_target + self.retune_guard_samples, n)
+                    ts_requested, n)
             except Exception as e:
                 # A timeout here almost always means retune_lead_samples is too
                 # small for the command round-trip, so the requested index had
@@ -744,6 +758,24 @@ class SFCWEngine:
 
             if status & META_STATUS_UNDERFLOW:
                 underflows += 1
+
+            if self.log_retune_timestamps:
+                sr = float(self.driver.sample_rate)
+                d_cmd = ts - ts_at_cmd          # command issued -> data captured
+                d_tune = ts - rx_target         # retune fired  -> data captured
+                d_ask = ts - ts_requested       # asked for vs actually got
+                # d_ask is the one that proves the mechanism works: 0 means
+                # libbladeRF handed back exactly the sample index requested, so the
+                # frequency boundary is where it was placed and not inferred.
+                # Non-zero means the request was already in the past -- raise
+                # retune_lead_samples.
+                print(f"[sfcw] step {i:3d} {f / 1e6:8.3f} MHz  "
+                      f"cmd@{ts_at_cmd}  tune@{rx_target}  data@{ts}  "
+                      f"| ACK {t_ack * 1e3:6.2f} ms (wall)  "
+                      f"| cmd->data {d_cmd} smp / {d_cmd / sr * 1e3:6.3f} ms  "
+                      f"| tune->data {d_tune} smp / {d_tune / sr * 1e3:6.3f} ms  "
+                      f"| asked-vs-got {d_ask:+d}",
+                      flush=True)
 
             sig_arr = np.asarray([rx1], dtype=np.float64)
             ref_arr = np.asarray([rx2], dtype=np.float64)
