@@ -26,6 +26,20 @@ META_STATUS_UNDERFLOW = 1 << 0   # hardware detected a buffering underflow
 META_STATUS_MINIEXP1 = 1 << 16   # mini_exp pin 1 state, stamped by the FPGA
 META_STATUS_MINIEXP2 = 1 << 17   # mini_exp pin 2 state
 
+# FIRST-PACKET MARK, when the FPGA is built with rx.vhd MARK_FIRST_PACKET.
+#
+# The mark rides on mini_exp2 because that is the only bit that both (a) the
+# FPGA already stamps into every metadata header and (b) libbladeRF passes
+# through to the caller under SC16_Q11_META. metadata.status is masked to
+# exactly three bits in sync.c:712-715 -- UNDERFLOW, MINIEXP1, MINIEXP2 -- and
+# the 8-bit pkt_flags field that would otherwise be the natural home only
+# reaches bladerf_metadata.flags under BLADERF_FORMAT_PACKET_META, which the
+# Python bindings do not expose.
+#
+# So with MARK_FIRST_PACKET on, this bit means "first buffer captured after the
+# retune", NOT the physical mini_exp2 pin. The two uses are exclusive.
+META_STATUS_FIRST_PACKET = META_STATUS_MINIEXP2
+
 
 class BladeRFDriver:
     def __init__(self):
@@ -540,6 +554,30 @@ class BladeRFDriver:
             pass
         self.rx_running = False
         self._dual_channel = False
+
+    def read_meta_now(self, num_samples, timeout_ms=2000):
+        """Read the next available block and report its metadata.
+
+        Returns (rx1, rx2, timestamp, status, is_first) where is_first is the
+        FPGA's own first-after-retune mark, not a host-side inference. That is
+        the whole point: the host has never been able to tell which buffer is
+        the first one CAPTURED after a retune, which is why settle_count had to
+        be found by experiment.
+        """
+        meta = ffi.new("struct bladerf_metadata *")
+        meta.timestamp = 0
+        meta.flags = META_FLAG_RX_NOW
+        buf = bytearray(num_samples * 2 * 2 * 2)
+        self.device.sync_rx(buf, num_samples * 2, timeout_ms, meta)
+        iq = np.frombuffer(buf, dtype=np.int16)
+        rx1 = np.empty(num_samples * 2, dtype=np.int16)
+        rx2 = np.empty(num_samples * 2, dtype=np.int16)
+        rx1[0::2] = iq[0::4]
+        rx1[1::2] = iq[1::4]
+        rx2[0::2] = iq[2::4]
+        rx2[1::2] = iq[3::4]
+        status = int(meta.status)
+        return rx1, rx2, int(meta.timestamp), status, bool(status & META_STATUS_FIRST_PACKET)
 
     def read_at_timestamp(self, target_ts, num_samples, timeout_ms=2000):
         """Block until sample index target_ts, then return num_samples per channel.

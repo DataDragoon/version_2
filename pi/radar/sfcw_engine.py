@@ -12,7 +12,8 @@ import threading
 import time
 import numpy as np
 
-from bladerf_driver import BladeRFDriver, META_STATUS_UNDERFLOW
+from bladerf_driver import (BladeRFDriver, META_STATUS_UNDERFLOW,
+                            META_STATUS_FIRST_PACKET)
 from bladerf._bladerf import ffi, libbladeRF
 import bladerf
 
@@ -109,6 +110,19 @@ class SFCWEngine:
         # counter at command time, at the scheduled retune, and at the returned
         # block, plus the deltas. Only ever fires when use_timestamped_retune is on.
         self.log_retune_timestamps = True
+        # Use the FPGA's first-after-retune mark instead of discarding a fixed
+        # number of buffers. Requires an FPGA built with rx.vhd
+        # MARK_FIRST_PACKET and dsp_restart pulsed on every retune. When the
+        # mark is present settle_count is not consulted at all: the FPGA says
+        # which buffer is first, so there is nothing to guess.
+        self.use_first_packet_flag = False
+        # Print a line for every marked buffer. Left on because the mark is the
+        # thing being validated -- if it never fires, the FPGA image or the
+        # dsp_restart wiring is wrong, and silence would hide that.
+        self.log_first_packet = True
+        # Give up after this many buffers if no mark arrives, rather than
+        # blocking forever on a stock FPGA image that will never set it.
+        self.first_packet_timeout_buffers = 16
         self.tx1_gain = 50
         self.rx1_gain = 25
         # Reference-channel (TX2 -> loopback cable -> RX2) gains. These set the level
@@ -583,7 +597,7 @@ class SFCWEngine:
         self._ref_tone_scaled = self._ref_tone / 2047.0
         self._rx_num_samples = n
         self.driver.start_tx_dual()
-        if self.use_timestamped_retune:
+        if self.use_timestamped_retune or self.use_first_packet_flag:
             # No reader thread on this path: _sweep_core_meta pulls samples itself,
             # and a background reader would consume the very indices it waits for.
             self.driver.start_rx_dual_meta()
@@ -605,7 +619,7 @@ class SFCWEngine:
         self._gains_dirty = False
 
     def _stop_tx_rx(self):
-        if self.use_timestamped_retune:
+        if self.use_timestamped_retune or self.use_first_packet_flag:
             self.driver.stop_rx_dual_meta()
         else:
             self.driver.stop_rx_dual()
@@ -641,7 +655,10 @@ class SFCWEngine:
                     'freq_mhz': freqs[i] / 1e6,
                 })
 
-        if self.use_timestamped_retune:
+        if self.use_first_packet_flag:
+            h_cal, dropped_steps, adc_peak = self._sweep_core_first_flag(
+                freqs, qt_rx, qt_tx, progress)
+        elif self.use_timestamped_retune:
             h_cal, dropped_steps, adc_peak = self._sweep_core_meta(
                 freqs, qt_rx, qt_tx, progress)
         else:
@@ -667,13 +684,126 @@ class SFCWEngine:
 
         freqs, qt_rx, qt_tx = self._build_sweep_grid(start, stop, step)
 
-        if self.use_timestamped_retune:
+        if self.use_first_packet_flag:
+            h_cal, _, adc_peak = self._sweep_core_first_flag(freqs, qt_rx, qt_tx)
+        elif self.use_timestamped_retune:
             h_cal, _, adc_peak = self._sweep_core_meta(freqs, qt_rx, qt_tx)
         else:
             h_cal, _, adc_peak = self._sweep_core(freqs, qt_rx, qt_tx, num_buffers, settle_count)
         self._last_adc_peak = adc_peak
         self._warn_if_adc_hot(adc_peak)
         return h_cal
+
+    def _sweep_core_first_flag(self, freqs, qt_rx, qt_tx, progress_cb=None):
+        """Sweep using the FPGA's first-packet mark instead of settle_count.
+
+        Per step: retune, then pull buffers until one arrives with the mark set,
+        and use THAT buffer. No fixed discard count, no timing assumption --
+        the FPGA stamped the mark at capture time, so it is correct regardless
+        of how deep the FIFO, the FX3's 88 KB or the host ring happen to be.
+
+        Falls back to the first buffer after first_packet_timeout_buffers if no
+        mark ever arrives, and says so loudly: silently behaving like
+        settle_count=0 would look like a working sweep with subtly wrong data.
+        """
+        num_steps = len(freqs)
+        h_signal = np.zeros(num_steps, dtype=np.complex128)
+        h_reference = np.zeros(num_steps, dtype=np.complex128)
+
+        dev_ptr = self.driver.device.dev[0]
+        tx_ch = bladerf.CHANNEL_TX(0)
+        rx_ch = bladerf.CHANNEL_RX(0)
+        use_qt = qt_rx is not None
+        ref_tone_scaled = self._ref_tone_scaled
+        stop_event = self._stop_event
+        n = self._rx_num_samples
+
+        dropped_steps = 0
+        adc_peak_rx1 = 0.0
+        adc_peak_rx2 = 0.0
+        never_marked = 0
+
+        for i in range(num_steps):
+            if stop_event.is_set():
+                return None, 0, None
+
+            f = int(freqs[i])
+            if use_qt:
+                rc_rx = libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, qt_rx[i])
+                rc_tx = libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, qt_tx[i])
+            else:
+                rc_tx = libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+                rc_rx = libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+            if rc_rx != 0 or rc_tx != 0:
+                dropped_steps += 1
+                continue
+
+            # Pull until the FPGA says "this one is first".
+            rx1 = rx2 = None
+            skipped = 0
+            marked = False
+            for _ in range(self.first_packet_timeout_buffers):
+                try:
+                    a, b, ts, status, is_first = self.driver.read_meta_now(n)
+                except Exception as e:
+                    break
+                if is_first:
+                    rx1, rx2, marked = a, b, True
+                    if self.log_first_packet:
+                        print(f"[sfcw] step {i:3d} {f / 1e6:8.3f} MHz  "
+                              f"FIRST PACKET of this frequency  "
+                              f"fifo@{ts}  skipped {skipped} buffer(s) "
+                              f"before the mark",
+                              flush=True)
+                    break
+                rx1, rx2 = a, b       # keep the latest as the fallback
+                skipped += 1
+
+            if rx1 is None:
+                dropped_steps += 1
+                continue
+
+            if not marked:
+                never_marked += 1
+                if never_marked == 1:
+                    print(f"[sfcw] WARNING: no first-packet mark within "
+                          f"{self.first_packet_timeout_buffers} buffers at step "
+                          f"{i}. Either the FPGA image lacks MARK_FIRST_PACKET, "
+                          f"or dsp_restart is not pulsed on retune. Falling back "
+                          f"to the last buffer read, which is NOT equivalent to "
+                          f"settle_count -- treat this sweep as suspect.")
+
+            sig_arr = np.asarray([rx1], dtype=np.float64)
+            ref_arr = np.asarray([rx2], dtype=np.float64)
+            sig_cplx = (sig_arr[:, 0::2] + 1j * sig_arr[:, 1::2]) * ref_tone_scaled
+            ref_cplx = (ref_arr[:, 0::2] + 1j * ref_arr[:, 1::2]) * ref_tone_scaled
+            h_signal[i] = sig_cplx.mean()
+            h_reference[i] = ref_cplx.mean()
+            p1 = max(-sig_arr.min(), sig_arr.max())
+            if p1 > adc_peak_rx1:
+                adc_peak_rx1 = p1
+            p2 = max(-ref_arr.min(), ref_arr.max())
+            if p2 > adc_peak_rx2:
+                adc_peak_rx2 = p2
+
+            if progress_cb and i % 10 == 0:
+                progress_cb(i)
+
+        if never_marked:
+            print(f"[sfcw] WARNING: {never_marked}/{num_steps} steps had no "
+                  f"first-packet mark")
+
+        ref_mag = np.abs(h_reference)
+        valid = ref_mag > 1e-10
+        h_cal = np.zeros(num_steps, dtype=np.complex128)
+        h_cal[valid] = h_signal[valid] / h_reference[valid]
+
+        adc_peak = {
+            'rx1': float(adc_peak_rx1),
+            'rx2': float(adc_peak_rx2),
+            'full_scale': float(ADC_FULL_SCALE),
+        }
+        return h_cal, dropped_steps, adc_peak
 
     def _sweep_core_meta(self, freqs, qt_rx, qt_tx, progress_cb=None):
         """Timestamped variant of _sweep_core. No settling, no discarding.
