@@ -541,6 +541,44 @@ class BladeRFDriver:
         self.rx_running = False
         self._dual_channel = False
 
+    def read_now_meta(self, num_samples, timeout_ms=2000):
+        """Read whatever is available RIGHT NOW and report when it was captured.
+
+        This is the measurement read, not the acquisition read. Setting
+        META_FLAG_RX_NOW tells sync_rx to "return any available samples, rather
+        than wait until the timestamp indicated in the bladerf_metadata
+        timestamp field" (libbladeRF.h), so it hands back the head of the
+        pipeline instead of blocking for an index.
+
+        Returns (rx1, rx2, ts_capture, ts_now, status) where
+
+          ts_capture = meta.timestamp, stamped by fifo_writer at CAPTURE time,
+                       inside the FPGA, before any FIFO/FX3/USB buffering.
+          ts_now     = the FPGA sample counter read immediately AFTER the data
+                       was handed over.
+
+        ts_now - ts_capture is therefore the end-to-end pipeline staleness in
+        samples: how far in the past the data you just received actually is.
+        That is the number every latency estimate in this repo has been
+        guessing at, measured directly rather than derived from buffer counts.
+        """
+        meta = ffi.new("struct bladerf_metadata *")
+        meta.timestamp = 0
+        meta.flags = META_FLAG_RX_NOW
+        buf = bytearray(num_samples * 2 * 2 * 2)
+        self.device.sync_rx(buf, num_samples * 2, timeout_ms, meta)
+        # Read the counter AFTER sync_rx returns, so the difference brackets
+        # the whole delivery path rather than part of it.
+        ts_now = self.get_rx_timestamp()
+        iq = np.frombuffer(buf, dtype=np.int16)
+        rx1 = np.empty(num_samples * 2, dtype=np.int16)
+        rx2 = np.empty(num_samples * 2, dtype=np.int16)
+        rx1[0::2] = iq[0::4]
+        rx1[1::2] = iq[1::4]
+        rx2[0::2] = iq[2::4]
+        rx2[1::2] = iq[3::4]
+        return rx1, rx2, int(meta.timestamp), int(ts_now), int(meta.status)
+
     def read_at_timestamp(self, target_ts, num_samples, timeout_ms=2000):
         """Block until sample index target_ts, then return num_samples per channel.
 

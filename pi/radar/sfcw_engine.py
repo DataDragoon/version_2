@@ -675,6 +675,127 @@ class SFCWEngine:
         self._warn_if_adc_hot(adc_peak)
         return h_cal
 
+    def measure_pipeline_latency(self, num_steps=10, buffers_per_step=4):
+        """Measure, per buffer, how stale the RX data actually is.
+
+        Everything in this repo that discards buffers -- settle_count above all
+        -- exists because the delay between a sample being captured and that
+        sample reaching Python was never measured, only estimated from buffer
+        counts and num_transfers. This measures it.
+
+        Per step it issues a retune, reads the FPGA sample counter the instant
+        the ACK lands, then pulls buffers with META_FLAG_RX_NOW and prints, for
+        each one:
+
+          fifo@      meta.timestamp -- when the FPGA CAPTURED this data. It is
+                     stamped by fifo_writer before any FIFO/FX3/USB buffering,
+                     so it survives the whole pipeline unchanged.
+          vs_ack     fifo@ - (counter at ACK). NEGATIVE means this data was
+                     captured BEFORE the retune was acknowledged, i.e. it is at
+                     the OLD frequency. That is settle_count's whole reason for
+                     existing, made visible.
+          stale      (counter after the read) - fifo@. End-to-end pipeline
+                     latency: how far in the past the data is at handover.
+          gap        fifo@ - previous fifo@. Should equal num_samples if the
+                     stream is contiguous; anything larger means samples were
+                     dropped between reads.
+
+        Requires the META RX path (use_timestamped_retune, which selects
+        start_rx_dual_meta). Read-only -- it changes no configuration and
+        computes no h_cal.
+        """
+        if not self.driver.rx_running:
+            print("[probe] ERROR: RX is not running. Start a sweep first, or "
+                  "call _configure_hardware() + _start_tx_rx() with "
+                  "use_timestamped_retune = True.")
+            return None
+
+        sr = float(self.driver.sample_rate)
+        n = self._rx_num_samples
+        dev_ptr = self.driver.device.dev[0]
+        tx_ch = bladerf.CHANNEL_TX(0)
+        rx_ch = bladerf.CHANNEL_RX(0)
+
+        freqs, qt_rx, qt_tx = self._build_sweep_grid(
+            self.start_freq, self.stop_freq, self.step_size)
+        use_qt = qt_rx is not None
+        num_steps = min(num_steps, len(freqs))
+
+        def ms(smp):
+            return smp / sr * 1e3
+
+        rows = []
+        print(f"[probe] {num_steps} steps x {buffers_per_step} buffers, "
+              f"{n} samples/buffer = {ms(n):.3f} ms per buffer at {sr/1e6:g} Msps")
+        print("[probe] vs_ack < 0 means the buffer was captured BEFORE the "
+              "retune ACK -- old frequency")
+
+        for i in range(num_steps):
+            f = int(freqs[i])
+            t_cmd = time.perf_counter()
+            if use_qt:
+                rc_rx = libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, qt_rx[i])
+                rc_tx = libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, qt_tx[i])
+            else:
+                rc_tx = libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+                rc_rx = libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+            t_ack = time.perf_counter() - t_cmd
+            # Counter at the moment the ACK lands: the reference every buffer
+            # below is compared against.
+            ts_at_ack = self.driver.get_rx_timestamp()
+
+            if rc_rx != 0 or rc_tx != 0:
+                print(f"[probe] step {i:3d} retune FAILED rc_rx={rc_rx} rc_tx={rc_tx}")
+                continue
+
+            prev = None
+            for b in range(buffers_per_step):
+                try:
+                    _, _, ts_cap, ts_now, status = self.driver.read_now_meta(n)
+                except Exception as e:
+                    print(f"[probe] step {i:3d} buf {b}: read failed: {e}")
+                    break
+
+                vs_ack = ts_cap - ts_at_ack
+                stale = ts_now - ts_cap
+                gap = (ts_cap - prev) if prev is not None else 0
+                prev = ts_cap
+                rows.append((vs_ack, stale, gap))
+
+                flag = "  <-- PRE-RETUNE" if vs_ack < 0 else ""
+                gap_s = f"{gap:+8d}/{ms(gap):7.3f}ms" if b else "       -/      -"
+                print(f"[probe] step {i:3d} buf {b}  {f/1e6:8.3f} MHz  "
+                      f"ACK {t_ack*1e3:6.2f} ms  "
+                      f"fifo@{ts_cap}  "
+                      f"vs_ack {vs_ack:+8d}/{ms(vs_ack):+8.3f}ms  "
+                      f"stale {stale:8d}/{ms(stale):7.3f}ms  "
+                      f"gap {gap_s}{flag}",
+                      flush=True)
+
+        if not rows:
+            return None
+
+        import statistics as st
+        vs = [r[0] for r in rows]
+        sl = [r[1] for r in rows]
+        gp = [r[2] for r in rows if r[2] != 0]
+        pre = sum(1 for v in vs if v < 0)
+
+        print(f"\n[probe] ==== SUMMARY over {len(rows)} buffers ====")
+        print(f"[probe] staleness  median {st.median(sl):.0f} smp / "
+              f"{ms(st.median(sl)):.3f} ms   "
+              f"min {min(sl)} / {ms(min(sl)):.3f} ms   "
+              f"max {max(sl)} / {ms(max(sl)):.3f} ms")
+        print(f"[probe] buffers captured BEFORE their retune ACK: "
+              f"{pre}/{len(rows)}")
+        if gp:
+            bad = sum(1 for g in gp if g != n)
+            print(f"[probe] inter-buffer gap: median {st.median(gp):.0f} smp "
+                  f"(expected {n}); {bad}/{len(gp)} non-contiguous")
+        print(f"[probe] => settle_count must cover {max(sl)/n:.2f} buffers "
+              f"of staleness; currently {self.settle_count}")
+        return rows
+
     def _sweep_core_meta(self, freqs, qt_rx, qt_tx, progress_cb=None):
         """Timestamped variant of _sweep_core. No settling, no discarding.
 
