@@ -27,6 +27,34 @@ META_STATUS_MINIEXP1 = 1 << 16   # mini_exp pin 1 state, stamped by the FPGA
 META_STATUS_MINIEXP2 = 1 << 17   # mini_exp pin 2 state
 
 
+def decode_mini_exp(status):
+    """(mini_exp1, mini_exp2) as booleans, from a bladerf_metadata.status word.
+
+    These two bits are a hardware marker channel that costs nothing to use: the
+    FPGA samples the physical mini_exp pins in the RX sample-clock domain and
+    writes them into the SAME 128-bit header that carries the timestamp --
+    fifo_writer.vhd assembles
+
+        meta_data <= x"FFF" & "11" & sync_mini_exp & x"FFFF" & timestamp & x"12344321"
+                                     ^^^^^^^^^^^^^ bits 113:112
+
+    which is flags bits 17:16, and libbladeRF surfaces exactly those as
+    BLADERF_META_FLAG_RX_HW_MINIEXP1/2 in metadata.status. So an external pulse
+    on the pin is timestamped by the same counter as the samples, with no host
+    involvement and no clock to correlate.
+
+    The pins are mini_exp1 = PIN_H16 and mini_exp2 = PIN_H15, constrained
+    3.3-V LVCMOS (pins.tcl), so a 3.3 V source can drive them directly -- no
+    level shifting, unlike the 1.8 V JTAG bank.
+
+    RESOLUTION CAVEAT: libbladeRF aggregates status over the whole block handed
+    back by one sync_rx call, so this resolves an edge to a block (4096 samples,
+    ~410 us at 10 Msps), NOT to a sample. Per-sample resolution would need the
+    raw per-message headers, which libbladeRF strips before the caller sees them.
+    """
+    return bool(status & META_STATUS_MINIEXP1), bool(status & META_STATUS_MINIEXP2)
+
+
 class BladeRFDriver:
     def __init__(self):
         self.device = None

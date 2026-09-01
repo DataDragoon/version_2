@@ -12,7 +12,7 @@ import threading
 import time
 import numpy as np
 
-from bladerf_driver import BladeRFDriver, META_STATUS_UNDERFLOW
+from bladerf_driver import BladeRFDriver, META_STATUS_UNDERFLOW, decode_mini_exp
 from bladerf._bladerf import ffi, libbladeRF
 import bladerf
 
@@ -109,6 +109,16 @@ class SFCWEngine:
         # counter at command time, at the scheduled retune, and at the returned
         # block, plus the deltas. Only ever fires when use_timestamped_retune is on.
         self.log_retune_timestamps = True
+        # Print a line whenever the mini_exp pins change state between steps. The
+        # pins are a free hardware marker channel: pulse mini_exp1 (PIN_H16,
+        # 3.3-V LVCMOS) from anything external and the FPGA stamps it into the
+        # same metadata header as the timestamp. Only fires on the timestamped
+        # path, since that is what surfaces metadata.status.
+        self.log_mini_exp = True
+        # Populated per sweep by _sweep_core_meta: list of (step, timestamp,
+        # mini_exp1, mini_exp2) and the subset of those where the state changed.
+        self._last_mini_exp_trace = []
+        self._last_mini_exp_edges = []
         self.tx1_gain = 50
         self.rx1_gain = 25
         # Reference-channel (TX2 -> loopback cable -> RX2) gains. These set the level
@@ -711,6 +721,13 @@ class SFCWEngine:
         underflows = 0
         adc_peak_rx1 = 0.0
         adc_peak_rx2 = 0.0
+        # mini_exp state per step, and the steps where it changed. An external
+        # pulse on the pin is stamped by the FPGA into the same header as the
+        # timestamp, so this is a hardware marker channel that needs no host-side
+        # clock correlation -- see decode_mini_exp() for the bit path.
+        mini_exp_trace = []
+        mini_exp_edges = []
+        prev_mini_exp = None
 
         for i in range(num_steps):
             if stop_event.is_set():
@@ -759,6 +776,21 @@ class SFCWEngine:
             if status & META_STATUS_UNDERFLOW:
                 underflows += 1
 
+            me1, me2 = decode_mini_exp(status)
+            mini_exp_trace.append((i, int(ts), me1, me2))
+            if prev_mini_exp is not None and (me1, me2) != prev_mini_exp:
+                # An edge. ts is the sample index the block STARTS at, so the
+                # transition is somewhere in [ts, ts + n) -- block resolution, not
+                # sample resolution. See decode_mini_exp()'s caveat.
+                mini_exp_edges.append((i, int(ts), prev_mini_exp, (me1, me2)))
+                if self.log_mini_exp:
+                    print(f"[sfcw] mini_exp EDGE at step {i:3d} "
+                          f"{f / 1e6:8.3f} MHz  block@{ts}  "
+                          f"{prev_mini_exp[0]:d}{prev_mini_exp[1]:d} -> "
+                          f"{me1:d}{me2:d}  (+-{n} samples)",
+                          flush=True)
+            prev_mini_exp = (me1, me2)
+
             if self.log_retune_timestamps:
                 sr = float(self.driver.sample_rate)
                 d_cmd = ts - ts_at_cmd          # command issued -> data captured
@@ -774,7 +806,8 @@ class SFCWEngine:
                       f"| ACK {t_ack * 1e3:6.2f} ms (wall)  "
                       f"| cmd->data {d_cmd} smp / {d_cmd / sr * 1e3:6.3f} ms  "
                       f"| tune->data {d_tune} smp / {d_tune / sr * 1e3:6.3f} ms  "
-                      f"| asked-vs-got {d_ask:+d}",
+                      f"| asked-vs-got {d_ask:+d}  "
+                      f"| mini_exp {me1:d}{me2:d}",
                       flush=True)
 
             sig_arr = np.asarray([rx1], dtype=np.float64)
@@ -796,6 +829,9 @@ class SFCWEngine:
         if underflows:
             print(f"[sfcw] WARNING: {underflows}/{num_steps} steps reported a "
                   f"hardware RX underflow (META_STATUS_UNDERFLOW)")
+
+        self._last_mini_exp_trace = mini_exp_trace
+        self._last_mini_exp_edges = mini_exp_edges
 
         ref_mag = np.abs(h_reference)
         valid = ref_mag > 1e-10
