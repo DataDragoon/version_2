@@ -84,6 +84,24 @@ class SFCWEngine:
         # for margin, not for speed. Do not drop below it without repeating the per-step
         # check; an aggregate correlation will not see this.
         self.settle_count = 3
+        # FPGA-DSP path. The FPGA does the reference division and the coherent
+        # average (rx.vhd ENABLE_DSP_AVERAGE), so a sweep returns ONE 64-bit
+        # word per frequency instead of 4096 samples. The host does no
+        # averaging and no calibration here -- the words ARE h_cal, and go
+        # straight into the window + IFFT.
+        #
+        # Default False. Requires an FPGA image built with ENABLE_DSP_AVERAGE,
+        # dsp_restart wired to the retune, and packet mode enabled. With a
+        # stock image this path returns nonsense, so it must be opted into
+        # deliberately.
+        self.use_fpga_dsp = False
+        # Dwell between issuing one retune and the next. The FPGA needs
+        # FLUSH_N + N valid samples to finish a step:
+        #   (64 + 4096) / 10 Msps = 416 us
+        # The retune round-trip is ~2.4 ms and already exceeds that, so this is
+        # a floor rather than the binding cost. Too short and a step's word is
+        # never produced, which shows up as a short read.
+        self.dsp_step_period_s = 0.001
         self.tx1_gain = 50
         self.rx1_gain = 25
         # Reference-channel (TX2 -> loopback cable -> RX2) gains. These set the level
@@ -556,8 +574,12 @@ class SFCWEngine:
         t = np.arange(n, dtype=np.float64) / self.driver.sample_rate
         self._ref_tone = np.exp(-1j * 2 * np.pi * self.driver.cw_offset * t)
         self._ref_tone_scaled = self._ref_tone / 2047.0
+        self._rx_num_samples = n
         self.driver.start_tx_dual()
-        self.driver.start_rx_dual(self._rx_capture, num_samples=n)
+        if self.use_fpga_dsp:
+            self.driver.start_rx_dual_dsp()
+        else:
+            self.driver.start_rx_dual(self._rx_capture, num_samples=n)
         time.sleep(0.05)
 
         # enable_module() resets gain state, so re-push after modules are enabled.
@@ -574,7 +596,10 @@ class SFCWEngine:
         self._gains_dirty = False
 
     def _stop_tx_rx(self):
-        self.driver.stop_rx_dual()
+        if self.use_fpga_dsp:
+            self.driver.stop_rx_dual_dsp()
+        else:
+            self.driver.stop_rx_dual()
         self.driver.stop_tx_dual()
         # Restore single-channel config so calib panel works after SFCW
         self.driver._configure_channels()
@@ -607,15 +632,20 @@ class SFCWEngine:
                     'freq_mhz': freqs[i] / 1e6,
                 })
 
-        h_cal, dropped_steps, adc_peak = self._sweep_core(
-            freqs, qt_rx, qt_tx, num_buffers, settle_count, progress)
+        if self.use_fpga_dsp:
+            h_cal, dropped_steps, adc_peak = self._sweep_core_fpga_dsp(
+                freqs, qt_rx, qt_tx, progress)
+        else:
+            h_cal, dropped_steps, adc_peak = self._sweep_core(
+                freqs, qt_rx, qt_tx, num_buffers, settle_count, progress)
         if h_cal is None:
             return None
 
         if dropped_steps > 0:
             print(f"[sfcw] WARNING: {dropped_steps}/{num_steps} steps had incomplete captures")
 
-        self._warn_if_adc_hot(adc_peak)
+        if adc_peak is not None:
+            self._warn_if_adc_hot(adc_peak)
         return self._process_h_cal(h_cal, adc_peak)
 
     def _perform_sweep_raw(self):
@@ -629,10 +659,97 @@ class SFCWEngine:
 
         freqs, qt_rx, qt_tx = self._build_sweep_grid(start, stop, step)
 
-        h_cal, _, adc_peak = self._sweep_core(freqs, qt_rx, qt_tx, num_buffers, settle_count)
+        if self.use_fpga_dsp:
+            h_cal, _, adc_peak = self._sweep_core_fpga_dsp(freqs, qt_rx, qt_tx)
+        else:
+            h_cal, _, adc_peak = self._sweep_core(freqs, qt_rx, qt_tx, num_buffers, settle_count)
         self._last_adc_peak = adc_peak
-        self._warn_if_adc_hot(adc_peak)
+        # adc_peak is None on the FPGA-DSP path: the host never sees raw ADC
+        # counts there, so the headroom check has nothing to test.
+        if adc_peak is not None:
+            self._warn_if_adc_hot(adc_peak)
         return h_cal
+
+    def _sweep_core_fpga_dsp(self, freqs, qt_rx, qt_tx, progress_cb=None):
+        """Tune through every step, then read one word per step from the FIFO.
+
+        Two phases, deliberately separated:
+
+          1. TUNE. Walk the grid issuing retunes, spaced by dsp_step_period_s.
+             Each retune pulses dsp_restart in the FPGA, which flushes the
+             divider pipeline and starts a fresh N-sample accumulation. The
+             FPGA writes one 64-bit word per step into the sample FIFO as each
+             average completes, so the FIFO fills as the sweep proceeds.
+          2. READ. Pull num_steps words back in one go and hand them to the
+             IFFT.
+
+        No averaging and no reference division on this side -- both happened in
+        the FPGA. The words returned ARE h_cal.
+
+        Returns (h_cal, dropped_steps, adc_peak) or (None, 0, None) if stopped.
+        """
+        num_steps = len(freqs)
+        dev_ptr = self.driver.device.dev[0]
+        tx_ch = bladerf.CHANNEL_TX(0)
+        rx_ch = bladerf.CHANNEL_RX(0)
+        use_qt = qt_rx is not None
+        stop_event = self._stop_event
+
+        dropped_steps = 0
+        warned = False
+
+        # ---- phase 1: drive the grid -------------------------------------
+        for i in range(num_steps):
+            if stop_event.is_set():
+                return None, 0, None
+
+            f = int(freqs[i])
+            if use_qt:
+                rc_rx = libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, qt_rx[i])
+                rc_tx = libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, qt_tx[i])
+            else:
+                rc_tx = libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+                rc_rx = libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
+
+            if rc_rx != 0 or rc_tx != 0:
+                if not warned:
+                    warned = True
+                    print(f"[sfcw] WARNING: retune failed at step {i} "
+                          f"({f / 1e6:.1f} MHz): rc_rx={rc_rx} rc_tx={rc_tx}. "
+                          f"The FPGA will not produce a word for this step, so "
+                          f"the read below will come up short.")
+                dropped_steps += 1
+
+            # Let the FPGA finish FLUSH_N + N samples for this step before the
+            # next retune pulses dsp_restart and throws the partial away.
+            time.sleep(self.dsp_step_period_s)
+
+            if progress_cb and i % 10 == 0:
+                progress_cb(i)
+
+        # ---- phase 2: read one word per step ------------------------------
+        expected = num_steps - dropped_steps
+        try:
+            h_cal = self.driver.read_dsp_words(expected)
+        except Exception as e:
+            print(f"[sfcw] ERROR: FPGA-DSP read of {expected} words failed: {e}. "
+                  f"Check that the FPGA image has ENABLE_DSP_AVERAGE, that "
+                  f"dsp_restart is wired to the retune, and that packet mode "
+                  f"is on -- without packet mode fx3_gpif will not flush a "
+                  f"partial DMA buffer and this read blocks until timeout.")
+            return None, dropped_steps, None
+
+        if len(h_cal) != num_steps:
+            # Pad so the IFFT still sees the full grid; missing bins stay zero
+            # and are excluded exactly like a dropped step on the other paths.
+            padded = np.zeros(num_steps, dtype=np.complex128)
+            padded[:len(h_cal)] = h_cal
+            h_cal = padded
+
+        # adc_peak is meaningless here: the host never sees raw ADC counts on
+        # this path, so the headroom check cannot run. Reported as None rather
+        # than as a fabricated zero.
+        return h_cal, dropped_steps, None
 
     def _sweep_core(self, freqs, qt_rx, qt_tx, num_buffers, settle_count, progress_cb=None):
         """Sweep loop: retune, settle, capture num_buffers buffers and average them

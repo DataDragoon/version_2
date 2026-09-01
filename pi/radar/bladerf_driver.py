@@ -464,6 +464,80 @@ class BladeRFDriver:
         self.rx_running = False
         self._dual_channel = False
 
+    # -- FPGA-DSP results: one 64-bit word per frequency step ----------------
+    #
+    # With rx.vhd's ENABLE_DSP_AVERAGE the FPGA does the reference division AND
+    # the coherent average, so what arrives is no longer a sample stream. It is
+    # one result per step:
+    #
+    #     64-bit word = 32-bit signed I (low)  +  32-bit signed Q (high)
+    #                   in Q(31-FRAC).FRAC fixed point
+    #
+    # 51 steps therefore produce 51 words = 408 bytes, versus 1.67 MB of raw
+    # samples for the same sweep -- a 4096:1 reduction. There is nothing to
+    # average and nothing to divide on this side; the numbers are already h_cal.
+    #
+    # BYTE ORDER, and why this is the first thing to check on hardware:
+    # iq_dword_packer presents I on pkt_sop then Q on pkt_eop, and fifo_writer
+    # shifts each new DWORD into the TOP of fifo_data, sliding the previous one
+    # down. So Q ends up in the high half and I in the low half, which on a
+    # little-endian host makes the first four bytes I. That is read from the
+    # RTL, NOT verified against hardware -- if I and Q come out swapped, this
+    # is the line to flip.
+
+    DSP_FRAC_BITS = 14          # must match rx.vhd DSP_DIV_FRAC_BITS
+    DSP_BYTES_PER_WORD = 8      # 32-bit I + 32-bit Q
+
+    def read_dsp_words(self, num_words, timeout_ms=5000):
+        """Read num_words FPGA-DSP results and return them as complex128.
+
+        Returns a numpy array of length num_words, already scaled out of the
+        divider's fixed-point format. This IS h_cal -- no further calibration.
+        """
+        nbytes = num_words * self.DSP_BYTES_PER_WORD
+        buf = bytearray(nbytes)
+        # libbladeRF counts sync_rx's num_samples in 4-byte units for
+        # SC16_Q11, so a 64-bit word is two of them.
+        self.device.sync_rx(buf, nbytes // 4, timeout_ms)
+        raw = np.frombuffer(buf, dtype=np.int32)
+        i = raw[0::2].astype(np.float64)
+        q = raw[1::2].astype(np.float64)
+        return (i + 1j * q) / float(1 << self.DSP_FRAC_BITS)
+
+    def start_rx_dual_dsp(self, num_buffers=16, buffer_size=4096,
+                          num_transfers=8, stream_timeout=3500):
+        """Start dual RX for the FPGA-DSP path: no reader thread, packet mode.
+
+        No thread because read_dsp_words is a pull API and a background reader
+        would consume the very words the sweep is waiting for.
+        """
+        if self.rx_running:
+            return
+        self._rx_stop.clear()
+        self._dual_channel = True
+        self.device.sync_config(
+            layout=ChannelLayout.RX_X2,
+            fmt=Format.SC16_Q11,
+            num_buffers=num_buffers,
+            buffer_size=buffer_size,
+            num_transfers=num_transfers,
+            stream_timeout=stream_timeout
+        )
+        self.device.enable_module(bladerf.CHANNEL_RX(0), True)
+        self.device.enable_module(bladerf.CHANNEL_RX(1), True)
+        self.rx_running = True
+
+    def stop_rx_dual_dsp(self):
+        if not self.rx_running:
+            return
+        try:
+            self.device.enable_module(bladerf.CHANNEL_RX(0), False)
+            self.device.enable_module(bladerf.CHANNEL_RX(1), False)
+        except Exception:
+            pass
+        self.rx_running = False
+        self._dual_channel = False
+
     def get_status(self):
         return {
             'connected': self.device is not None,
