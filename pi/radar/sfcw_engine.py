@@ -84,18 +84,6 @@ class SFCWEngine:
         # for margin, not for speed. Do not drop below it without repeating the per-step
         # check; an aggregate correlation will not see this.
         self.settle_count = 3
-        # DIAGNOSTIC: extra dwell between issuing a retune and reading RX, on top of
-        # the settle_count buffer wait. Exists to test whether the 38.6 dB per-retune
-        # wobble has anything to do with settling time at all -- the AD9361's spec'd
-        # worst-case LO lock is ~250 us, already inside one 410 us buffer, so if
-        # seconds of dwell do not move S_repeat then settling is ruled out and the
-        # cause lies elsewhere in the reference chain. Set to 0.0 for normal running:
-        # at 5 s x 51 steps one sweep takes over four minutes.
-        self.post_retune_delay = 5.0
-        # Warn if the (blocking, already-ACKed) retune call itself takes longer than
-        # this. It normally returns in milliseconds; seconds would mean the NIOS
-        # round-trip is the problem, not the RF.
-        self.ack_warn_seconds = 3.0
         self.tx1_gain = 50
         self.rx1_gain = 25
         # Reference-channel (TX2 -> loopback cable -> RX2) gains. These set the level
@@ -682,29 +670,12 @@ class SFCWEngine:
                 return None, 0
 
             f = int(freqs[i])
-            # Both retune paths are synchronous: the NIOS packs a response carrying
-            # NIOS_PKT_RETUNE2_RESP_FLAG_SUCCESS and libbladeRF blocks for it, so the
-            # call does not return until the ACK is in. t_ack is therefore the real
-            # command round-trip, and rc is the ACK's status.
-            t_cmd = time.perf_counter()
             if use_qt:
-                rc_rx = libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, qt_rx[i])
-                rc_tx = libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, qt_tx[i])
+                libbladeRF.bladerf_schedule_retune(dev_ptr, rx_ch, 0, f, qt_rx[i])
+                libbladeRF.bladerf_schedule_retune(dev_ptr, tx_ch, 0, f, qt_tx[i])
             else:
-                rc_tx = libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
-                rc_rx = libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
-            t_ack = time.perf_counter() - t_cmd
-
-            if t_ack > self.ack_warn_seconds:
-                print(f"[sfcw] WARNING: retune ACK took {t_ack:.3f} s "
-                      f"(> {self.ack_warn_seconds:.1f} s) at step {i}")
-
-            if self.post_retune_delay > 0.0:
-                print(f"[sfcw] step {i:3d}  {f / 1e6:8.3f} MHz  "
-                      f"ACK {t_ack * 1e3:7.2f} ms (rc_rx={rc_rx} rc_tx={rc_tx})  "
-                      f"-> dwelling {self.post_retune_delay:.1f} s before RX",
-                      flush=True)
-                time.sleep(self.post_retune_delay)
+                libbladeRF.bladerf_set_frequency(dev_ptr, tx_ch, f)
+                libbladeRF.bladerf_set_frequency(dev_ptr, rx_ch, f)
 
             with rx_cond:
                 target_seq = self._rx_seq + settle_count
