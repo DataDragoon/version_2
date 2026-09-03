@@ -118,6 +118,8 @@ class SDRServer:
                     params['num_buffers'] = int(cmd['num_buffers'])
                 if 'settle_count' in cmd:
                     params['settle_count'] = int(cmd['settle_count'])
+                if 'use_first_packet_flag' in cmd:
+                    params['use_first_packet_flag'] = bool(cmd['use_first_packet_flag'])
                 if 'tx1_gain' in cmd:
                     params['tx1_gain'] = int(cmd['tx1_gain'])
                 if 'rx1_gain' in cmd:

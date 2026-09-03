@@ -8,6 +8,7 @@ phase reference (short cable loopback). Dividing signal by reference
 eliminates random PLL phase offsets between TX and RX synthesizers.
 """
 
+import os
 import threading
 import time
 import numpy as np
@@ -115,7 +116,17 @@ class SFCWEngine:
         # MARK_FIRST_PACKET and dsp_restart pulsed on every retune. When the
         # mark is present settle_count is not consulted at all: the FPGA says
         # which buffer is first, so there is nothing to guess.
-        self.use_first_packet_flag = False
+        #
+        # Settable from the environment so it can be switched on without
+        # editing code or going through the websocket:
+        #     SFCW_FIRST_PACKET=1 python start.py
+        # It needs an FPGA image built with MARK_FIRST_PACKET, so leaving the
+        # default False means a stock image behaves exactly as before.
+        self.use_first_packet_flag = os.environ.get("SFCW_FIRST_PACKET", "") not in ("", "0")
+        if self.use_first_packet_flag:
+            print("[sfcw] SFCW_FIRST_PACKET set: using the FPGA's first-packet "
+                  "mark instead of settle_count. Requires an FPGA image built "
+                  "with rx.vhd MARK_FIRST_PACKET.")
         # Print a line for every marked buffer. Left on because the mark is the
         # thing being validated -- if it never fires, the FPGA image or the
         # dsp_restart wiring is wrong, and silence would hide that.
@@ -234,6 +245,10 @@ class SFCWEngine:
                 self.num_buffers = max(1, int(kwargs['num_buffers']))
             if 'settle_count' in kwargs:
                 self.settle_count = max(1, int(kwargs['settle_count']))
+            if 'use_first_packet_flag' in kwargs:
+                # Takes effect on the NEXT sweep: it also selects the META RX
+                # path, and that is chosen in _start_tx_rx.
+                self.use_first_packet_flag = bool(kwargs['use_first_packet_flag'])
             if 'tx1_gain' in kwargs:
                 self.tx1_gain = int(kwargs['tx1_gain'])
                 self._gains_dirty = True
@@ -972,7 +987,12 @@ class SFCWEngine:
 
         for i in range(num_steps):
             if stop_event.is_set():
-                return None, 0
+                # 3-tuple, matching the normal return below. This was `None, 0`
+                # -- a 2-tuple -- so every caller raised "not enough values to
+                # unpack (expected 3, got 2)" the moment a sweep was stopped
+                # mid-run. Same inconsistency CLAUDE.md records as having broken
+                # benchmark_sweep.py.
+                return None, 0, None
 
             f = int(freqs[i])
             if use_qt:
